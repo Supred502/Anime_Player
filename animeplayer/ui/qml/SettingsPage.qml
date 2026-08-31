@@ -10,6 +10,8 @@ Kirigami.ScrollablePage {
     property bool loggedIn: false
     property string viewerName: ""
     property bool remoteRunning: false
+    property string remoteUrl: ""
+    property string remotePin: ""
 
     Component.onCompleted: {
         clientIdField.text = backend.anilistClientId()
@@ -19,6 +21,8 @@ Kirigami.ScrollablePage {
         skipFinalToggle.checked = backend.getSkipFinalEpisodeEnabled()
         autoNextToggle.checked = backend.getAutoNextEnabled()
         page.remoteRunning = backend.isRemoteServerRunning()
+        page.remoteUrl = backend.getRemoteUrl()
+        page.remotePin = backend.getRemotePin()
         qrImage.source = backend.getRemoteApkQrPath()
     }
 
@@ -107,6 +111,8 @@ Kirigami.ScrollablePage {
                         if (page.remoteRunning) backend.stopRemoteServer()
                         else backend.startRemoteServer()
                         page.remoteRunning = backend.isRemoteServerRunning()
+                        page.remoteUrl = backend.getRemoteUrl()
+                        page.remotePin = backend.getRemotePin()
                         // The QR's target URL depends on whether the server is
                         // running (LAN download vs GitHub fallback) -- getRemoteApkQrPath()
                         // has no NOTIFY signal, so re-point the Image explicitly
@@ -131,12 +137,12 @@ Kirigami.ScrollablePage {
                     opacity: 0.7
                 }
                 Controls.Label {
-                    text: backend.getRemoteUrl()
+                    text: page.remoteUrl
                     font.bold: true
                     font.family: "monospace"
                 }
                 Controls.Label {
-                    text: "PIN: " + backend.getRemotePin()
+                    text: "PIN: " + page.remotePin
                     font.bold: true
                     font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.4
                 }
