@@ -14,6 +14,24 @@ cd "$(dirname "$0")"
 BUILD_TOOLS="$(ls -d "$ANDROID_SDK_ROOT"/build-tools/*/ | sort -V | tail -1)"
 PLATFORM="$(ls -d "$ANDROID_SDK_ROOT"/platforms/*/ | sort -V | tail -1)"
 
+# The signing keystore has to survive across builds in a real dir outside
+# build/, not just skip regeneration inside it -- confirmed the hard way:
+# `rm -rf build` below wiped it every time regardless of the "if missing"
+# check further down, so every rebuild silently signed with a brand new key.
+# Android then refuses to install that as an update over what's already on
+# a phone (different signing identity), which looks like "the new APK won't
+# install" with no useful error explaining why.
+mkdir -p signing
+if [ ! -f signing/debug.keystore ]; then
+  echo "== generating signing key (first build only) =="
+  "$JAVA_HOME/bin/keytool" -genkeypair -v \
+    -keystore signing/debug.keystore \
+    -alias animeplayerremote \
+    -keyalg RSA -keysize 2048 -validity 10000 \
+    -storepass animeplayer -keypass animeplayer \
+    -dname "CN=Anime Player Remote, OU=Personal, O=Personal, L=Unknown, S=Unknown, C=US"
+fi
+
 rm -rf build
 mkdir -p build/gen build/apk build/classes
 
@@ -49,17 +67,9 @@ cp build/apk/base.apk build/apk/unsigned.apk
 echo "== zipaligning =="
 "$BUILD_TOOLS/zipalign" -f -p 4 build/apk/unsigned.apk build/apk/aligned.apk
 
-echo "== signing (self-signed debug key; generated once, reused after) =="
-if [ ! -f build/debug.keystore ]; then
-  "$JAVA_HOME/bin/keytool" -genkeypair -v \
-    -keystore build/debug.keystore \
-    -alias animeplayerremote \
-    -keyalg RSA -keysize 2048 -validity 10000 \
-    -storepass animeplayer -keypass animeplayer \
-    -dname "CN=Anime Player Remote, OU=Personal, O=Personal, L=Unknown, S=Unknown, C=US"
-fi
+echo "== signing =="
 "$BUILD_TOOLS/apksigner" sign \
-  --ks build/debug.keystore \
+  --ks signing/debug.keystore \
   --ks-pass pass:animeplayer \
   --ks-key-alias animeplayerremote \
   --out build/AnimePlayerRemote.apk \

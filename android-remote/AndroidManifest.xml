@@ -11,8 +11,11 @@
 
     <application
         android:label="Anime Player Remote"
+        android:icon="@mipmap/ic_launcher"
         android:allowBackup="true"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:theme="@style/AppTheme"
+        android:forceDarkAllowed="false">
         <activity
             android:name=".MainActivity"
             android:exported="true"

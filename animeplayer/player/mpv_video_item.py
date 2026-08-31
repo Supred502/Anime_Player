@@ -11,7 +11,7 @@ identically under X11 and Wayland.
 from __future__ import annotations
 
 import mpv
-from PySide6.QtCore import Property, Signal, Slot
+from PySide6.QtCore import Property, QTimer, Signal, Slot
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGL import QOpenGLFramebufferObject, QOpenGLFramebufferObjectFormat
 from PySide6.QtQuick import QQuickFramebufferObject
@@ -165,8 +165,20 @@ class MpvVideoItem(QQuickFramebufferObject):
     def _on_mpv_log(self, level: str, prefix: str, text: str) -> None:
         # Fires on mpv's own log thread. Only surface real problems (error/fatal)
         # to the UI -- "warn" is noisy and mostly benign (codec probing, etc).
-        if not self.closed and level in ("error", "fatal"):
-            self.playbackError.emit(text.strip())
+        if self.closed or level not in ("error", "fatal"):
+            return
+        # Some FFmpeg decoder messages are logged at "error" level even though
+        # they're recoverable hiccups that don't actually stop playback --
+        # confirmed live: "aac: illegal icc" fires from a stray AAC stream
+        # quirk on these anidb.app episodes and decoding just continues fine
+        # right through it, but it was popping up as an alarming "Playback
+        # error" toast on otherwise-working playback. Filtered by substring
+        # rather than dropping error-level entirely, since other error-level
+        # messages (dead streams, unsupported codecs) are genuinely useful --
+        # confirmed in an earlier round of debugging the stuck-at-0:00 bug.
+        if "illegal icc" in text:
+            return
+        self.playbackError.emit(text.strip())
 
     def createRenderer(self):
         return _MpvRenderer(self)
@@ -233,13 +245,32 @@ class MpvVideoItem(QQuickFramebufferObject):
     @Slot(float)
     def seekAbsolute(self, seconds: float) -> None:
         if not self.closed:
-            # Plain "absolute" seeking snaps to the nearest keyframe rather
-            # than decoding to the exact target -- on these HLS streams that
-            # reliably desyncs audio from video, worse when seeking backward
-            # (matches what the user reported, and the same known behavior
-            # ani-cli/mpv have on this kind of segmented stream). "exact"
-            # forces mpv to actually decode forward to the precise target
-            # instead of snapping, which keeps audio and video aligned.
+            self._do_seek(seconds)
+
+    def _do_seek(self, seconds: float) -> None:
+        if self.closed:
+            return
+        # Confirmed live against the real anidb.app HLS streams (muxed
+        # MPEG-TS segments, not separate audio/video renditions) with mpv's
+        # own audio-pts/time-pos properties: a *single* backward seek --
+        # "exact" or not -- reliably leaves the video stream repositioned
+        # correctly while the audio demuxer just keeps decoding forward from
+        # wherever it already was, so audio ends up way ahead of video and
+        # never catches back up (exactly the "video jumps back, audio
+        # doesn't" symptom reported). Forward seeks never showed this.
+        # Issuing the identical seek command again ~150ms later reliably
+        # fixes it (tested repeatedly: sub-100ms audio/video drift
+        # afterward) -- the first call alone doesn't reach the audio
+        # demuxer, but by the time the second one lands, whatever state
+        # made the first one partial has settled and it takes fully. Firing
+        # both back-to-back with no gap does NOT work (tested: tens of
+        # seconds of drift) -- the gap via QTimer.singleShot (non-blocking,
+        # doesn't stall the GUI thread) is load-bearing, not incidental.
+        self.mpv.command("seek", str(seconds), "absolute+exact")
+        QTimer.singleShot(150, lambda: self._confirm_seek(seconds))
+
+    def _confirm_seek(self, seconds: float) -> None:
+        if not self.closed:
             self.mpv.command("seek", str(seconds), "absolute+exact")
 
     @Slot()

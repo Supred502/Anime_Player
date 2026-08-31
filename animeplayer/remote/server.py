@@ -315,6 +315,61 @@ class RemoteServer:
                 except ValueError:
                     return {}
 
+            def _serve_apk(self, include_body: bool) -> None:
+                # Confirmed live via adb logcat against a real phone: Chromium
+                # (Brave)'s download manager reported an internal error
+                # ("ADM threw while trying to remove a download... 'ids'
+                # can't be null") right around when the download should have
+                # finished, and the UI sat stuck at 100%. http.server doesn't
+                # implement HEAD at all (a bare BaseHTTPRequestHandler 501s
+                # it) and never advertised Range support -- both of which
+                # Android's DownloadManager / Chromium commonly use to verify
+                # a completed download before finalizing it. Answering HEAD
+                # properly and advertising (plus honoring) Accept-Ranges is
+                # the standard fix for exactly this "stuck at 100%, never
+                # installs" symptom.
+                if server._apk_path is None or not server._apk_path.is_file():
+                    self._send_json(404, {"error": "APK not built on this machine"})
+                    return
+                size = server._apk_path.stat().st_size
+                range_header = self.headers.get("Range")
+                if range_header and range_header.startswith("bytes="):
+                    try:
+                        start_s, end_s = range_header[len("bytes="):].split("-", 1)
+                        start = int(start_s) if start_s else 0
+                        end = int(end_s) if end_s else size - 1
+                        end = min(end, size - 1)
+                    except ValueError:
+                        start, end = 0, size - 1
+                    if start > end or start >= size:
+                        self.send_response(416)
+                        self.send_header("Content-Range", f"bytes */{size}")
+                        self.end_headers()
+                        return
+                    chunk_len = end - start + 1
+                    self.send_response(206)
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                    self.send_header("Content-Length", str(chunk_len))
+                else:
+                    start, end = 0, size - 1
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(size))
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Type", "application/vnd.android.package-archive")
+                self.send_header("Content-Disposition", 'attachment; filename="AnimePlayerRemote.apk"')
+                self.end_headers()
+                if include_body:
+                    with server._apk_path.open("rb") as f:
+                        f.seek(start)
+                        self.wfile.write(f.read(end - start + 1))
+
+            def do_HEAD(self) -> None:  # noqa: N802
+                if self.path == "/app.apk":
+                    self._serve_apk(include_body=False)
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+
             def do_GET(self) -> None:  # noqa: N802 -- required BaseHTTPRequestHandler name
                 if self.path == "/":
                     body = _REMOTE_PAGE.encode("utf-8")
@@ -326,16 +381,7 @@ class RemoteServer:
                 elif self.path == "/api/state":
                     self._send_json(200, server._state_provider())
                 elif self.path == "/app.apk":
-                    if server._apk_path is None or not server._apk_path.is_file():
-                        self._send_json(404, {"error": "APK not built on this machine"})
-                        return
-                    data = server._apk_path.read_bytes()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "application/vnd.android.package-archive")
-                    self.send_header("Content-Disposition", 'attachment; filename="AnimePlayerRemote.apk"')
-                    self.send_header("Content-Length", str(len(data)))
-                    self.end_headers()
-                    self.wfile.write(data)
+                    self._serve_apk(include_body=True)
                 else:
                     self._send_json(404, {"error": "not found"})
 

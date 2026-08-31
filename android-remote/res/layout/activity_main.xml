@@ -3,12 +3,14 @@
     android:orientation="vertical"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#1d1d1f">
+    android:background="#1d1d1f"
+    android:fitsSystemWindows="true">
 
     <LinearLayout
         android:orientation="horizontal"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:background="#1d1d1f"
         android:padding="8dp"
         android:gravity="center_vertical">
 
@@ -17,16 +19,21 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:background="#2a2a2e"
+            android:padding="12dp"
             android:hint="http://192.168.x.x:8787"
             android:inputType="textUri"
             android:singleLine="true"
-            android:textColorHint="#888888"
+            android:textColorHint="#999999"
             android:textColor="#ffffff" />
 
         <Button
             android:id="@+id/goButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:background="#4c8bf5"
+            android:textColor="#ffffff"
             android:text="Connect" />
     </LinearLayout>
 
@@ -34,6 +41,7 @@
         android:id="@+id/webView"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_weight="1"
+        android:background="#1d1d1f" />
 
 </LinearLayout>

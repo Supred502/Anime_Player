@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Explicit theme, not the OEM/device default: MIUI's automatic dark-mode
+         color adjustment ("Force Dark") was overriding this app's own
+         hard-coded view colors with plain white, confirmed live on a real
+         device even with every view given an explicit android:background.
+         The app never opted out of it before. forceDarkAllowed is set here
+         AND on the application element in the manifest since different
+         Android/OEM versions have been seen to honor one or the other
+         inconsistently. -->
+    <style name="AppTheme" parent="android:Theme.Material">
+        <item name="android:windowBackground">#1d1d1f</item>
+        <item name="android:forceDarkAllowed">false</item>
+        <item name="android:colorBackground">#1d1d1f</item>
+    </style>
+</resources>

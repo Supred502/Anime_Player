@@ -1,3 +1,4 @@
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -108,3 +109,40 @@ def test_apk_download_404s_when_not_built(server_no_apk):
     with pytest.raises(urllib.error.HTTPError) as exc_info:
         urllib.request.urlopen(f"http://127.0.0.1:{server_no_apk.port}/app.apk", timeout=5)
     assert exc_info.value.code == 404
+
+
+def test_apk_head_request_reports_full_size_no_body(server):
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    try:
+        conn.request("HEAD", "/app.apk")
+        resp = conn.getresponse()
+        assert resp.status == 200
+        assert resp.getheader("Content-Length") == str(len(server.fake_apk_bytes))
+        assert resp.getheader("Accept-Ranges") == "bytes"
+        assert resp.read() == b""
+    finally:
+        conn.close()
+
+
+def test_apk_range_request_serves_partial_content(server):
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    try:
+        conn.request("GET", "/app.apk", headers={"Range": "bytes=5-9"})
+        resp = conn.getresponse()
+        assert resp.status == 206
+        assert resp.getheader("Content-Range") == f"bytes 5-9/{len(server.fake_apk_bytes)}"
+        assert resp.read() == server.fake_apk_bytes[5:10]
+    finally:
+        conn.close()
+
+
+def test_apk_range_request_beyond_size_is_416(server):
+    size = len(server.fake_apk_bytes)
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    try:
+        conn.request("GET", "/app.apk", headers={"Range": f"bytes={size + 10}-{size + 20}"})
+        resp = conn.getresponse()
+        assert resp.status == 416
+        resp.read()
+    finally:
+        conn.close()
