@@ -10,11 +10,14 @@ from __future__ import annotations
 
 import re
 import socket
+import tempfile
 import webbrowser
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any, Callable
 
 import httpx
+import qrcode
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
 from animeplayer.anilist import matcher
@@ -25,6 +28,11 @@ from animeplayer.sources import anidb_app as source
 from animeplayer.sources import jikan
 from animeplayer.storage import secrets
 from animeplayer.storage.db import AniDBMapping, AniListStatus, Database
+
+# The Android remote app is a thin WebView shell (see android-remote/) around
+# the same page RemoteServer already serves -- this is its GitHub release
+# asset, built by android-remote/build.sh and uploaded manually per release.
+_REMOTE_APK_URL = "https://github.com/Supred502/Anime_Player/releases/download/v1.0-remote/AnimePlayerRemote.apk"
 
 
 def _lan_ip() -> str:
@@ -664,6 +672,17 @@ class Backend(QObject):
         if self._remote_server is None:
             return ""
         return f"http://{_lan_ip()}:{self._remote_server.port}"
+
+    @Slot(result=str)
+    def getRemoteApkQrPath(self) -> str:
+        """A QR code pointing at the Android remote app's GitHub release --
+        scan it to download+install the APK directly, no typing needed. The
+        URL never changes (a fixed release asset), so this is generated once
+        and reused rather than redone on every Settings page load."""
+        path = Path(tempfile.gettempdir()) / "animeplayer_remote_apk_qr.png"
+        if not path.exists():
+            qrcode.make(_REMOTE_APK_URL).save(str(path))
+        return path.as_uri()
 
     @Slot(str)
     def openContinueWatching(self, slug_id: str) -> None:

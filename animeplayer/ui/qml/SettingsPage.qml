@@ -134,6 +134,25 @@ Kirigami.ScrollablePage {
                     font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.4
                 }
             }
+
+            ColumnLayout {
+                Kirigami.FormData.label: "Remote app:"
+                spacing: Kirigami.Units.smallSpacing
+
+                Controls.Label {
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: page.width - Kirigami.Units.largeSpacing * 2
+                    wrapMode: Text.WordWrap
+                    opacity: 0.7
+                    text: "Scan with your phone's camera to install the Android remote app, then open it and enter the address and PIN above."
+                }
+                Image {
+                    source: backend.getRemoteApkQrPath()
+                    sourceSize.width: 220
+                    sourceSize.height: 220
+                    smooth: false // keep QR modules crisp, no blur filtering
+                }
+            }
         }
 
         Kirigami.Separator { Layout.fillWidth: true; visible: !page.loggedIn }

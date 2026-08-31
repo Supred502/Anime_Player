@@ -8,6 +8,8 @@ dependencies = [
     "httpx",
     "python-mpv",
     "keyring",
+    "qrcode",
+    "Pillow",
 ]
 
 [project.optional-dependencies]
