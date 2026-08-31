@@ -1,0 +1,24 @@
+[project]
+name = "animeplayer"
+version = "0.1.0"
+description = "KDE-native anime player with AniList sync, powered by the same public backend ani-cli uses"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6",
+    "httpx",
+    "python-mpv",
+    "keyring",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "respx"]
+
+[project.scripts]
+animeplayer = "animeplayer.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["animeplayer*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
