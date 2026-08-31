@@ -98,6 +98,42 @@ def test_command_with_valid_token_dispatches(server):
     assert server.commands == [("seek", 5)]
 
 
+def test_pairing_calls_on_new_token(tmp_path):
+    seen = []
+    srv = RemoteServer(
+        state_provider=lambda: {},
+        command_handler=lambda cmd, args: None,
+        port=18789,
+        on_new_token=seen.append,
+    )
+    srv.start()
+    try:
+        _, pair_data = _post(srv, "/api/pair", {"pin": srv.pin})
+        assert seen == [pair_data["token"]]
+    finally:
+        srv.stop()
+
+
+def test_preloaded_token_works_without_repairing(tmp_path):
+    # A previously-paired phone's saved token should keep working across a PC
+    # app restart -- Backend reloads persisted tokens and passes them in here
+    # rather than starting every RemoteServer with an empty token set.
+    srv = RemoteServer(
+        state_provider=lambda: {},
+        command_handler=lambda cmd, args: None,
+        port=18790,
+        initial_tokens={"already-paired-token"},
+    )
+    srv.start()
+    try:
+        status, data = _post(
+            srv, "/api/command", {"token": "already-paired-token", "cmd": "play_pause"}
+        )
+        assert data["ok"] is True
+    finally:
+        srv.stop()
+
+
 def test_apk_download_serves_file_bytes(server):
     with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/app.apk", timeout=5) as resp:
         assert resp.status == 200

@@ -8,6 +8,7 @@ safe to call directly from worker threads too -- see storage/db.py.
 
 from __future__ import annotations
 
+import json
 import re
 import socket
 import tempfile
@@ -163,6 +164,12 @@ class Backend(QObject):
             "title": None, "episode_number": 0, "position": 0.0, "duration": 0.0, "paused": True,
         }
         self._remote_server: RemoteServer | None = None
+        # Auto-start the phone remote on launch, unless the user explicitly
+        # turned it off last time via the Settings Stop button -- requested
+        # so "open the anime, then open the phone app" needs zero manual
+        # steps in between (no visiting Settings to click Start each time).
+        if (self._db.get_setting("remote_enabled") or "true") == "true":
+            self.startRemoteServer()
 
     def shutdown(self) -> None:
         if self._remote_server is not None:
@@ -654,6 +661,24 @@ class Backend(QObject):
         # two different home-list item shapes and Main.qml's handler.
         self.remoteCommand.emit(cmd, args)
 
+    def _load_remote_tokens(self) -> set[str]:
+        raw = self._db.get_setting("remote_tokens")
+        if not raw:
+            return set()
+        try:
+            return set(json.loads(raw))
+        except ValueError:
+            return set()
+
+    def _persist_remote_token(self, token: str) -> None:
+        # Called from RemoteServer's HTTP thread (a pairing request), so this
+        # must only touch self._db, which is safe from any thread -- see the
+        # module docstring. Kept as a full replace-the-list write rather than
+        # append-in-SQL since the settings table is a plain string blob.
+        tokens = self._load_remote_tokens()
+        tokens.add(token)
+        self._db.set_setting("remote_tokens", json.dumps(sorted(tokens)))
+
     @Slot(result=bool)
     def isRemoteServerRunning(self) -> bool:
         return self._remote_server is not None and self._remote_server.running
@@ -662,13 +687,21 @@ class Backend(QObject):
     def startRemoteServer(self) -> None:
         if self._remote_server is None:
             apk_path = _REMOTE_APK_PATH if _REMOTE_APK_PATH.is_file() else None
-            self._remote_server = RemoteServer(self._remote_state, self._remote_command, apk_path=apk_path)
+            self._remote_server = RemoteServer(
+                self._remote_state,
+                self._remote_command,
+                apk_path=apk_path,
+                initial_tokens=self._load_remote_tokens(),
+                on_new_token=self._persist_remote_token,
+            )
         self._remote_server.start()
+        self._db.set_setting("remote_enabled", "true")
 
     @Slot()
     def stopRemoteServer(self) -> None:
         if self._remote_server is not None:
             self._remote_server.stop()
+        self._db.set_setting("remote_enabled", "false")
 
     @Slot(result=str)
     def getRemotePin(self) -> str:

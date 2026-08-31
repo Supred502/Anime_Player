@@ -388,12 +388,27 @@ Kirigami.Page {
         }
 
         RowLayout {
+            Layout.fillWidth: true
             Controls.Button {
                 icon.name: video.paused ? "media-playback-start" : "media-playback-pause"
                 onClicked: video.togglePause()
             }
             Controls.Label {
                 text: page.formatTime(video.position) + " / " + page.formatTime(video.duration)
+            }
+            Item { Layout.fillWidth: true }
+            // Manual fallback for whenever Aniskip has no (or wrong) timing
+            // data for an episode -- 85s approximates a typical OP/ED length,
+            // close enough to land past most intros/outros in one tap.
+            Controls.Button {
+                text: "« 85s"
+                icon.name: "media-seek-backward-symbolic"
+                onClicked: page.seekRelative(-85)
+            }
+            Controls.Button {
+                text: "85s »"
+                icon.name: "media-seek-forward-symbolic"
+                onClicked: page.seekRelative(85)
             }
         }
     }

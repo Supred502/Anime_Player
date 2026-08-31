@@ -113,6 +113,10 @@ _REMOTE_PAGE = """<!doctype html>
         <button onclick="cmd('skip_outro')">Skip Outro</button>
       </div>
       <div class="grid2">
+        <button onclick="cmd('seek', -85)">« 85s</button>
+        <button onclick="cmd('seek', 85)">85s »</button>
+      </div>
+      <div class="grid2">
         <button onclick="cmd('volume', -10)">🔉 Vol -</button>
         <button onclick="cmd('volume', 10)">🔊 Vol +</button>
       </div>
@@ -180,7 +184,18 @@ async function cmd(name, args) {
       body: JSON.stringify({token, cmd: name, args: args === undefined ? null : args})
     });
     const data = await resp.json();
-    if (!data.ok) toast(data.error || 'Command failed');
+    if (!data.ok) {
+      toast(data.error || 'Command failed');
+      // A token the server no longer recognizes (e.g. its DB was reset)
+      // -- drop it and fall back to the PIN screen instead of silently
+      // failing every button press forever.
+      if (data.error && data.error.indexOf('Not paired') !== -1) {
+        token = null;
+        localStorage.removeItem('remoteToken');
+        document.getElementById('app').classList.add('hidden');
+        document.getElementById('pairBox').classList.remove('hidden');
+      }
+    }
   } catch (e) { toast('Could not reach PC'); }
 }
 
@@ -262,10 +277,18 @@ class RemoteServer:
         command_handler: Callable[[str, Any], None],
         port: int = 8787,
         apk_path: Path | None = None,
+        initial_tokens: set[str] | None = None,
+        on_new_token: Callable[[str], None] | None = None,
     ) -> None:
         self._state_provider = state_provider
         self._command_handler = command_handler
         self._port = port
+        # Pairing tokens are handed back to the caller (Backend persists them
+        # to the local DB) and can be preloaded here on the next launch --
+        # otherwise every PC-app restart would wipe the in-memory token set
+        # and force re-entering the PIN on a phone that already paired once,
+        # which is exactly the friction this was built to avoid.
+        self._on_new_token = on_new_token
         # Serving the remote app's APK from this same LAN server -- rather
         # than only from the GitHub release -- turned out to matter in
         # practice: a mobile browser downloading straight from GitHub's
@@ -275,7 +298,7 @@ class RemoteServer:
         # quirk. See /app.apk in do_GET below.
         self._apk_path = apk_path
         self.pin = _generate_pin()
-        self._tokens: set[str] = set()
+        self._tokens: set[str] = set(initial_tokens) if initial_tokens else set()
         self._lock = threading.Lock()
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -393,6 +416,8 @@ class RemoteServer:
                         token = "".join(random.choices(string.ascii_letters + string.digits, k=24))
                         with server._lock:
                             server._tokens.add(token)
+                        if server._on_new_token is not None:
+                            server._on_new_token(token)
                         self._send_json(200, {"ok": True, "token": token})
                     else:
                         self._send_json(200, {"ok": False, "error": "Wrong PIN"})
