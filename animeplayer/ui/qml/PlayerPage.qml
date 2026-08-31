@@ -19,6 +19,7 @@ Kirigami.Page {
     property bool controlsVisible: true
     property bool isFullscreen: false
     property bool stalled: false // stream loaded but no frames arrived after a real wait -- offer a retry instead of spinning forever
+    property bool autoRetried: false // one silent fresh-resolve retry before bothering the user with a Retry button
 
     // Intro/outro auto-skip (Aniskip) + auto-next-episode
     property var skipOp: null   // {start, end} in seconds, or null if unknown/none for this episode
@@ -55,9 +56,14 @@ Kirigami.Page {
         page.startLoad()
     }
 
-    function startLoad() {
+    function startLoad(resetAutoRetry) {
+        // resetAutoRetry defaults to true (a genuinely fresh attempt -- initial
+        // load or the user's own manual Retry click); the one silent internal
+        // auto-retry in onPlaybackError below passes false so it can't loop
+        // forever retrying the same dead stream.
         page.loadingStream = true
         page.stalled = false
+        if (resetAutoRetry !== false) page.autoRetried = false
         stallTimer.restart()
         backend.loadStream(episodeId, episodeNumber, dub)
     }
@@ -149,6 +155,7 @@ Kirigami.Page {
             page.skipEd = null
             page.opAutoSkipped = false
             page.edAutoSkipped = false
+            page.autoRetried = false
             stallTimer.restart()
         }
         function onNoNextEpisode() {
@@ -245,6 +252,19 @@ Kirigami.Page {
         }
         onDurationChanged: (value) => { if (value > 0) { page.stalled = false; stallTimer.stop() } }
         onPlaybackError: (message) => {
+            // Never-successfully-started errors (dead/expired link, transient
+            // anidb.app hiccup) are common enough to be worth one silent
+            // fresh re-resolve before bothering the user with the manual
+            // Retry button -- confirmed live that re-resolving the exact
+            // same episode/quality moments later can just work. Errors after
+            // playback already started (a mid-episode hiccup) skip straight
+            // to the toast instead, since a full reload there would be more
+            // disruptive than helpful.
+            if (!page.autoRetried && video.position <= 0 && video.duration <= 0) {
+                page.autoRetried = true
+                page.startLoad(false)
+                return
+            }
             page.stalled = true
             showPassiveNotification("Playback error: " + message)
         }
