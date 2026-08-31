@@ -15,6 +15,20 @@ Kirigami.ScrollablePage {
     property bool hasMore: false
     property string recommendationsMessage: ""
 
+    // Exposed as aliases (not just bare ids) since FilterPage.qml -- a
+    // separate file, pushed with owner: page -- reads these directly as
+    // page.genreModel etc. A plain id declared here is only visible to code
+    // inside *this* file; without the alias, FilterPage's Repeaters silently
+    // bound to undefined and rendered no chips at all (confirmed live: the
+    // header Filters(N) count updated correctly since cycleGenre() etc. are
+    // real functions on this page and update the ids just fine internally,
+    // but the Repeater delegates FilterPage tried to read them through never
+    // showed anything).
+    property alias genreModel: genreModel
+    property alias tagModel: tagModel
+    property alias statusModel: statusModel
+    property alias formatModel: formatModel
+
     ListModel { id: resultsModel }
     ListModel { id: genreModel }   // {name, state} -- state: 0 neutral, 1 include, 2 exclude
     ListModel { id: tagModel }     // {name, state}, filtered view of allTags
@@ -229,7 +243,7 @@ Kirigami.ScrollablePage {
         Controls.Button {
             text: page.activeFilterCount() > 0 ? "Filters (" + page.activeFilterCount() + ")" : "Filters"
             icon.name: "view-filter-symbolic"
-            onClicked: filterSheet.open()
+            onClicked: applicationWindow().pageStack.push(Qt.resolvedUrl("FilterPage.qml"), { owner: page })
         }
         Controls.Button {
             text: "Search"
@@ -285,250 +299,6 @@ Kirigami.ScrollablePage {
             queryField.text, g.include, g.exclude, t.include, t.exclude,
             s.include, s.exclude, f.include, f.exclude, page.resultPage + 1
         )
-    }
-
-    Kirigami.OverlaySheet {
-        id: filterSheet
-        title: "Filter by genre / tags"
-
-        // A plain Item, not the ColumnLayout itself, is what gets a forced
-        // width/height -- ColumnLayout is meant to receive its geometry FROM
-        // a parent (that's what makes Layout.fillHeight children inside it
-        // redistribute correctly); self-assigning height directly on a
-        // ColumnLayout didn't trigger that redistribution; the Tags
-        // ScrollView still rendered at its full unwrapped size regardless
-        // (confirmed live: filterColumn.height read back correctly as the
-        // capped value, but children still visually overflowed past it).
-        // anchors.fill here is genuine parent-imposed sizing instead.
-        Item {
-            id: filterBox
-            // Kirigami.OverlaySheet's own source (templates/OverlaySheet.qml)
-            // computes its width/height from Layout.preferredWidth/Height on
-            // this content item FIRST, only falling back to implicitWidth/
-            // Height if those are unset -- Layout.preferredWidth is
-            // authoritative and doesn't depend on any child content state.
-            Layout.preferredWidth: Math.min(820, applicationWindow().width - Kirigami.Units.gridUnit * 4)
-            implicitWidth: Layout.preferredWidth
-            width: Layout.preferredWidth
-            // Also capping the height the same way, for the opposite reason:
-            // OverlaySheet wraps ALL of this content in one big Flickable of
-            // its own, so if the natural (unwrapped) height of everything
-            // below exceeds the window, the WHOLE sheet scrolls as one lump --
-            // genres, tags, my list, buttons all sliding out of view together.
-            // Bounding the sheet's own height to the window and giving only
-            // the Tags ScrollView Layout.fillHeight below means the outer
-            // sheet never needs to scroll at all; only Tags does, internally.
-            // OverlaySheet caps its own actual popup height to fit the window
-            // regardless of what's requested here. Genres/Format/My List
-            // consistently render fully visible without any scrolling in
-            // testing (the "2 chips per row" / too-narrow bug is what this
-            // was really about); on short windows, reaching the tail of Tags
-            // and the Clear/Apply row can still take a scroll of the sheet
-            // itself rather than only Tags scrolling -- an acceptable
-            // fallback given OverlaySheet's own scrolling handles it either way.
-            Layout.preferredHeight: Math.min(720, applicationWindow().height - Kirigami.Units.gridUnit * 4)
-            implicitHeight: Layout.preferredHeight
-            height: Layout.preferredHeight
-            clip: true
-
-        ColumnLayout {
-            id: filterColumn
-            anchors.fill: parent
-            spacing: Kirigami.Units.largeSpacing
-
-            // Layout.fillHeight on the Tags ScrollView below (letting it take
-            // "whatever's left") turned out not to work through this nesting --
-            // confirmed live that a *fixed* Layout.preferredHeight number does
-            // correctly bound and scroll it, but Layout.fillHeight left it
-            // rendering at its full unwrapped size regardless of filterColumn's
-            // own (correctly-bounded) height. So instead of relying on
-            // fillHeight redistribution, everything except the Tags scroll box
-            // and the bottom buttons is grouped here so its combined
-            // implicitHeight can be measured directly, and the Tags box is
-            // given an explicit computed height: whatever's left over. See the
-            // Layout.preferredHeight binding on the ScrollView below.
-            ColumnLayout {
-                id: nonScrollSection
-                Layout.fillWidth: true
-                spacing: filterColumn.spacing
-
-                Controls.Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    opacity: 0.7
-                    text: "Click once to require a genre/tag, click again to exclude it, click a third time to clear it."
-                }
-
-                Kirigami.Heading {
-                    level: 3
-                    text: "Genres"
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
-                    Repeater {
-                        model: genreModel
-                        delegate: FilterChip {
-                            required property int index
-                            required property var model
-                            text: model.name
-                            state3: model.state
-                            onClicked: page.cycleGenre(index)
-                        }
-                    }
-                }
-
-                Kirigami.Heading {
-                    level: 3
-                    text: "Format"
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
-                    Repeater {
-                        model: formatModel
-                        delegate: FilterChip {
-                            required property int index
-                            required property var model
-                            text: model.name
-                            state3: model.state
-                            onClicked: page.cycleFormat(index)
-                        }
-                    }
-                }
-
-                Kirigami.Heading {
-                    level: 3
-                    text: "My List"
-                }
-                Controls.Label {
-                    Layout.fillWidth: true
-                    wrapMode: Text.WordWrap
-                    opacity: 0.7
-                    text: "Include to show only that status, exclude to hide it -- e.g. exclude Completed, or include only Planning."
-                }
-                Flow {
-                    Layout.fillWidth: true
-                    spacing: Kirigami.Units.smallSpacing
-                    Repeater {
-                        model: statusModel
-                        delegate: FilterChip {
-                            required property int index
-                            required property var model
-                            text: model.name
-                            state3: model.state
-                            onClicked: page.cycleStatus(index)
-                        }
-                    }
-                }
-
-                Kirigami.Heading {
-                    level: 3
-                    text: "Tags"
-                }
-                Controls.TextField {
-                    Layout.fillWidth: true
-                    placeholderText: "Filter tags (e.g. \"Time Skip\", \"Isekai\")..."
-                    onTextChanged: page.applyTagFilterText(text)
-                }
-            }
-
-            Controls.ScrollView {
-                Layout.fillWidth: true
-                // A fixed height, not one computed from sibling implicitHeight:
-                // that adaptive version measured nonScrollSection too early/
-                // unreliably in practice (confirmed live across several
-                // attempts -- the Clear/Apply row kept landing outside the
-                // visible area regardless of added safety margins). A modest
-                // fixed height is exactly what worked before this section
-                // grew a Format/My List group -- still bounded and internally
-                // scrollable, just not perfectly adaptive to window size.
-                Layout.preferredHeight: 280
-                Flow {
-                    // width: parent.width was circular here -- ScrollView auto-wraps
-                    // a non-Flickable child (this Flow) in its own implicit Flickable,
-                    // whose contentWidth is itself derived from the Flow's content.
-                    // When a tag-filter keystroke shrank the Flow to 1-2 chips, that
-                    // Flickable settled at a small contentWidth and didn't reliably
-                    // grow back once the Flow repopulated -- same trap as the
-                    // DetailPage page-button Flow fixed earlier. Anchoring to the
-                    // outer ColumnLayout (a stable, externally-driven width) instead
-                    // of parent breaks the loop.
-                    width: filterColumn.width
-                    spacing: Kirigami.Units.smallSpacing
-                    Repeater {
-                        model: tagModel
-                        delegate: FilterChip {
-                            required property int index
-                            required property var model
-                            text: model.name
-                            state3: model.state
-                            onClicked: page.cycleTag(index)
-                        }
-                    }
-                }
-            }
-
-            RowLayout {
-                id: buttonsRow
-                Layout.fillWidth: true
-                Controls.Button {
-                    text: "Clear all"
-                    onClicked: {
-                        for (let i = 0; i < genreModel.count; i++) genreModel.setProperty(i, "state", 0)
-                        for (let i = 0; i < tagModel.count; i++) tagModel.setProperty(i, "state", 0)
-                        for (let i = 0; i < statusModel.count; i++) statusModel.setProperty(i, "state", 0)
-                        for (let i = 0; i < formatModel.count; i++) formatModel.setProperty(i, "state", 0)
-                        page.tagStates = ({})
-                    }
-                }
-                Item { Layout.fillWidth: true }
-                Controls.Button {
-                    text: "Apply"
-                    icon.name: "dialog-ok-apply-symbolic"
-                    onClicked: {
-                        filterSheet.close()
-                        page.doSearch()
-                    }
-                }
-            }
-        }
-        }
-    }
-
-    // A tri-state chip: neutral (outline) -> include (green, check) -> exclude
-    // (red, cross) -> back to neutral. Plain Controls.CheckBox only has two
-    // states, so this is a small custom button instead.
-    component FilterChip: Controls.Button {
-        id: chip
-        property int state3: 0 // 0 neutral, 1 include, 2 exclude
-        Layout.alignment: Qt.AlignVCenter
-        background: Rectangle {
-            radius: height / 2
-            border.width: 1
-            border.color: chip.state3 === 1 ? Kirigami.Theme.positiveTextColor
-                : chip.state3 === 2 ? Kirigami.Theme.negativeTextColor
-                : Kirigami.Theme.disabledTextColor
-            color: chip.state3 === 1 ? Qt.rgba(Kirigami.Theme.positiveTextColor.r, Kirigami.Theme.positiveTextColor.g, Kirigami.Theme.positiveTextColor.b, 0.18)
-                : chip.state3 === 2 ? Qt.rgba(Kirigami.Theme.negativeTextColor.r, Kirigami.Theme.negativeTextColor.g, Kirigami.Theme.negativeTextColor.b, 0.18)
-                : "transparent"
-        }
-        contentItem: RowLayout {
-            spacing: Kirigami.Units.smallSpacing
-            Kirigami.Icon {
-                visible: chip.state3 !== 0
-                source: chip.state3 === 1 ? "dialog-ok-apply-symbolic" : (chip.state3 === 2 ? "dialog-cancel-symbolic" : "")
-                implicitWidth: Kirigami.Units.iconSizes.small
-                implicitHeight: Kirigami.Units.iconSizes.small
-                color: chip.state3 === 1 ? Kirigami.Theme.positiveTextColor : Kirigami.Theme.negativeTextColor
-            }
-            Controls.Label {
-                text: chip.text
-                color: chip.state3 === 1 ? Kirigami.Theme.positiveTextColor
-                    : chip.state3 === 2 ? Kirigami.Theme.negativeTextColor
-                    : Kirigami.Theme.textColor
-            }
-        }
     }
 
     // GridView (a real Flickable) instead of GridLayout+Repeater: Kirigami.ScrollablePage

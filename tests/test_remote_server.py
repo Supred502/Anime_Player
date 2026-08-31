@@ -1,5 +1,7 @@
 import json
+import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -7,13 +9,16 @@ from animeplayer.remote.server import RemoteServer
 
 
 @pytest.fixture
-def server():
+def server(tmp_path):
     commands = []
+    fake_apk = tmp_path / "AnimePlayerRemote.apk"
+    fake_apk.write_bytes(b"fake apk bytes")
     srv = RemoteServer(
         state_provider=lambda: {"title": "Test Anime", "episode_number": 3, "position": 10.0,
                                  "duration": 100.0, "paused": False, "home": []},
         command_handler=lambda cmd, args: commands.append((cmd, args)),
         port=0,
+        apk_path=fake_apk,
     )
     # port=0 would let the OS pick a free port, but ThreadingHTTPServer needs
     # the actual bound port back out -- start() binds it, then read it off
@@ -21,6 +26,20 @@ def server():
     srv._port = 18787
     srv.start()
     srv.commands = commands
+    srv.fake_apk_bytes = b"fake apk bytes"
+    yield srv
+    srv.stop()
+
+
+@pytest.fixture
+def server_no_apk():
+    srv = RemoteServer(
+        state_provider=lambda: {},
+        command_handler=lambda cmd, args: None,
+        port=18788,
+        apk_path=None,
+    )
+    srv.start()
     yield srv
     srv.stop()
 
@@ -76,3 +95,16 @@ def test_command_with_valid_token_dispatches(server):
     status, data = _post(server, "/api/command", {"token": token, "cmd": "seek", "args": 5})
     assert data["ok"] is True
     assert server.commands == [("seek", 5)]
+
+
+def test_apk_download_serves_file_bytes(server):
+    with urllib.request.urlopen(f"http://127.0.0.1:{server.port}/app.apk", timeout=5) as resp:
+        assert resp.status == 200
+        assert resp.headers["Content-Type"] == "application/vnd.android.package-archive"
+        assert resp.read() == server.fake_apk_bytes
+
+
+def test_apk_download_404s_when_not_built(server_no_apk):
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        urllib.request.urlopen(f"http://127.0.0.1:{server_no_apk.port}/app.apk", timeout=5)
+    assert exc_info.value.code == 404

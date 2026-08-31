@@ -21,6 +21,7 @@ import random
 import string
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Callable
 
 _REMOTE_PAGE = """<!doctype html>
@@ -260,10 +261,19 @@ class RemoteServer:
         state_provider: Callable[[], dict[str, Any]],
         command_handler: Callable[[str, Any], None],
         port: int = 8787,
+        apk_path: Path | None = None,
     ) -> None:
         self._state_provider = state_provider
         self._command_handler = command_handler
         self._port = port
+        # Serving the remote app's APK from this same LAN server -- rather
+        # than only from the GitHub release -- turned out to matter in
+        # practice: a mobile browser downloading straight from GitHub's
+        # release-asset redirect chain reported the download as stuck at
+        # 100% and never actually installed. A same-origin, single-hop
+        # download over the LAN sidesteps that whole class of redirect/CDN
+        # quirk. See /app.apk in do_GET below.
+        self._apk_path = apk_path
         self.pin = _generate_pin()
         self._tokens: set[str] = set()
         self._lock = threading.Lock()
@@ -315,6 +325,17 @@ class RemoteServer:
                     self.wfile.write(body)
                 elif self.path == "/api/state":
                     self._send_json(200, server._state_provider())
+                elif self.path == "/app.apk":
+                    if server._apk_path is None or not server._apk_path.is_file():
+                        self._send_json(404, {"error": "APK not built on this machine"})
+                        return
+                    data = server._apk_path.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/vnd.android.package-archive")
+                    self.send_header("Content-Disposition", 'attachment; filename="AnimePlayerRemote.apk"')
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
                 else:
                     self._send_json(404, {"error": "not found"})
 

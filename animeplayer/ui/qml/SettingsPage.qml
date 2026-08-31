@@ -19,6 +19,7 @@ Kirigami.ScrollablePage {
         skipFinalToggle.checked = backend.getSkipFinalEpisodeEnabled()
         autoNextToggle.checked = backend.getAutoNextEnabled()
         page.remoteRunning = backend.isRemoteServerRunning()
+        qrImage.source = backend.getRemoteApkQrPath()
     }
 
     Connections {
@@ -106,6 +107,12 @@ Kirigami.ScrollablePage {
                         if (page.remoteRunning) backend.stopRemoteServer()
                         else backend.startRemoteServer()
                         page.remoteRunning = backend.isRemoteServerRunning()
+                        // The QR's target URL depends on whether the server is
+                        // running (LAN download vs GitHub fallback) -- getRemoteApkQrPath()
+                        // has no NOTIFY signal, so re-point the Image explicitly
+                        // instead of relying on a binding to pick up the change.
+                        qrImage.source = ""
+                        qrImage.source = backend.getRemoteApkQrPath()
                     }
                 }
                 Controls.Label {
@@ -147,7 +154,7 @@ Kirigami.ScrollablePage {
                     text: "Scan with your phone's camera to install the Android remote app, then open it and enter the address and PIN above."
                 }
                 Image {
-                    source: backend.getRemoteApkQrPath()
+                    id: qrImage
                     sourceSize.width: 220
                     sourceSize.height: 220
                     smooth: false // keep QR modules crisp, no blur filtering

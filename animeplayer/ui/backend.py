@@ -30,9 +30,15 @@ from animeplayer.storage import secrets
 from animeplayer.storage.db import AniDBMapping, AniListStatus, Database
 
 # The Android remote app is a thin WebView shell (see android-remote/) around
-# the same page RemoteServer already serves -- this is its GitHub release
-# asset, built by android-remote/build.sh and uploaded manually per release.
+# the same page RemoteServer already serves. Also published as a GitHub
+# release asset (built by android-remote/build.sh), but that's kept only as
+# an off-LAN fallback link now -- a phone browser downloading straight from
+# GitHub's release-asset redirect chain reported the download stuck at 100%
+# and never installed, confirmed live. RemoteServer serving the same file
+# directly (see _apk_path below) is a same-origin, single-hop download that
+# doesn't have that problem, and is what the QR code actually points at.
 _REMOTE_APK_URL = "https://github.com/Supred502/Anime_Player/releases/download/v1.0-remote/AnimePlayerRemote.apk"
+_REMOTE_APK_PATH = Path(__file__).resolve().parent.parent.parent / "android-remote" / "build" / "AnimePlayerRemote.apk"
 
 
 def _lan_ip() -> str:
@@ -655,7 +661,8 @@ class Backend(QObject):
     @Slot()
     def startRemoteServer(self) -> None:
         if self._remote_server is None:
-            self._remote_server = RemoteServer(self._remote_state, self._remote_command)
+            apk_path = _REMOTE_APK_PATH if _REMOTE_APK_PATH.is_file() else None
+            self._remote_server = RemoteServer(self._remote_state, self._remote_command, apk_path=apk_path)
         self._remote_server.start()
 
     @Slot()
@@ -675,13 +682,20 @@ class Backend(QObject):
 
     @Slot(result=str)
     def getRemoteApkQrPath(self) -> str:
-        """A QR code pointing at the Android remote app's GitHub release --
-        scan it to download+install the APK directly, no typing needed. The
-        URL never changes (a fixed release asset), so this is generated once
-        and reused rather than redone on every Settings page load."""
+        """A QR code pointing at the Android remote app -- scan it to
+        download+install the APK directly, no typing needed. Prefers this
+        machine's own LAN download (see RemoteServer's /app.apk and the
+        comment on _REMOTE_APK_PATH above) over the GitHub release link,
+        which a phone browser reported as downloading but never installing.
+        The LAN link needs the remote server running and its content depends
+        on this machine's IP, so it's regenerated on every call rather than
+        cached like the old GitHub-URL version was -- QR generation is cheap."""
+        if self._remote_server is not None and self._remote_server.running and _REMOTE_APK_PATH.is_file():
+            url = f"http://{_lan_ip()}:{self._remote_server.port}/app.apk"
+        else:
+            url = _REMOTE_APK_URL
         path = Path(tempfile.gettempdir()) / "animeplayer_remote_apk_qr.png"
-        if not path.exists():
-            qrcode.make(_REMOTE_APK_URL).save(str(path))
+        qrcode.make(url).save(str(path))
         return path.as_uri()
 
     @Slot(str)
