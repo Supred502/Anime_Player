@@ -16,6 +16,22 @@ Kirigami.ScrollablePage {
         backend.refreshAnilistHomeLists()
     }
 
+    function openAnime(entry) {
+        applicationWindow().pageStack.push(
+            Qt.resolvedUrl("DetailPage.qml"),
+            {
+                anime: {
+                    slug_id: entry.slug_id,
+                    numeric_id: entry.numeric_id,
+                    title: entry.title,
+                    poster_url: entry.poster_url || "",
+                    kind: entry.kind || "",
+                    rating: entry.rating || ""
+                }
+            }
+        )
+    }
+
     Connections {
         target: backend
         function onContinueWatchingChanged(entries) {
@@ -30,38 +46,29 @@ Kirigami.ScrollablePage {
             planningModel.clear()
             for (let i = 0; i < entries.length; i++) planningModel.append(entries[i])
         }
-        function onAnilistAnimeResolved(result) {
-            applicationWindow().pageStack.push(
-                Qt.resolvedUrl("DetailPage.qml"),
-                {
-                    anime: {
-                        slug_id: result.slug_id,
-                        numeric_id: result.numeric_id,
-                        title: result.title,
-                        poster_url: result.poster_url,
-                        kind: result.kind,
-                        rating: ""
-                    }
-                }
-            )
-        }
+        function onAnilistAnimeResolved(result) { page.openAnime(result) }
         function onAnilistAnimeResolveFailed(title) {
             showPassiveNotification("Couldn't find a stream for \"" + title + "\"")
         }
+        function onAnilistAnimeResolveErrored(message) {
+            showPassiveNotification("Couldn't reach the streaming source: " + message)
+        }
     }
 
-    // Shared card-grid section (poster + title + subtitle). A plain manual
-    // layout rather than Kirigami.Card -- Card's banner+contentItem composition
-    // doesn't respect explicit sizing in this Kirigami version (see SearchPage.qml).
+    // Shared card-grid section. A plain manual layout rather than
+    // Kirigami.Card -- Card's banner+contentItem composition doesn't respect
+    // explicit sizing in this Kirigami version (see SearchPage.qml).
     component Section: ColumnLayout {
         id: root
         property alias model: repeater.model
         property string heading
-        property string subtitleRole: "episode_number" // model role shown under the title
-        property string subtitlePrefix: "Episode "
         signal cardClicked(int index)
+        // Filled in per row -- each row describes a different kind of entry,
+        // so the card text comes from the section rather than from one
+        // hardcoded model role.
+        property var subtitleFor: (entry) => ""
+        property var fractionFor: (entry) => 0
 
-        Layout.fillWidth: true
         visible: repeater.count > 0
         spacing: Kirigami.Units.smallSpacing
 
@@ -73,91 +80,69 @@ Kirigami.ScrollablePage {
         GridLayout {
             id: sectionGrid
             Layout.fillWidth: true
-            readonly property int idealCellWidth: 220
-            columns: Math.max(1, Math.floor(page.width / idealCellWidth))
-            // Cards stretch to exactly fill the row (accounting for the gaps
-            // between them) instead of leaving unused space on the right.
-            readonly property real cellWidth: (page.width - (columns - 1) * columnSpacing) / columns
+            readonly property int idealCellWidth: Kirigami.Units.gridUnit * 11
+            // page.availableWidth, not page.width: the page is wider than the
+            // area its content actually gets (padding plus the scrollbar), and
+            // measuring the page itself pushed the last column of every row
+            // off the right edge. Not this layout's own width either -- that
+            // is derived from these cells, so reading it here would be
+            // circular, and the grid settled at one column per row.
+            columns: Math.max(1, Math.floor(page.availableWidth / idealCellWidth))
+            readonly property real cellWidth: (page.availableWidth - (columns - 1) * columnSpacing) / columns
             rowSpacing: Kirigami.Units.largeSpacing
             columnSpacing: Kirigami.Units.largeSpacing
 
             Repeater {
                 id: repeater
-                delegate: ColumnLayout {
+                delegate: AnimeCard {
                     required property int index
                     required property var model
+
                     Layout.preferredWidth: sectionGrid.cellWidth
-                    spacing: Kirigami.Units.smallSpacing
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 260
-                        radius: 4
-                        clip: true
-                        color: Kirigami.Theme.alternateBackgroundColor
-
-                        Image {
-                            anchors.fill: parent
-                            source: model.poster_url
-                            fillMode: Image.PreserveAspectCrop
-                            asynchronous: true
-                        }
-
-                        MouseArea {
-                            anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: root.cardClicked(index)
-                        }
-                    }
-
-                    Controls.Label {
-                        Layout.fillWidth: true
-                        text: model.title
-                        wrapMode: Text.WordWrap
-                        font.bold: true
-                        maximumLineCount: 2
-                        elide: Text.ElideRight
-                    }
-                    Controls.Label {
-                        Layout.fillWidth: true
-                        text: root.subtitlePrefix + model[root.subtitleRole]
-                        opacity: 0.7
-                    }
+                    // Measured from the column width, not from this card's own
+                    // width -- see AnimeCard's note on heightForWidth.
+                    Layout.preferredHeight: heightForWidth(sectionGrid.cellWidth)
+                    posterUrl: model.poster_url || ""
+                    title: model.title
+                    subtitle: root.subtitleFor(model)
+                    watchedFraction: root.fractionFor(model)
+                    onClicked: root.cardClicked(index)
                 }
             }
         }
     }
 
     ColumnLayout {
-        width: page.width
-        spacing: Kirigami.Units.largeSpacing
+        id: contentColumn
+        width: page.availableWidth
+        spacing: Kirigami.Units.largeSpacing * 2
 
         Section {
+            // Set here rather than inside the Section declaration: an inline
+            // component's own Layout.fillWidth doesn't reach its instances,
+            // which left every row sized to the width of its heading text.
+            Layout.fillWidth: true
             heading: "Continue Watching"
             model: continueModel
-            subtitleRole: "episode_number"
-            onCardClicked: (index) => {
-                let entry = continueModel.get(index)
-                applicationWindow().pageStack.push(
-                    Qt.resolvedUrl("DetailPage.qml"),
-                    {
-                        anime: {
-                            slug_id: entry.slug_id,
-                            numeric_id: entry.numeric_id,
-                            title: entry.title,
-                            poster_url: entry.poster_url,
-                            kind: "",
-                            rating: ""
-                        }
-                    }
-                )
-            }
+            subtitleFor: (entry) => "Episode " + entry.episode_number
+            // The poster's resume bar needs a fraction, and an entry whose
+            // duration was never recorded would otherwise divide by zero.
+            fractionFor: (entry) => entry.duration_seconds > 0
+                ? entry.position_seconds / entry.duration_seconds : 0
+            onCardClicked: (index) => page.openAnime(continueModel.get(index))
         }
 
         Section {
+            // Set here rather than inside the Section declaration: an inline
+            // component's own Layout.fillWidth doesn't reach its instances,
+            // which left every row sized to the width of its heading text.
+            Layout.fillWidth: true
             heading: "Watching"
             model: watchingModel
-            subtitleRole: "progress"
+            // "Episode 0" was what an unstarted entry used to read as, which
+            // says the opposite of what it means.
+            subtitleFor: (entry) => entry.progress > 0 ? "Episode " + entry.progress + " watched"
+                                                       : "Not started yet"
             onCardClicked: (index) => {
                 let entry = watchingModel.get(index)
                 backend.openAnilistAnime(entry.anilist_id, entry.title)
@@ -165,10 +150,15 @@ Kirigami.ScrollablePage {
         }
 
         Section {
+            // Set here rather than inside the Section declaration: an inline
+            // component's own Layout.fillWidth doesn't reach its instances,
+            // which left every row sized to the width of its heading text.
+            Layout.fillWidth: true
             heading: "Planning to Watch"
             model: planningModel
-            subtitleRole: "progress"
-            subtitlePrefix: ""
+            // Every entry in this row has progress 0 by definition, so the
+            // old subtitle was a column of bare "0"s.
+            subtitleFor: (entry) => "On your plan-to-watch list"
             onCardClicked: (index) => {
                 let entry = planningModel.get(index)
                 backend.openAnilistAnime(entry.anilist_id, entry.title)

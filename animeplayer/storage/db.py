@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS settings (
     value TEXT NOT NULL
 );
 
--- Caches anidb.app title -> AniList media id lookups (matcher.py). anilist_id
+-- Caches source title -> AniList media id lookups (matcher.py). anilist_id
 -- is nullable: a row with NULL means "looked up, no confident match found",
 -- distinct from no row at all ("never looked up").
 CREATE TABLE IF NOT EXISTS title_map (
@@ -56,9 +56,10 @@ CREATE TABLE IF NOT EXISTS anilist_list (
     cover_url  TEXT
 );
 
--- Caches AniList media id -> anidb.app search result (the reverse of
--- title_map), so clicking a Home-page AniList card doesn't re-search anidb.app
--- every time. slug_id NULL means "looked up, no confident match found".
+-- Caches AniList media id -> streaming-source search result (the reverse of
+-- title_map), so clicking a Home-page AniList card doesn't re-search the
+-- source every time. slug_id NULL means "looked up, no confident match found".
+-- Source-specific: see clear_anidb_mappings, called when the backend changes.
 CREATE TABLE IF NOT EXISTS anidb_map (
     anilist_id INTEGER PRIMARY KEY,
     slug_id    TEXT,
@@ -193,6 +194,23 @@ class Database:
             ).fetchone()
             return ProgressEntry(**dict(row)) if row else None
 
+    def remap_progress_slug(self, old_slug_id: str, new_slug_id: str) -> None:
+        """Moves a saved-progress row onto a re-resolved id.
+
+        Without this, an entry carried over from a different streaming
+        backend turns into two Continue Watching cards for the same show: the
+        stale one that can never be opened again, and the working one saved
+        under the new id. The stale row wins on conflict only if nothing is
+        already there -- a real row under the new id is newer by definition.
+        """
+        with self._lock:
+            self._conn.execute(
+                "UPDATE OR IGNORE progress SET anime_slug_id = ? WHERE anime_slug_id = ?",
+                (new_slug_id, old_slug_id),
+            )
+            self._conn.execute("DELETE FROM progress WHERE anime_slug_id = ?", (old_slug_id,))
+            self._conn.commit()
+
     def continue_watching(self, limit: int = 20) -> list[ProgressEntry]:
         with self._lock:
             rows = self._conn.execute(
@@ -221,7 +239,7 @@ class Database:
             self._conn.execute("DELETE FROM settings WHERE key = ?", (key,))
             self._conn.commit()
 
-    # -- title_map (anidb.app title -> AniList media id) ------------------
+    # -- title_map (source title -> AniList media id) ----------------------
 
     def has_title_mapping(self, title: str) -> bool:
         with self._lock:
@@ -327,6 +345,20 @@ class Database:
             if not row or row["slug_id"] is None:
                 return None
             return AniDBMapping(**dict(row))
+
+    def clear_anidb_mappings(self) -> None:
+        """Drops every cached AniList id -> source result mapping.
+
+        The ids in this table are only meaningful for the streaming source
+        that produced them, so they have to go when the app migrates to a
+        different backend -- otherwise Home-page cards keep opening ids that
+        the new source has never heard of, which surfaces as an empty episode
+        list rather than as anything a user could diagnose. Pure cache: it
+        refills itself on the next lookup, at no cost beyond one search.
+        """
+        with self._lock:
+            self._conn.execute("DELETE FROM anidb_map")
+            self._conn.commit()
 
     def save_anidb_mapping(self, anilist_id: int, mapping: AniDBMapping | None) -> None:
         with self._lock:

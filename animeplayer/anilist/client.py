@@ -79,9 +79,9 @@ query ($id: Int!) {{
 """
 
 # genre_in/tag_in are AniList's own catalog filters -- this is the whole reason
-# genre/tag search goes through AniList rather than anidb.app: anidb.app's own
+# genre/tag search goes through AniList rather than the streaming source: the
 # catalog and genre taxonomy are both far smaller (confirmed live: ~20-30
-# results for a single anidb.app genre filter vs AniList's hundreds).
+# results for a single source-side genre filter vs AniList's hundreds).
 # pageInfo.hasNextPage lets the UI offer "Load more" instead of silently
 # capping results at one page of 50.
 #
@@ -314,8 +314,8 @@ class AniListClient:
     ) -> tuple[list[MediaSummary], bool]:
         """Browses AniList's own catalog by genre/tag/format (optionally
         combined with a title search too), sorted by popularity. This is what
-        genre/tag filtering in the app's search uses instead of anidb.app --
-        anidb.app's catalog and genre list are both far smaller. Returns
+        genre/tag filtering in the app's search uses instead of the source --
+        the source's catalog and genre list are both far smaller. Returns
         (results, has_next_page) -- results used to be silently capped at one
         page of 50 with no way to see more. formats/exclude_formats use
         AniList's own MediaFormat enum values: TV, TV_SHORT, MOVIE, SPECIAL,

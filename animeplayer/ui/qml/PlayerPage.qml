@@ -130,11 +130,13 @@ Kirigami.Page {
 
     Connections {
         target: backend
-        function onStreamReady(url) {
+        function onStreamReady(url, referer, subtitleUrl) {
             page.loadingStream = false
             page.stalled = false
             stallTimer.restart()
-            video.loadUrl(url)
+            // referer and subtitleUrl are both load-bearing, not optional
+            // extras -- see MpvVideoItem.loadUrl.
+            video.loadUrl(url, referer, subtitleUrl)
         }
         function onStreamFailed(message) {
             page.loadingStream = false
@@ -253,7 +255,7 @@ Kirigami.Page {
         onDurationChanged: (value) => { if (value > 0) { page.stalled = false; stallTimer.stop() } }
         onPlaybackError: (message) => {
             // Never-successfully-started errors (dead/expired link, transient
-            // anidb.app hiccup) are common enough to be worth one silent
+            // source-side hiccup) are common enough to be worth one silent
             // fresh re-resolve before bothering the user with the manual
             // Retry button -- confirmed live that re-resolving the exact
             // same episode/quality moments later can just work. Errors after
@@ -331,25 +333,31 @@ Kirigami.Page {
     // interval, regardless of the auto-skip setting -- covers the auto-skip
     // -disabled case, and the last-episode exception where auto-skip is
     // deliberately suppressed but the option to skip manually should stay.
-    Controls.Button {
+    RowLayout {
         anchors.right: parent.right
         anchors.bottom: bottomBar.top
         anchors.margins: Kirigami.Units.largeSpacing
-        visible: !page.loadingStream && page.skipOp
-            && video.position >= page.skipOp.start && video.position < page.skipOp.end
-        text: "Skip Intro"
-        icon.name: "media-seek-forward-symbolic"
-        onClicked: page.skipIntroNow()
-    }
-    Controls.Button {
-        anchors.right: parent.right
-        anchors.bottom: bottomBar.top
-        anchors.margins: Kirigami.Units.largeSpacing
-        visible: !page.loadingStream && page.skipEd
-            && video.position >= page.skipEd.start && video.position < page.skipEd.end
-        text: "Skip Outro"
-        icon.name: "media-seek-forward-symbolic"
-        onClicked: page.skipOutroNow()
+        spacing: Kirigami.Units.smallSpacing
+
+        component SkipButton: Controls.Button {
+            property var range: null
+            visible: !page.loadingStream && range
+                && video.position >= range.start && video.position < range.end
+            icon.name: "media-seek-forward-symbolic"
+            display: Controls.AbstractButton.TextBesideIcon
+            highlighted: true
+        }
+
+        SkipButton {
+            range: page.skipOp
+            text: "Skip Intro"
+            onClicked: page.skipIntroNow()
+        }
+        SkipButton {
+            range: page.skipEd
+            text: "Skip Outro"
+            onClicked: page.skipOutroNow()
+        }
     }
 
     ColumnLayout {
@@ -417,18 +425,27 @@ Kirigami.Page {
                 text: page.formatTime(video.position) + " / " + page.formatTime(video.duration)
             }
             Item { Layout.fillWidth: true }
-            // Manual fallback for whenever Aniskip has no (or wrong) timing
-            // data for an episode -- 85s approximates a typical OP/ED length,
-            // close enough to land past most intros/outros in one tap.
+            // Plain seek steps. These used to be a pair of 85s jumps, there
+            // to approximate an OP/ED length back when skip timings were
+            // often missing -- the source now ships exact per-episode intro
+            // and outro ranges with the stream itself, so the Skip buttons
+            // handle that case properly and these can go back to being
+            // ordinary seek controls.
             Controls.Button {
-                text: "« 85s"
+                text: "10s"
                 icon.name: "media-seek-backward-symbolic"
-                onClicked: page.seekRelative(-85)
+                display: Controls.AbstractButton.TextBesideIcon
+                onClicked: page.seekRelative(-10)
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: "Back 10 seconds (Left arrow: 5s)"
             }
             Controls.Button {
-                text: "85s »"
+                text: "30s"
                 icon.name: "media-seek-forward-symbolic"
-                onClicked: page.seekRelative(85)
+                display: Controls.AbstractButton.TextBesideIcon
+                onClicked: page.seekRelative(30)
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: "Forward 30 seconds (Right arrow: 5s)"
             }
         }
     }

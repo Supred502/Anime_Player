@@ -23,6 +23,9 @@ Kirigami.ApplicationWindow {
     // double-push if a page-level handler is also listening).
     Connections {
         target: backend
+        function onRemoteServerFailed(message) {
+            showPassiveNotification("Phone remote unavailable: " + message)
+        }
         function onRemoteCommand(cmd, args) {
             if (cmd === "open_anime") backend.openAnilistAnime(args.id, args.title)
             else if (cmd === "open_continue_watching") backend.openContinueWatching(args)

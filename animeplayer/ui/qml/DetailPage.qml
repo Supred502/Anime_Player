@@ -45,6 +45,17 @@ Kirigami.ScrollablePage {
             }
             page.showPage(Math.floor(startIndex / page.pageSize))
         }
+        function onAnimeRemapped(mapping) {
+            // The id this page was opened with turned out to belong to a
+            // different (or no longer existing) entry and was re-resolved by
+            // title. Adopt the corrected one, or this page would keep saving
+            // and reading progress under an id nothing else uses.
+            let updated = page.anime
+            updated.slug_id = mapping.slug_id
+            updated.numeric_id = mapping.numeric_id
+            page.anime = updated
+            page.localProgress = backend.getLocalProgress(mapping.slug_id)
+        }
         function onEpisodesFailed(message) {
             page.loading = false
             showPassiveNotification("Failed to load episodes: " + message)
@@ -57,7 +68,7 @@ Kirigami.ScrollablePage {
             page.anilistDetails = details
         }
         function onFillerEpisodesUpdated(episodeNumbers) {
-            // anidb.app had no filler data for this show; these came from the
+            // The streaming source had no filler data for this show; these came from the
             // Jikan (MAL) fallback instead. Mark them in both the full list and
             // whatever page is currently shown.
             let asSet = {}
@@ -77,6 +88,10 @@ Kirigami.ScrollablePage {
         let start = page.currentPage * page.pageSize
         let end = Math.min(start + page.pageSize, episodesModel.count)
         for (let i = start; i < end; i++) pageEpisodesModel.append(episodesModel.get(i))
+    }
+
+    function firstEpisodeNumber() {
+        return episodesModel.count > 0 ? episodesModel.get(0).number : -1
     }
 
     function playEpisode(number) {

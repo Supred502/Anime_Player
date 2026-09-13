@@ -88,10 +88,13 @@ class MpvVideoItem(QQuickFramebufferObject):
     volumeChanged = Signal(float)
     endOfFile = Signal()
     playbackError = Signal(str)  # a real mpv-reported error, e.g. a dead/stalled stream
+    # Internal: emitted from mpv's event thread, handled on the GUI thread.
+    fileLoaded = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.frameReady.connect(self.update)
+        self.fileLoaded.connect(self._attach_pending_subtitle)
         self.proc_address_fn = _GetProcAddressFn(_get_proc_address)
 
         self._position = 0.0
@@ -123,6 +126,26 @@ class MpvVideoItem(QQuickFramebufferObject):
         self.mpv.observe_property("pause", self._on_pause)
         self.mpv.observe_property("eof-reached", self._on_eof)
         self.mpv.observe_property("volume", self._on_volume)
+
+        # Set by loadUrl, consumed on the next file-loaded. Attaching the
+        # track any earlier doesn't work -- see loadUrl's docstring.
+        self._pending_subtitle = ""
+
+        @self.mpv.event_callback("file-loaded")
+        def _on_file_loaded(_event) -> None:
+            if self.closed or not self._pending_subtitle:
+                return
+            # Deliberately only *signals* from here. Issuing the sub-add
+            # command directly on mpv's event thread fails with a bare
+            # MPV_ERROR_COMMAND (-12) in the real app -- confirmed live, and
+            # confirmed to be about the calling thread rather than the
+            # subtitle itself, since the identical command on the identical
+            # URL succeeds when it isn't run from inside an event callback.
+            # mpv's own API docs warn against calling back into it from an
+            # event callback for exactly this reason. The signal hop hands
+            # the command to the GUI thread, the same trick the property
+            # callbacks below already rely on.
+            self.fileLoaded.emit()
 
         @self.mpv.event_callback("end-file")
         def _on_end_file(event) -> None:
@@ -170,8 +193,8 @@ class MpvVideoItem(QQuickFramebufferObject):
         # Some FFmpeg decoder messages are logged at "error" level even though
         # they're recoverable hiccups that don't actually stop playback --
         # confirmed live: "aac: illegal icc" fires from a stray AAC stream
-        # quirk on these anidb.app episodes and decoding just continues fine
-        # right through it, but it was popping up as an alarming "Playback
+        # quirk on these episodes and decoding just continues fine right
+        # through it, but it was popping up as an alarming "Playback
         # error" toast on otherwise-working playback. Filtered by substring
         # rather than dropping error-level entirely, since other error-level
         # messages (dead streams, unsupported codecs) are genuinely useful --
@@ -179,6 +202,17 @@ class MpvVideoItem(QQuickFramebufferObject):
         if "illegal icc" in text:
             return
         self.playbackError.emit(text.strip())
+
+    @Slot()
+    def _attach_pending_subtitle(self) -> None:
+        """Runs on the GUI thread -- see the file-loaded callback above."""
+        if self.closed or not self._pending_subtitle:
+            return
+        subtitle, self._pending_subtitle = self._pending_subtitle, ""
+        try:
+            self.mpv.command("sub-add", subtitle, "select")
+        except Exception as exc:  # noqa: BLE001 -- a missing subtitle must not stop playback
+            self.playbackError.emit(f"Couldn't load subtitles: {exc}")
 
     def createRenderer(self):
         return _MpvRenderer(self)
@@ -227,10 +261,31 @@ class MpvVideoItem(QQuickFramebufferObject):
         if not self.closed:
             self.mpv.volume = max(0.0, min(100.0, value))
 
-    @Slot(str)
-    def loadUrl(self, url: str) -> None:
-        if not self.closed:
-            self.mpv.play(url)
+    @Slot(str, str, str)
+    def loadUrl(self, url: str, referer: str = "", subtitle_url: str = "") -> None:
+        """Loads a stream, optionally with the referer and external subtitle
+        track the source requires.
+
+        Both matter on the current backend and were confirmed live (see
+        sources/hianime.py): the stream host 403s every playlist and subtitle
+        request that arrives without a Referer, so without it mpv never
+        produces a single frame; and subtitles are not in the HLS manifest at
+        all, so a "sub" episode plays with no subtitles unless the separate
+        WebVTT track is attached.
+
+        The subtitle is attached via sub-add on file-loaded rather than by
+        setting mpv's sub-files option before play(). Also confirmed live:
+        sub-files set as a property simply never produces a sub track (the
+        track list comes back with video and audio only), while sub-add lands
+        the track and selects it.
+        """
+        if self.closed:
+            return
+        self._pending_subtitle = subtitle_url
+        # A global option rather than a per-file one so it also covers the
+        # variant-playlist and segment fetches mpv makes on its own later.
+        self.mpv["referrer"] = referer
+        self.mpv.play(url)
 
     @Slot()
     def togglePause(self) -> None:
@@ -250,8 +305,8 @@ class MpvVideoItem(QQuickFramebufferObject):
     def _do_seek(self, seconds: float) -> None:
         if self.closed:
             return
-        # Confirmed live against the real anidb.app HLS streams (muxed
-        # MPEG-TS segments, not separate audio/video renditions) with mpv's
+        # Confirmed live against the real HLS streams (muxed MPEG-TS
+        # segments, not separate audio/video renditions) with mpv's
         # own audio-pts/time-pos properties: a *single* backward seek --
         # "exact" or not -- reliably leaves the video stream repositioned
         # correctly while the audio demuxer just keeps decoding forward from

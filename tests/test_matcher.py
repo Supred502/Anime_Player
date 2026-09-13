@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 from animeplayer.anilist import matcher
 from animeplayer.anilist.client import MediaSummary
-from animeplayer.sources.anidb_app import SearchResult
+from animeplayer.sources.hianime import SearchResult
 from animeplayer.storage.db import Database
 
 
@@ -111,24 +111,24 @@ def test_resolve_media_summary_returns_none_when_no_good_match(tmp_path: Path) -
 def _result(slug_id: str, title: str) -> SearchResult:
     return SearchResult(
         slug_id=slug_id, numeric_id=slug_id.rsplit("-", 1)[-1], title=title,
-        poster_url="", kind="TV", rating="8.0",
+        poster_url="", kind="TV", rating="", duration="24m", sub_count=148, dub_count=148,
     )
 
 
-def test_best_anidb_result_picks_closest_title() -> None:
+def test_best_source_result_picks_closest_title() -> None:
     results = [
         _result("hunter-x-hunter-2293", "Hunter x Hunter"),
         _result("hunter-x-hunter-2011-2294", "Hunter x Hunter (2011)"),
     ]
 
-    best = matcher.best_anidb_result("Hunter x Hunter", results)
+    best = matcher.best_source_result("Hunter x Hunter", results)
 
     assert best.slug_id == "hunter-x-hunter-2293"
 
 
-def test_best_anidb_result_returns_none_when_no_good_match() -> None:
+def test_best_source_result_returns_none_when_no_good_match() -> None:
     results = [_result("something-else-1", "Completely Unrelated Show")]
 
-    best = matcher.best_anidb_result("Hunter x Hunter", results)
+    best = matcher.best_source_result("Hunter x Hunter", results)
 
     assert best is None

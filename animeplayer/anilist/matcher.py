@@ -1,7 +1,7 @@
-"""Matches titles between anidb.app and AniList, in both directions.
+"""Matches titles between the streaming source and AniList, in both directions.
 
-``resolve_media_id`` (anidb title -> AniList id) powers the search-page status
-badges. ``best_anidb_result`` (AniList title -> anidb.app result, the reverse)
+``resolve_media_id`` (source title -> AniList id) powers the search-page status
+badges. ``best_source_result`` (AniList title -> source result, the reverse)
 powers clicking a Home-page AniList card through to something playable. Both
 use the same difflib scoring and AniList's own search is fuzzy on its end
 already, so results are picked from a small candidate set rather than scored
@@ -18,7 +18,7 @@ from animeplayer.anilist.client import AniListClient, MediaSummary
 from animeplayer.storage.db import Database
 
 if TYPE_CHECKING:
-    from animeplayer.sources.anidb_app import SearchResult
+    from animeplayer.sources.hianime import SearchResult
 
 _MATCH_THRESHOLD = 0.6
 
@@ -65,6 +65,6 @@ def resolve_media_summary(title: str, client: AniListClient, db: Database) -> Me
     return resolved
 
 
-def best_anidb_result(title: str, results: list["SearchResult"]) -> "SearchResult | None":
-    """Picks the anidb.app result whose title best matches an AniList title."""
+def best_source_result(title: str, results: list["SearchResult"]) -> "SearchResult | None":
+    """Picks the source result whose title best matches an AniList title."""
     return _best_match(title, [(r, (r.title,)) for r in results])

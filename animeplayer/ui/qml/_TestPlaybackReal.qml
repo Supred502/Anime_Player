@@ -1,0 +1,102 @@
+// Live end-to-end driver: walks the REAL pages through the REAL navigation
+// path (Search -> Detail -> Player) against the live source, the way a user
+// would. Not a unit test -- the lifecycle bugs in this app only show up on
+// the actual pageStack push path. Run with:
+//   ANIMEPLAYER_TEST_QML=_TestPlaybackReal.qml python -m animeplayer
+import QtQuick
+import org.kde.kirigami as Kirigami
+
+Kirigami.ApplicationWindow {
+    id: root
+    title: "Anime Player"
+    width: 1280
+    height: 800
+    pageStack.initialPage: Qt.resolvedUrl("SearchPage.qml")
+    pageStack.columnView.columnResizeMode: Kirigami.ColumnView.SingleColumn
+
+    property string query: "Dorohedoro"
+    // ANIMEPLAYER_TEST_PAUSE lets a screenshot land mid-flow.
+    property string pause: testPause
+    property var detailPage: null
+
+    function log(msg) { console.log("[E2E] " + msg) }
+
+    Connections {
+        target: backend
+        function onSearchFinished(results) {
+            root.log("search -> " + results.length + " results; first=" +
+                     (results.length ? results[0].title + " (" + results[0].slug_id + ")" : "NONE"))
+            if (!results.length) return
+            searchDone.restart()
+        }
+        function onSearchFailed(message) { root.log("SEARCH FAILED: " + message) }
+        function onEpisodesFinished(episodes) {
+            root.log("episodes -> " + episodes.length)
+            if (episodes.length) episodesDone.restart()
+        }
+        function onEpisodesFailed(message) { root.log("EPISODES FAILED: " + message) }
+        function onStreamReady(url, referer, sub) {
+            root.log("streamReady url=" + url.substring(0, 60) + "... referer=" + referer +
+                     " sub=" + (sub ? "yes" : "NONE"))
+        }
+        function onStreamFailed(message) { root.log("STREAM FAILED: " + message) }
+        function onSkipTimesReady(times) {
+            root.log("skipTimes op=" + JSON.stringify(times.op) + " ed=" + JSON.stringify(times.ed))
+        }
+        function onStreamQualitiesAvailable(q) {
+            root.log("qualities -> " + JSON.stringify(q))
+        }
+    }
+
+    // Kick off the search through the real page's own field, not by calling
+    // backend.search() directly, so the search page's own wiring is covered.
+    Timer {
+        running: true; interval: 1500
+        onTriggered: {
+            let page = root.pageStack.currentItem
+            root.log("typing into SearchPage")
+            page.setQuery(root.query)
+            page.doSearch()
+        }
+    }
+
+    Timer {
+        id: searchDone; interval: Number(root.pause) || 1200
+        onTriggered: {
+            let page = root.pageStack.currentItem
+            root.log("clicking first search result")
+            page.openResult(0)
+        }
+    }
+
+    // Holds the auto-hiding controls open and parks playback inside the
+    // outro window, so a screenshot can show the real control bar and the
+    // Skip Outro button rather than a bare video frame.
+    Timer {
+        running: true; interval: 25000; repeat: false
+        onTriggered: {
+            let page = root.pageStack.currentItem
+            if (page && page.hasOwnProperty("controlsVisible")) {
+                page.controlsVisible = true
+                page.seekRelative(1100)
+                root.log("parked in outro, controls pinned")
+            }
+        }
+    }
+    Timer {
+        running: true; interval: 26000; repeat: true
+        onTriggered: {
+            let page = root.pageStack.currentItem
+            if (page && page.hasOwnProperty("controlsVisible")) page.controlsVisible = true
+        }
+    }
+
+    Timer {
+        id: episodesDone; interval: Number(root.pause) || 1500
+        onTriggered: {
+            let page = root.pageStack.currentItem
+            root.log("clicking episode 1")
+            page.playEpisode(page.firstEpisodeNumber())
+        }
+    }
+}

@@ -1,11 +1,11 @@
 """Fallback source for episode filler flags, via Jikan (the unofficial
 MyAnimeList API, https://jikan.moe).
 
-anidb.app's own episode data doesn't reliably carry filler flags for every
+The streaming source's own episode data doesn't carry filler flags for every
 show -- confirmed live: it has zero filler episodes marked for One Piece
 (1176 episodes, genuinely none flagged) despite Naruto Shippuden being
 correctly and extensively flagged (167 episodes). Used only as a fallback
-when anidb.app reports no filler at all for a show and we know its MAL id
+when the source reports no filler at all for a show and we know its MAL id
 (from AniList's idMal field).
 """
 

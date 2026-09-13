@@ -73,7 +73,7 @@ Kirigami.ScrollablePage {
                 let r = results[i]
                 r.anilistLabel = ""
                 r.anilistProgress = 0
-                r.source = "anidb"
+                r.source = "stream"
                 resultsModel.append(r)
             }
         }
@@ -137,6 +137,9 @@ Kirigami.ScrollablePage {
         }
         function onAnilistAnimeResolveFailed(title) {
             showPassiveNotification("Couldn't find a stream for \"" + title + "\"")
+        }
+        function onAnilistAnimeResolveErrored(message) {
+            showPassiveNotification("Couldn't reach the streaming source: " + message)
         }
     }
 
@@ -221,6 +224,34 @@ Kirigami.ScrollablePage {
         }
         return { include: include, exclude: exclude }
     }
+
+    // Single place a result row gets opened, so the grid delegate and any
+    // other caller (e.g. the phone remote, the live E2E driver) take exactly
+    // the same path.
+    function openResult(index) {
+        let model = resultsModel.get(index)
+        if (model.source === "anilist") {
+            backend.openAnilistAnime(model.anilist_id, model.title)
+            return
+        }
+        applicationWindow().pageStack.push(
+            Qt.resolvedUrl("DetailPage.qml"),
+            {
+                anime: {
+                    slug_id: model.slug_id,
+                    numeric_id: model.numeric_id,
+                    title: model.title,
+                    poster_url: model.poster_url,
+                    kind: model.kind,
+                    rating: model.rating
+                }
+            }
+        )
+    }
+
+    // The query lives in the header's text field; this keeps that an
+    // implementation detail of the page rather than something callers reach into.
+    function setQuery(text) { queryField.text = text }
 
     function activeFilterCount() {
         let n = 0
@@ -308,11 +339,17 @@ Kirigami.ScrollablePage {
     // fill the row exactly instead of leaving a gap on the right.
     GridView {
         id: grid
-        readonly property int idealCellWidth: 200
+        // Same measure Home's rows use, so a card is the same size whichever
+        // page you're looking at.
+        readonly property int idealCellWidth: Kirigami.Units.gridUnit * 11
         readonly property int columns: Math.max(1, Math.floor(width / idealCellWidth))
         model: resultsModel
         cellWidth: width / columns
-        cellHeight: 300
+        // Derived from the card's own geometry (2:3 poster + a two-line title
+        // block) rather than a fixed number, which clipped the subtitle at
+        // some window widths and left a gap at others.
+        cellHeight: Math.round((cellWidth - Kirigami.Units.smallSpacing * 2) * 1.5)
+                    + Kirigami.Units.gridUnit * 4
 
         onContentYChanged: {
             if (page.hasMore && !page.loadingMore && !page.searching
@@ -325,83 +362,20 @@ Kirigami.ScrollablePage {
             width: grid.cellWidth
             height: grid.cellHeight
 
-            ColumnLayout {
+            AnimeCard {
                 anchors.fill: parent
                 anchors.margins: Kirigami.Units.smallSpacing
-                spacing: Kirigami.Units.smallSpacing
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 240
-                    radius: 4
-                    clip: true
-                    color: Kirigami.Theme.alternateBackgroundColor
-
-                    Image {
-                        anchors.fill: parent
-                        source: model.poster_url
-                        fillMode: Image.PreserveAspectCrop
-                        asynchronous: true
-                    }
-
-                    MouseArea {
-                        anchors.fill: parent
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            if (model.source === "anilist") {
-                                backend.openAnilistAnime(model.anilist_id, model.title)
-                            } else {
-                                applicationWindow().pageStack.push(
-                                    Qt.resolvedUrl("DetailPage.qml"),
-                                    {
-                                        anime: {
-                                            slug_id: model.slug_id,
-                                            numeric_id: model.numeric_id,
-                                            title: model.title,
-                                            poster_url: model.poster_url,
-                                            kind: model.kind,
-                                            rating: model.rating
-                                        }
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        visible: model.source === "anidb" && model.anilistLabel !== ""
-                        anchors.top: parent.top
-                        anchors.right: parent.right
-                        anchors.margins: Kirigami.Units.smallSpacing
-                        radius: 3
-                        color: Kirigami.Theme.highlightColor
-                        width: badgeLabel.implicitWidth + Kirigami.Units.smallSpacing * 2
-                        height: badgeLabel.implicitHeight + Kirigami.Units.smallSpacing
-
-                        Controls.Label {
-                            id: badgeLabel
-                            anchors.centerIn: parent
-                            text: model.anilistLabel + (model.anilistProgress > 0 ? " " + model.anilistProgress : "")
-                            color: Kirigami.Theme.highlightedTextColor
-                            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                            font.bold: true
-                        }
-                    }
-                }
-
-                Controls.Label {
-                    Layout.fillWidth: true
-                    text: model.title
-                    wrapMode: Text.WordWrap
-                    font.bold: true
-                    maximumLineCount: 2
-                    elide: Text.ElideRight
-                }
-                Controls.Label {
-                    Layout.fillWidth: true
-                    text: model.kind + (model.rating ? " · ★" + model.rating : "")
-                    opacity: 0.7
-                }
+                posterUrl: model.poster_url
+                title: model.title
+                // The source's own cards carry no score, so this is the
+                // format plus its runtime rather than an always-empty "· ★".
+                subtitle: [model.kind, model.duration, model.rating ? "\u2605 " + model.rating : ""]
+                    .filter((part) => !!part).join(" · ")
+                badgeText: model.anilistLabel !== ""
+                    ? model.anilistLabel + (model.anilistProgress > 0 ? " " + model.anilistProgress : "")
+                    : ""
+                cornerText: model.dub_count > 0 ? "SUB · DUB" : (model.sub_count > 0 ? "SUB" : "")
+                onClicked: page.openResult(index)
             }
         }
 

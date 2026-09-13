@@ -13,7 +13,7 @@ import re
 import socket
 import tempfile
 import webbrowser
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -25,7 +25,7 @@ from animeplayer.anilist import matcher
 from animeplayer.anilist.client import AniListClient, MediaSummary, build_authorize_url
 from animeplayer.aniskip import client as aniskip
 from animeplayer.remote.server import RemoteServer
-from animeplayer.sources import anidb_app as source
+from animeplayer.sources import hianime as source
 from animeplayer.sources import jikan
 from animeplayer.storage import secrets
 from animeplayer.storage.db import AniDBMapping, AniListStatus, Database
@@ -103,7 +103,7 @@ class Backend(QObject):
     searchFailed = Signal(str)
     episodesFinished = Signal(list)
     episodesFailed = Signal(str)
-    streamReady = Signal(str)
+    streamReady = Signal(str, str, str)  # (url, referer, subtitle_url) -- see player/mpv_video_item.loadUrl
     streamFailed = Signal(str)
     streamQualitiesAvailable = Signal(list)  # [{label}], best-to-worst; "Auto" is implicit
     continueWatchingChanged = Signal(list)
@@ -120,11 +120,13 @@ class Backend(QObject):
     anilistStatusesResolved = Signal(dict)  # {slug_id: {status, label, progress}}
     anilistCurrentStatus = Signal(str, int)  # (label, progress) for the loaded anime; ("", 0) if none
     anilistMediaDetails = Signal(dict)  # rating/genres/description/etc. for the loaded anime
+    animeRemapped = Signal(dict)  # {slug_id, numeric_id} -- a stale id was re-resolved by title
     fillerEpisodesUpdated = Signal(list)  # episode numbers, from the Jikan fallback (see _maybe_fetch_filler_fallback)
     anilistWatchingChanged = Signal(list)  # Home page "Watching" row
     anilistPlanningChanged = Signal(list)  # Home page "Planning" row
-    anilistAnimeResolved = Signal(dict)  # anidb result for a Home-page AniList card, ready to push DetailPage
+    anilistAnimeResolved = Signal(dict)  # source result for a Home-page AniList card, ready to push DetailPage
     anilistAnimeResolveFailed = Signal(str)  # title we couldn't find a stream for
+    anilistAnimeResolveErrored = Signal(str)  # the lookup itself failed (site down, no network, ...)
     anilistGenresLoaded = Signal(list)
     anilistTagsLoaded = Signal(list)
     filterSearchFinished = Signal(dict)  # {results, page, hasMore} -- AniList-sourced results
@@ -134,6 +136,7 @@ class Backend(QObject):
     nextEpisodeLoading = Signal(int, float)  # (episode_id, episode_number) -- fired before streamReady on auto-next
     noNextEpisode = Signal()  # auto-next requested but the current episode is the last one known
 
+    remoteServerFailed = Signal(str)  # the phone remote couldn't start; the app itself is fine
     remoteCommand = Signal(str, "QVariant")  # (cmd, args) from the phone remote -- see remote/server.py
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -144,6 +147,7 @@ class Backend(QObject):
         self._current_anime: dict[str, Any] | None = None
         self._current_stream_info: source.StreamInfo | None = None
         self._progressReady.connect(self._save_progress_on_gui_thread)
+        self._drop_mappings_from_a_previous_source()
 
         self._anilist_client: AniListClient | None = None
         self._anilist_user_id: int | None = None
@@ -171,13 +175,21 @@ class Backend(QObject):
         if (self._db.get_setting("remote_enabled") or "true") == "true":
             self.startRemoteServer()
 
+    def _drop_mappings_from_a_previous_source(self) -> None:
+        """One-time cache reset when the streaming backend changes underneath
+        an existing install -- see Database.clear_anidb_mappings."""
+        if self._db.get_setting("stream_source") == source.BASE_URL:
+            return
+        self._db.clear_anidb_mappings()
+        self._db.set_setting("stream_source", source.BASE_URL)
+
     def shutdown(self) -> None:
         if self._remote_server is not None:
             self._remote_server.stop()
         self._http.close()
         self._db.close()
 
-    # -- anidb.app search / episodes / playback ----------------------------
+    # -- hianime.at search / episodes / playback ---------------------------
 
     @Slot(str)
     def search(self, query: str) -> None:
@@ -192,11 +204,11 @@ class Backend(QObject):
         self._pool.start(_Worker(work, done, self.searchFailed.emit))
 
     # -- AniList-backed genre/tag search --------------------------------------
-    # Deliberately separate from the plain title search above: anidb.app's own
+    # Deliberately separate from the plain title search above: the streaming source's
     # catalog and genre list are both much smaller than AniList's (confirmed
-    # live -- a single anidb.app genre filter returned ~20-30 results where the
+    # live -- a single source-side genre filter returned ~20-30 results where the
     # same genre on AniList has hundreds), so genre/tag filtering browses
-    # AniList's catalog instead and resolves a playable anidb.app match lazily,
+    # AniList's catalog instead and resolves a playable source match lazily,
     # only once a specific result is clicked (openAnilistAnime, reused from the
     # Home page's Watching/Planning cards).
 
@@ -252,7 +264,9 @@ class Backend(QObject):
             "title": m.title,
             "poster_url": m.cover_url or "",
             "kind": m.format or "",
-            "rating": f"{(m.average_score or 0) / 10:.1f}",
+            # Empty rather than "0.0" when AniList has no score yet, so the
+            # card can leave the star out instead of advertising a zero.
+            "rating": f"{m.average_score / 10:.1f}" if m.average_score else "",
         }
 
     _NOT_IN_LIST = "NOT_IN_LIST"  # synthetic status for the "not in my list" filter chip
@@ -376,23 +390,39 @@ class Backend(QObject):
             "current_episode_number": None,  # set by loadStream/loadNextEpisode; used by _maybe_fetch_skip_times
         }
 
-        def work() -> list[source.Episode]:
-            return source.get_episodes(numeric_id, self._http)
+        def work() -> tuple[str, str, list[source.Episode]]:
+            episodes = source.get_episodes(slug_id, self._http)
+            if episodes:
+                return slug_id, numeric_id, episodes
+            # An id the source doesn't know: either it was cached from a
+            # different backend, or the entry moved. Re-resolve it by title
+            # once rather than showing an empty episode list, which reads as
+            # "this anime has no episodes" and gives the user nothing to act on.
+            match = matcher.best_source_result(title, source.search(title, self._http))
+            if match is None:
+                return slug_id, numeric_id, []
+            return match.slug_id, match.numeric_id, source.get_episodes(match.slug_id, self._http)
 
-        def done(episodes: list[source.Episode]) -> None:
+        def done(resolved: tuple[str, str, list[source.Episode]]) -> None:
+            new_slug_id, new_numeric_id, episodes = resolved
+            if new_slug_id != slug_id:
+                self._db.remap_progress_slug(slug_id, new_slug_id)
+                self.animeRemapped.emit({"slug_id": new_slug_id, "numeric_id": new_numeric_id})
+                self._emit_continue_watching()
             self.episodesFinished.emit([asdict(e) for e in episodes])
             if self._current_anime is not None and self._current_anime["slug_id"] == slug_id:
+                self._current_anime["slug_id"] = new_slug_id
                 self._current_anime["episode_count"] = len(episodes)
                 self._current_anime["has_filler_data"] = any(e.filler for e in episodes)
                 self._current_anime["episodes"] = episodes
-                self._maybe_fetch_filler_fallback(slug_id)
+                self._maybe_fetch_filler_fallback(new_slug_id)
             if self._anilist_client is not None:
-                self._resolve_current_anime_status(slug_id, title)
+                self._resolve_current_anime_status(new_slug_id, title)
 
         self._pool.start(_Worker(work, done, self.episodesFailed.emit))
 
     def _maybe_fetch_filler_fallback(self, slug_id: str) -> None:
-        """If anidb.app reported zero filler episodes for the anime currently
+        """If the source reported no filler episodes for the anime currently
         loaded on DetailPage, and we know its MAL id, try Jikan instead (see
         sources/jikan.py for why). No-ops until both pieces of info are in,
         since episodes and the AniList match resolve on separate async paths
@@ -423,11 +453,16 @@ class Backend(QObject):
         if self._current_anime is not None:
             self._current_anime["current_episode_number"] = episode_number
 
-        def finish_up() -> None:
+        def finish_up(info: source.StreamInfo) -> None:
             self._progressReady.emit(episode_id, episode_number)
             if self._anilist_client is not None and anime_snapshot and anime_snapshot.get("anilist_id"):
                 self._push_anilist_progress(anime_snapshot, episode_number)
-            self._maybe_fetch_skip_times(episode_number)
+            # The source hands back the MAL id with the stream, which is often
+            # the only place we get one: the AniList path only supplies it when
+            # the user is logged in and the title matched. Feeding it back here
+            # is what lets ani-skip and the Jikan filler lookup work logged-out.
+            self._adopt_mal_id(info.mal_id)
+            self._emit_skip_times(info, episode_number)
 
         if preferred and preferred.lower() != "auto":
             # A specific quality is remembered: resolve everything up front (3
@@ -444,9 +479,9 @@ class Backend(QObject):
             def done_specific(info: source.StreamInfo) -> None:
                 self._current_stream_info = info
                 chosen = next((v.url for v in info.variants if v.resolution == preferred), info.master_url)
-                self.streamReady.emit(chosen)
+                self._emit_stream(chosen, info)
                 self.streamQualitiesAvailable.emit([{"label": v.resolution} for v in info.variants])
-                finish_up()
+                finish_up(info)
 
             self._pool.start(_Worker(work_specific, done_specific, self.streamFailed.emit))
             return
@@ -455,16 +490,47 @@ class Backend(QObject):
         # quality list is still fetched afterward for the selector, but that
         # fetch only ever populates the dropdown -- it must never itself call
         # streamReady, or we're right back to the double-load problem above.
-        def work_auto() -> str:
-            return source.resolve_master_url(episode_id, self._http, dub=dub)
+        def work_auto() -> source.StreamInfo:
+            return source.resolve_source(episode_id, self._http, dub=dub)
 
-        def done_auto(master_url: str) -> None:
-            self._current_stream_info = source.StreamInfo(master_url=master_url, variants=())
-            self.streamReady.emit(master_url)
-            finish_up()
-            self._fetch_stream_variants(master_url)
+        def done_auto(info: source.StreamInfo) -> None:
+            self._current_stream_info = info
+            self._emit_stream(info.master_url, info)
+            finish_up(info)
+            self._fetch_stream_variants(info)
 
         self._pool.start(_Worker(work_auto, done_auto, self.streamFailed.emit))
+
+    def _emit_stream(self, url: str, info: source.StreamInfo) -> None:
+        """Single place that hands a URL to the player, so the referer and
+        subtitle track can never be accidentally dropped on one of the paths
+        (initial load / quality switch) -- without them the stream either
+        403s outright or plays with no subtitles. See sources/hianime.py."""
+        self.streamReady.emit(url, info.referer, info.subtitle_url or "")
+
+    def _adopt_mal_id(self, mal_id: int | None) -> None:
+        """Records a MAL id learned from the stream source, if we didn't have
+        one, and kicks off the lookups that were waiting on it."""
+        anime = self._current_anime
+        if anime is None or not mal_id or anime.get("mal_id"):
+            return
+        anime["mal_id"] = mal_id
+        self._maybe_fetch_filler_fallback(anime["slug_id"])
+
+    def _emit_skip_times(self, info: source.StreamInfo, episode_number: float) -> None:
+        """The source ships its own intro/outro timings with the stream, at no
+        extra request and specific to the exact episode being played, so those
+        are used when present. ani-skip stays as the fallback for episodes the
+        source has no timings for."""
+        times = {}
+        if info.skip_intro:
+            times["op"] = {"start": info.skip_intro[0], "end": info.skip_intro[1]}
+        if info.skip_outro:
+            times["ed"] = {"start": info.skip_outro[0], "end": info.skip_outro[1]}
+        if times:
+            self.skipTimesReady.emit(times)
+            return
+        self._maybe_fetch_skip_times(episode_number)
 
     def _maybe_fetch_skip_times(self, episode_number: float) -> None:
         """No-ops until mal_id is known -- see _resolve_current_anime_status,
@@ -530,16 +596,16 @@ class Backend(QObject):
         self.nextEpisodeLoading.emit(prev_episode.episode_id, prev_episode.number)
         self.loadStream(prev_episode.episode_id, prev_episode.number, dub)
 
-    def _fetch_stream_variants(self, master_url: str) -> None:
+    def _fetch_stream_variants(self, info: source.StreamInfo) -> None:
         """Populates the quality selector only. Deliberately never emits
         streamReady itself -- see the comment in loadStream()."""
 
         def work() -> tuple[source.StreamVariant, ...]:
-            return source.get_stream_variants(master_url, self._http)
+            return source.get_stream_variants(info.master_url, self._http, referer=info.referer)
 
         def done(variants: tuple[source.StreamVariant, ...]) -> None:
-            if self._current_stream_info and self._current_stream_info.master_url == master_url:
-                self._current_stream_info = source.StreamInfo(master_url=master_url, variants=variants)
+            if self._current_stream_info and self._current_stream_info.master_url == info.master_url:
+                self._current_stream_info = replace(info, variants=variants)
             self.streamQualitiesAvailable.emit([{"label": v.resolution} for v in variants])
 
         self._pool.start(_Worker(work, done, lambda _msg: None))
@@ -553,12 +619,13 @@ class Backend(QObject):
         self._db.set_setting("preferred_quality", resolution or "Auto")
         if self._current_stream_info is None:
             return
+        info = self._current_stream_info
         if not resolution or resolution.lower() == "auto":
-            self.streamReady.emit(self._current_stream_info.master_url)
+            self._emit_stream(info.master_url, info)
             return
-        for variant in self._current_stream_info.variants:
+        for variant in info.variants:
             if variant.resolution == resolution:
-                self.streamReady.emit(variant.url)
+                self._emit_stream(variant.url, info)
                 return
 
     @Slot(result=str)
@@ -694,7 +761,16 @@ class Backend(QObject):
                 initial_tokens=self._load_remote_tokens(),
                 on_new_token=self._persist_remote_token,
             )
-        self._remote_server.start()
+        try:
+            self._remote_server.start()
+        except OSError as exc:
+            # The remote server auto-starts on launch, so a port that's
+            # already taken (most often: the app is already running) used to
+            # take the whole app down with an unhandled OSError before the
+            # window ever appeared. The phone remote is an optional extra --
+            # losing it must not cost the user the player itself.
+            self.remoteServerFailed.emit(str(exc))
+            return
         self._db.set_setting("remote_enabled", "true")
 
     @Slot()
@@ -801,6 +877,7 @@ class Backend(QObject):
                     "poster_url": e.poster_url or "",
                     "episode_number": e.episode_number,
                     "position_seconds": e.position_seconds,
+                    "duration_seconds": e.duration_seconds,  # lets the card draw a real resume bar
                 }
                 for e in entries
             ]
@@ -968,7 +1045,7 @@ class Backend(QObject):
 
     @Slot(int, str)
     def openAnilistAnime(self, anilist_id: int, title: str) -> None:
-        """Resolves an AniList list entry to an anidb.app result so it can be
+        """Resolves an AniList list entry to a source result so it can be
         pushed onto DetailPage -- the reverse of the search-page status-badge
         matching. Cached after the first lookup per anilist_id."""
         cached = self._db.get_anidb_mapping(anilist_id)
@@ -986,7 +1063,7 @@ class Backend(QObject):
 
         def work() -> source.SearchResult | None:
             results = source.search(title, self._http)
-            return matcher.best_anidb_result(title, results)
+            return matcher.best_source_result(title, results)
 
         def done(result: source.SearchResult | None) -> None:
             if result is None:
@@ -1014,7 +1091,11 @@ class Backend(QObject):
                 }
             )
 
-        self._pool.start(_Worker(work, done, self.anilistAnimeResolveFailed.emit))
+        # Deliberately a different signal from the not-found one above: they
+        # were the same, so a network/site failure rendered as
+        # 'Couldn't find a stream for "Server error 503 ..."' -- the exception
+        # text pasted in where a title belongs. Two causes, two messages.
+        self._pool.start(_Worker(work, done, self.anilistAnimeResolveErrored.emit))
 
     def _match_anilist_statuses(self, results: list[source.SearchResult]) -> None:
         client = self._anilist_client
