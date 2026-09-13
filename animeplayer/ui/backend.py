@@ -24,6 +24,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 from animeplayer.anilist import matcher
 from animeplayer.anilist.client import AniListClient, MediaSummary, build_authorize_url
 from animeplayer.aniskip import client as aniskip
+from animeplayer.player.idle_inhibitor import IdleInhibitor
 from animeplayer.remote.server import RemoteServer
 from animeplayer.sources import hianime as source
 from animeplayer.sources import jikan
@@ -147,6 +148,7 @@ class Backend(QObject):
         self._current_anime: dict[str, Any] | None = None
         self._current_stream_info: source.StreamInfo | None = None
         self._progressReady.connect(self._save_progress_on_gui_thread)
+        self._idle_inhibitor = IdleInhibitor()
         self._drop_mappings_from_a_previous_source()
 
         self._anilist_client: AniListClient | None = None
@@ -183,7 +185,19 @@ class Backend(QObject):
         self._db.clear_anidb_mappings()
         self._db.set_setting("stream_source", source.BASE_URL)
 
+    @Slot(bool)
+    def setKeepScreenAwake(self, awake: bool) -> None:
+        """Driven straight from "is an episode playing right now" -- see
+        player/idle_inhibitor.py for why playback alone doesn't keep the
+        session awake. Deliberately follows pause as well as page lifetime:
+        pausing and walking away should let the screen sleep normally."""
+        if awake:
+            self._idle_inhibitor.inhibit()
+        else:
+            self._idle_inhibitor.release()
+
     def shutdown(self) -> None:
+        self._idle_inhibitor.release()
         if self._remote_server is not None:
             self._remote_server.stop()
         self._http.close()

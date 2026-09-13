@@ -51,6 +51,9 @@ def main() -> int:
     # it down so a screenshot can land mid-flow -- see
     # ui/qml/_TestPlaybackReal.qml. Both no-op for a normal launch.
     engine.rootContext().setContextProperty("testPause", os.environ.get("ANIMEPLAYER_TEST_PAUSE", ""))
+    engine.rootContext().setContextProperty(
+        "testHideControls", os.environ.get("ANIMEPLAYER_TEST_HIDECONTROLS", "")
+    )
     root_qml = os.environ.get("ANIMEPLAYER_TEST_QML", "Main.qml")
     engine.load(str(QML_DIR / root_qml))
     if not engine.rootObjects():

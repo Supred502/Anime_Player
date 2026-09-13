@@ -83,8 +83,18 @@ Kirigami.ApplicationWindow {
             }
         }
     }
+    // ANIMEPLAYER_TEST_HIDECONTROLS forces the faded-out state on, twice a
+    // second, so the hidden-controls/hidden-cursor look can be screenshotted
+    // even while a real pointer is moving over the window and re-showing them.
     Timer {
-        running: true; interval: 26000; repeat: true
+        running: testHideControls !== ""; interval: 500; repeat: true
+        onTriggered: {
+            let page = root.pageStack.currentItem
+            if (page && page.hasOwnProperty("controlsVisible")) page.controlsVisible = false
+        }
+    }
+    Timer {
+        running: testHideControls === ""; interval: 26000; repeat: true
         onTriggered: {
             let page = root.pageStack.currentItem
             if (page && page.hasOwnProperty("controlsVisible")) page.controlsVisible = true

@@ -81,7 +81,15 @@ Kirigami.Page {
             }
         }
     }
+    // Playback generates no input events, so the session goes idle and the
+    // screen blanks mid-episode unless the desktop is told otherwise -- see
+    // player/idle_inhibitor.py. Tracks actual playback rather than merely
+    // being on this page: a paused episode should let the screen sleep.
+    readonly property bool keepScreenAwake: !page.loadingStream && !video.paused
+    onKeepScreenAwakeChanged: backend.setKeepScreenAwake(page.keepScreenAwake)
+
     Component.onDestruction: {
+        backend.setKeepScreenAwake(false)
         if (page.isFullscreen) applicationWindow().visibility = Window.Windowed
     }
 
@@ -226,7 +234,10 @@ Kirigami.Page {
         id: hideTimer
         interval: 3000
         running: true // starts counting down from page load, not just after the first mouse move
-        onTriggered: if (!seekSlider.pressed) page.controlsVisible = false
+        // Holding the controls (and so the pointer) up while paused matches
+        // every other player, and means a paused episode never leaves the
+        // user with no pointer and nothing on screen to click.
+        onTriggered: if (!seekSlider.pressed && !video.paused) page.controlsVisible = false
     }
 
     MpvVideoItem {
@@ -270,6 +281,10 @@ Kirigami.Page {
             page.stalled = true
             showPassiveNotification("Playback error: " + message)
         }
+        onPausedChanged: {
+            page.controlsVisible = true
+            hideTimer.restart()
+        }
         onEndOfFile: {
             if (page.autoNextEnabled) page.nextEpisode()
         }
@@ -278,6 +293,10 @@ Kirigami.Page {
     MouseArea {
         anchors.fill: parent
         hoverEnabled: true
+        // The pointer sat on top of the video forever once the controls had
+        // faded out. It goes away with them, and comes back on the first
+        // movement (onPositionChanged below still fires while it's hidden).
+        cursorShape: page.controlsVisible ? Qt.ArrowCursor : Qt.BlankCursor
         onPositionChanged: { page.controlsVisible = true; hideTimer.restart() }
         onClicked: video.togglePause()
     }
