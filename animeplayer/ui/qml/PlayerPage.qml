@@ -88,7 +88,21 @@ Kirigami.Page {
     readonly property bool keepScreenAwake: !page.loadingStream && !video.paused
     onKeepScreenAwakeChanged: backend.setKeepScreenAwake(page.keepScreenAwake)
 
+    // Everything that must be true for the pointer to be hidden. Leaving this
+    // page, losing focus, or the application shutting down all put the arrow
+    // back before this item stops existing -- see the MouseArea below.
+    property bool showingPointerAgain: false
+    readonly property bool pointerHidden: !page.controlsVisible
+                                          && page.Window.active
+                                          && !page.showingPointerAgain
+
+    Connections {
+        target: Qt.application
+        function onAboutToQuit() { page.showingPointerAgain = true }
+    }
+
     Component.onDestruction: {
+        page.showingPointerAgain = true
         backend.setKeepScreenAwake(false)
         if (page.isFullscreen) applicationWindow().visibility = Window.Windowed
     }
@@ -296,7 +310,15 @@ Kirigami.Page {
         // The pointer sat on top of the video forever once the controls had
         // faded out. It goes away with them, and comes back on the first
         // movement (onPositionChanged below still fires while it's hidden).
-        cursorShape: page.controlsVisible ? Qt.ArrowCursor : Qt.BlankCursor
+        //
+        // Gated on the window being active, and restored on the way out (see
+        // the handlers above), because the compositor keeps whatever cursor a
+        // client last set: hide the pointer and then vanish -- page popped,
+        // app quit, app killed -- and the user is left with no pointer at all,
+        // desktop-wide, until something else happens to set one. That is a far
+        // worse bug than the one this fixes, so the hidden state is only ever
+        // held while this page is genuinely in front of the user.
+        cursorShape: page.pointerHidden ? Qt.BlankCursor : Qt.ArrowCursor
         onPositionChanged: { page.controlsVisible = true; hideTimer.restart() }
         onClicked: video.togglePause()
     }

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import locale
 import os
+import signal
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import qInstallMessageHandler
+from PySide6.QtCore import QTimer, qInstallMessageHandler
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 
@@ -58,6 +59,24 @@ def main() -> int:
     engine.load(str(QML_DIR / root_qml))
     if not engine.rootObjects():
         return 1
+
+    # Qt runs no shutdown of its own for SIGTERM/SIGINT, so a plain `kill` (or
+    # a Ctrl-C in the terminal) used to tear the process down mid-frame. That
+    # matters here because the player hides the mouse pointer while its
+    # controls are faded out, and a Wayland compositor keeps whatever cursor a
+    # client last set: dying that way left the whole desktop with no visible
+    # pointer until something else happened to set one. Quitting through Qt
+    # runs aboutToQuit, which is where PlayerPage.qml puts the arrow back.
+    #
+    # The timer is not idle work: while app.exec() is blocked inside Qt's C++
+    # event loop, Python never gets to run a queued signal handler, so without
+    # something waking the interpreter periodically these handlers would only
+    # fire on the next unrelated event.
+    signal_wakeup = QTimer()
+    signal_wakeup.start(200)
+    signal_wakeup.timeout.connect(lambda: None)
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, lambda *_: app.quit())
 
     return app.exec()
 
