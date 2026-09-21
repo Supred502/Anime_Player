@@ -137,15 +137,24 @@ query {
 }
 """
 
-# Finds "next unwatched season" recommendations: given a batch of media ids
-# (the user's own Completed/Watching list), fetch each one's direct relations
-# and keep only SEQUEL edges. The caller cross-references against the user's
-# full list locally to drop sequels already added in any status.
-_SEQUEL_RELATIONS_QUERY = f"""
+# The two "what should I watch next" signals, fetched together because they
+# come from the same media objects and a second round trip per batch would
+# double the cost for nothing:
+#
+#   * SEQUEL relations -- "you finished season 1, season 2 exists". Precise,
+#     but only ever suggests more of what's already been watched.
+#   * recommendations -- AniList's community "if you liked this, try that",
+#     ordered by how many people agreed. This is what makes the feature
+#     suggest something genuinely new.
+#
+# The caller cross-references both against the user's full list locally to
+# drop anything already added in any status.
+_RECOMMENDATION_SOURCES_QUERY = f"""
 query ($ids: [Int]) {{
   Page(perPage: 50) {{
     media(id_in: $ids, type: ANIME) {{
       id
+      title {{ romaji english }}
       relations {{
         edges {{
           relationType
@@ -154,6 +163,28 @@ query ($ids: [Int]) {{
           }}
         }}
       }}
+      recommendations(perPage: 8, sort: RATING_DESC) {{
+        nodes {{
+          rating
+          mediaRecommendation {{
+            {_MEDIA_FIELDS}
+          }}
+        }}
+      }}
+    }}
+  }}
+}}
+"""
+
+# A page of the catalog by popularity, used to pick something at random. Only
+# ids/titles are needed to choose, but the full fields come back so the chosen
+# one needs no follow-up request.
+_POPULAR_PAGE_QUERY = f"""
+query ($page: Int, $formats: [MediaFormat]) {{
+  Page(perPage: 50, page: $page) {{
+    pageInfo {{ lastPage }}
+    media(type: ANIME, format_in: $formats, sort: POPULARITY_DESC, isAdult: false) {{
+      {_MEDIA_FIELDS}
     }}
   }}
 }}
@@ -342,26 +373,43 @@ class AniListClient:
         has_next = bool((page_data.get("pageInfo") or {}).get("hasNextPage"))
         return results, has_next
 
-    def get_sequel_relations(self, media_ids: list[int]) -> dict[int, list[MediaSummary]]:
-        """For each of the given media ids, returns its direct SEQUEL relations.
-        Used to recommend "next season" entries for shows the user has
-        completed/is watching but hasn't added the sequel for yet. Capped to
-        the first 50 ids per AniList's own Page size -- a soft limit on how
-        many of the user's completed shows get checked at once, not a hard
-        requirement."""
-        if not media_ids:
-            return {}
-        data = self._request(_SEQUEL_RELATIONS_QUERY, {"ids": media_ids[:50]})
-        out: dict[int, list[MediaSummary]] = {}
-        for media in data["Page"]["media"]:
-            sequels = [
-                _media_summary_of(edge["node"])
-                for edge in (media.get("relations") or {}).get("edges", [])
-                if edge.get("relationType") == "SEQUEL"
-            ]
-            if sequels:
-                out[media["id"]] = sequels
-        return out
+    def get_recommendation_sources(
+        self, media_ids: list[int]
+    ) -> list[tuple[str, MediaSummary, str, int]]:
+        """For each given anime, what to watch after it.
+
+        Returns (kind, suggestion, because_of_title, weight) rows, where kind
+        is "sequel" or "similar". AniList pages this 50 ids at a time, so a
+        longer list is fetched in batches -- the caller decides how many of the
+        user's shows are worth spending requests on.
+        """
+        rows: list[tuple[str, MediaSummary, str, int]] = []
+        for start in range(0, len(media_ids), 50):
+            data = self._request(
+                _RECOMMENDATION_SOURCES_QUERY, {"ids": media_ids[start : start + 50]}
+            )
+            for media in data["Page"]["media"]:
+                because = _primary_title(media)
+                for edge in (media.get("relations") or {}).get("edges", []):
+                    if edge.get("relationType") == "SEQUEL":
+                        rows.append(("sequel", _media_summary_of(edge["node"]), because, 0))
+                for node in (media.get("recommendations") or {}).get("nodes", []):
+                    suggestion = node.get("mediaRecommendation")
+                    if suggestion:
+                        rows.append(
+                            ("similar", _media_summary_of(suggestion), because, node.get("rating") or 0)
+                        )
+        return rows
+
+    def get_popular_page(self, page: int, formats: list[str]) -> tuple[list[MediaSummary], int]:
+        """One page of the catalog by popularity, plus how many pages there
+        are. Used to pick a random anime from a pool worth picking from --
+        uniformly random across all of AniList is almost always an obscure
+        short nobody asked for."""
+        data = self._request(_POPULAR_PAGE_QUERY, {"page": page, "formats": formats})
+        page_data = data["Page"]
+        last_page = (page_data.get("pageInfo") or {}).get("lastPage") or page
+        return [_media_summary_of(m) for m in page_data["media"]], last_page
 
     def save_progress(self, media_id: int, status: str, progress: int) -> None:
         self._request(

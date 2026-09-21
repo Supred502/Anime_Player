@@ -24,6 +24,13 @@ Item {
     property string cornerText: ""       // bottom-left pill on the poster, e.g. "TV"
     property real watchedFraction: 0     // 0..1, draws a resume bar along the poster's bottom edge
 
+    // A model role that exists but was never set reads back as `undefined`,
+    // and QML renders that as the literal word. Every text property here is
+    // filtered through this, so the worst a missing role can do is leave a
+    // label blank -- a card once showed an "undefined" badge because one of
+    // two producers feeding the same model didn't set this role.
+    function textOf(value) { return value === undefined || value === null ? "" : String(value) }
+
     // The poster is a 2:3 box and the text block is a fixed two title lines
     // plus one subtitle line, so a caller that knows the column width knows
     // the whole card height: heightForWidth(w).
@@ -78,7 +85,7 @@ Item {
             Behavior on scale { NumberAnimation { duration: 100 } }
 
             Rectangle {
-                visible: card.badgeText !== ""
+                visible: card.textOf(card.badgeText) !== ""
                 anchors.top: parent.top
                 anchors.right: parent.right
                 anchors.margins: Kirigami.Units.smallSpacing
@@ -90,7 +97,7 @@ Item {
                 Controls.Label {
                     id: badgeLabel
                     anchors.centerIn: parent
-                    text: card.badgeText
+                    text: card.textOf(card.badgeText)
                     color: Kirigami.Theme.highlightedTextColor
                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     font.bold: true
@@ -98,7 +105,7 @@ Item {
             }
 
             Rectangle {
-                visible: card.cornerText !== ""
+                visible: card.textOf(card.cornerText) !== ""
                 anchors.left: parent.left
                 anchors.bottom: parent.bottom
                 anchors.margins: Kirigami.Units.smallSpacing
@@ -110,7 +117,7 @@ Item {
                 Controls.Label {
                     id: cornerLabel
                     anchors.centerIn: parent
-                    text: card.cornerText
+                    text: card.textOf(card.cornerText)
                     color: "white"
                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     font.bold: true
@@ -163,7 +170,7 @@ Item {
             // spacing still laid out as one elided line, and only a box with
             // a little slack (36px) actually took the second line.
             readonly property real lineHeight: Math.ceil(fontMetrics.lineSpacing)
-            text: card.title
+            text: card.textOf(card.title)
             wrapMode: Text.WordWrap
             font.bold: true
             maximumLineCount: 2
@@ -176,7 +183,7 @@ Item {
         Controls.Label {
             id: subtitleLabel
             Layout.fillWidth: true
-            text: card.subtitle
+            text: card.textOf(card.subtitle)
             opacity: 0.7
             elide: Text.ElideRight
             font.pixelSize: Kirigami.Theme.smallFont.pixelSize

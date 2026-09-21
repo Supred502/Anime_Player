@@ -93,3 +93,56 @@ def test_upsert_anilist_status_preserves_genres(tmp_path: Path) -> None:
     assert entry.genres == ("Comedy",)
 
     db.close()
+
+
+def test_alternate_titles_round_trip(tmp_path: Path) -> None:
+    db = Database(tmp_path / "test.db")
+    db.replace_anilist_list(
+        [
+            AniListStatus(
+                anilist_id=1, status="CURRENT", progress=3, score=0.0,
+                title="Re:ZERO -Starting Life in Another World- Season 3",
+                cover_url=None,
+                # Commas are common inside anime titles, which is why these
+                # are not stored comma-separated the way genres are.
+                titles=("Re:Zero kara Hajimeru Isekai Seikatsu 3rd Season", "Re:Zero, Season 3"),
+            )
+        ]
+    )
+
+    stored = db.get_anilist_status(1)
+
+    assert stored.titles == (
+        "Re:Zero kara Hajimeru Isekai Seikatsu 3rd Season",
+        "Re:Zero, Season 3",
+    )
+    db.close()
+
+
+def test_a_failed_source_lookup_is_not_remembered(tmp_path: Path) -> None:
+    # A miss means the source was down, the title was one the matcher couldn't
+    # handle, or the show wasn't listed yet -- all of which stop being true.
+    # Caching them meant a show that failed once failed forever.
+    db = Database(tmp_path / "test.db")
+
+    db.save_anidb_mapping(163134, None)
+
+    assert db.get_anidb_mapping(163134) is None
+    assert db._conn.execute("SELECT COUNT(*) FROM anidb_map").fetchone()[0] == 0
+    db.close()
+
+
+def test_existing_cached_failures_are_dropped_on_open(tmp_path: Path) -> None:
+    db_path = tmp_path / "test.db"
+    db = Database(db_path)
+    db._conn.execute(
+        "INSERT INTO anidb_map (anilist_id, slug_id) VALUES (163134, NULL), (226, 'elfen-lied-1')"
+    )
+    db._conn.commit()
+    db.close()
+
+    reopened = Database(db_path)
+
+    assert reopened.get_anidb_mapping(163134) is None
+    assert reopened._conn.execute("SELECT COUNT(*) FROM anidb_map").fetchone()[0] == 1
+    reopened.close()

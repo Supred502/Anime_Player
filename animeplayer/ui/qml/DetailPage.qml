@@ -129,6 +129,12 @@ Kirigami.ScrollablePage {
                     Layout.fillWidth: true
                 }
                 Controls.Label {
+                    // What the card that opened this page knew. The AniList
+                    // line below says all of this and more, so it replaces
+                    // this one as soon as it arrives rather than sitting
+                    // under it repeating the format back ("TV" / "TV · 13
+                    // episodes · ...").
+                    visible: !page.anilistDetails && text !== ""
                     text: (page.anime.kind || "") + (page.anime.rating ? " · ★" + page.anime.rating : "")
                     opacity: 0.7
                 }

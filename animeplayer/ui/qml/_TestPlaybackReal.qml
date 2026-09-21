@@ -19,7 +19,11 @@ Kirigami.ApplicationWindow {
     property string pause: testPause
     property var detailPage: null
 
-    function log(msg) { console.log("[E2E] " + msg) }
+    // console.warn, not console.log: the message handler in __main__.py only
+    // receives what Qt's logging rules let through, and debug-level QML output
+    // is filtered out by default -- a log() built on console.log prints
+    // nothing at all while warnings from the same file appear fine.
+    function log(msg) { console.warn("[E2E] " + msg) }
 
     Connections {
         target: backend

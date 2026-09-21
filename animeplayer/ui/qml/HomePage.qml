@@ -7,6 +7,33 @@ Kirigami.ScrollablePage {
     id: page
     title: "Home"
 
+    // True between asking for a random pick and the answer arriving. That
+    // round trip involves an AniList page plus a source lookup, so without
+    // this the button looks like it did nothing for a couple of seconds.
+    property bool surprising: false
+
+    actions: [
+        Kirigami.Action {
+            text: page.surprising ? "Finding one..." : "Surprise Me"
+            icon.name: "media-playlist-shuffle-symbolic"
+            enabled: !page.surprising
+            tooltip: "Open a random anime you haven't watched"
+            onTriggered: {
+                page.surprising = true
+                backend.surpriseMe()
+            }
+        },
+        Kirigami.Action {
+            text: "Recommend Me"
+            icon.name: "games-highscores-symbolic"
+            tooltip: "Shows picked from what you've already watched"
+            onTriggered: {
+                let search = applicationWindow().pageStack.replace(Qt.resolvedUrl("SearchPage.qml"))
+                search.loadRecommendations()
+            }
+        }
+    ]
+
     ListModel { id: continueModel }
     ListModel { id: watchingModel }
     ListModel { id: planningModel }
@@ -46,12 +73,21 @@ Kirigami.ScrollablePage {
             planningModel.clear()
             for (let i = 0; i < entries.length; i++) planningModel.append(entries[i])
         }
-        function onAnilistAnimeResolved(result) { page.openAnime(result) }
+        function onAnilistAnimeResolved(result) {
+            page.surprising = false
+            page.openAnime(result)
+        }
         function onAnilistAnimeResolveFailed(title) {
+            page.surprising = false
             showPassiveNotification("Couldn't find a stream for \"" + title + "\"")
         }
         function onAnilistAnimeResolveErrored(message) {
+            page.surprising = false
             showPassiveNotification("Couldn't reach the streaming source: " + message)
+        }
+        function onDiscoverFailed(message) {
+            page.surprising = false
+            showPassiveNotification(message)
         }
     }
 

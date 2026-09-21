@@ -5,6 +5,22 @@ import respx
 from animeplayer.anilist.client import AniListClient, AniListError, build_authorize_url
 
 
+def _media(media_id: int, romaji: str) -> dict:
+    """One AniList media object with only the fields the client reads."""
+    return {
+        "id": media_id,
+        "title": {"romaji": romaji, "english": None},
+        "synonyms": [],
+        "coverImage": {"large": None},
+        "averageScore": None,
+        "genres": [],
+        "format": "TV",
+        "episodes": None,
+        "description": None,
+    }
+
+
+
 def test_build_authorize_url() -> None:
     url = build_authorize_url("12345")
     assert url == "https://anilist.co/api/v2/oauth/authorize?client_id=12345&response_type=token"
@@ -217,7 +233,7 @@ def test_search_by_filters_no_next_page_when_absent() -> None:
 
 
 @respx.mock
-def test_get_sequel_relations_filters_to_sequel_edges() -> None:
+def test_get_recommendation_sources_splits_sequels_from_similar() -> None:
     respx.post("https://graphql.anilist.co").mock(
         return_value=httpx.Response(
             200,
@@ -227,36 +243,23 @@ def test_get_sequel_relations_filters_to_sequel_edges() -> None:
                         "media": [
                             {
                                 "id": 100,
+                                "title": {"romaji": "Show", "english": None},
                                 "relations": {
                                     "edges": [
                                         {
                                             "relationType": "SEQUEL",
-                                            "node": {
-                                                "id": 200,
-                                                "title": {"romaji": "Show Season 3", "english": None},
-                                                "synonyms": [],
-                                                "coverImage": {"large": None},
-                                                "averageScore": None,
-                                                "genres": [],
-                                                "format": "TV",
-                                                "episodes": None,
-                                                "description": None,
-                                            },
+                                            "node": _media(200, "Show Season 3"),
                                         },
                                         {
                                             "relationType": "PREQUEL",
-                                            "node": {
-                                                "id": 99,
-                                                "title": {"romaji": "Show Season 1", "english": None},
-                                                "synonyms": [],
-                                                "coverImage": {"large": None},
-                                                "averageScore": None,
-                                                "genres": [],
-                                                "format": "TV",
-                                                "episodes": None,
-                                                "description": None,
-                                            },
+                                            "node": _media(99, "Show Season 1"),
                                         },
+                                    ]
+                                },
+                                "recommendations": {
+                                    "nodes": [
+                                        {"rating": 412, "mediaRecommendation": _media(300, "Other Show")},
+                                        {"rating": 7, "mediaRecommendation": None},
                                     ]
                                 },
                             }
@@ -268,18 +271,45 @@ def test_get_sequel_relations_filters_to_sequel_edges() -> None:
     )
     with httpx.Client() as http_client:
         client = AniListClient(http_client)
-        relations = client.get_sequel_relations([100])
+        rows = client.get_recommendation_sources([100])
 
-    assert list(relations.keys()) == [100]
-    assert len(relations[100]) == 1
-    assert relations[100][0].id == 200
-    assert relations[100][0].title == "Show Season 3"
+    # The PREQUEL edge is dropped (it is not something to watch next), and so
+    # is the recommendation whose media came back null -- AniList returns those
+    # for entries that have since been deleted.
+    assert [(kind, m.id, because, weight) for kind, m, because, weight in rows] == [
+        ("sequel", 200, "Show", 0),
+        ("similar", 300, "Show", 412),
+    ]
 
 
-def test_get_sequel_relations_empty_input_short_circuits() -> None:
+def test_get_recommendation_sources_empty_input_makes_no_request() -> None:
     with httpx.Client() as http_client:
         client = AniListClient(http_client)
-        assert client.get_sequel_relations([]) == {}
+        # No respx mock installed: a request here would raise rather than pass.
+        assert client.get_recommendation_sources([]) == []
+
+
+@respx.mock
+def test_get_popular_page_returns_results_and_last_page() -> None:
+    respx.post("https://graphql.anilist.co").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "data": {
+                    "Page": {
+                        "pageInfo": {"lastPage": 87},
+                        "media": [_media(1, "Popular Show")],
+                    }
+                }
+            },
+        )
+    )
+    with httpx.Client() as http_client:
+        client = AniListClient(http_client)
+        results, last_page = client.get_popular_page(3, ["TV"])
+
+    assert last_page == 87
+    assert [m.title for m in results] == ["Popular Show"]
 
 
 @respx.mock

@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS anilist_list (
 
 -- Caches AniList media id -> streaming-source search result (the reverse of
 -- title_map), so clicking a Home-page AniList card doesn't re-search the
--- source every time. slug_id NULL means "looked up, no confident match found".
+-- source every time. Only successful lookups are stored -- see
+-- save_anidb_mapping for why a miss is deliberately not remembered.
 -- Source-specific: see clear_anidb_mappings, called when the backend changes.
 CREATE TABLE IF NOT EXISTS anidb_map (
     anilist_id INTEGER PRIMARY KEY,
@@ -93,6 +94,10 @@ class AniListStatus:
     cover_url: str | None
     genres: tuple[str, ...] = ()
     popularity: int = 0
+    # Romaji/English/synonyms. Cached alongside the display title because
+    # finding a show on the streaming source needs every name AniList knows
+    # for it, not just the one shown on the card -- see anilist/matcher.py.
+    titles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,8 +140,16 @@ class Database:
                 "cover_url": "TEXT",
                 "genres": "TEXT NOT NULL DEFAULT ''",
                 "popularity": "INTEGER NOT NULL DEFAULT 0",
+                "alt_titles": "TEXT NOT NULL DEFAULT ''",
             },
         )
+        # Rows recording "looked up, found nothing" were kept forever, so a
+        # show the matcher couldn't find once stayed unfindable even after the
+        # matcher itself was fixed -- confirmed live: Re:Zero season 3 had been
+        # cached as unresolvable and kept reporting "couldn't find a stream"
+        # long after searching for it worked again. Nothing is lost by dropping
+        # them; each one costs a single search to rebuild.
+        self._conn.execute("DELETE FROM anidb_map WHERE slug_id IS NULL")
         self._conn.commit()
 
     def _ensure_columns(self, table: str, columns: dict[str, str]) -> None:
@@ -271,6 +284,9 @@ class Database:
         data = dict(row)
         genres_csv = data.pop("genres", "") or ""
         data["genres"] = tuple(g for g in genres_csv.split(",") if g)
+        # Tab-separated, not comma: anime titles contain commas.
+        alt_titles = data.pop("alt_titles", "") or ""
+        data["titles"] = tuple(t for t in alt_titles.split("\t") if t)
         return AniListStatus(**data)
 
     def replace_anilist_list(self, entries: list[AniListStatus]) -> None:
@@ -278,12 +294,12 @@ class Database:
             self._conn.execute("DELETE FROM anilist_list")
             self._conn.executemany(
                 "INSERT INTO anilist_list "
-                "(anilist_id, status, progress, score, title, cover_url, genres, popularity) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(anilist_id, status, progress, score, title, cover_url, genres, popularity, alt_titles) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         e.anilist_id, e.status, e.progress, e.score, e.title, e.cover_url,
-                        ",".join(e.genres), e.popularity,
+                        ",".join(e.genres), e.popularity, "\t".join(e.titles),
                     )
                     for e in entries
                 ],
@@ -310,15 +326,17 @@ class Database:
         with self._lock:
             self._conn.execute(
                 "INSERT INTO anilist_list "
-                "(anilist_id, status, progress, score, title, cover_url, genres, popularity) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "(anilist_id, status, progress, score, title, cover_url, genres, popularity, alt_titles) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(anilist_id) DO UPDATE SET "
                 "status=excluded.status, progress=excluded.progress, score=excluded.score, "
                 "title=excluded.title, cover_url=excluded.cover_url, "
-                "genres=excluded.genres, popularity=excluded.popularity",
+                "genres=excluded.genres, popularity=excluded.popularity, "
+                "alt_titles=excluded.alt_titles",
                 (
                     entry.anilist_id, entry.status, entry.progress, entry.score, entry.title,
                     entry.cover_url, ",".join(entry.genres), entry.popularity,
+                    "\t".join(entry.titles),
                 ),
             )
             self._conn.commit()
@@ -329,13 +347,6 @@ class Database:
             self._conn.commit()
 
     # -- anidb_map (AniList media id -> anidb.app search result) ----------
-
-    def has_anidb_mapping(self, anilist_id: int) -> bool:
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT 1 FROM anidb_map WHERE anilist_id = ?", (anilist_id,)
-            ).fetchone()
-            return row is not None
 
     def get_anidb_mapping(self, anilist_id: int) -> AniDBMapping | None:
         with self._lock:
@@ -361,28 +372,29 @@ class Database:
             self._conn.commit()
 
     def save_anidb_mapping(self, anilist_id: int, mapping: AniDBMapping | None) -> None:
+        """Caches a resolved mapping. A None mapping ("searched, found
+        nothing") is deliberately NOT stored: a miss is usually the source
+        being down, a title the matcher couldn't handle yet, or a show the
+        source hadn't listed yet, and all three stop being true later.
+        Remembering them meant a show that failed once failed forever, with no
+        way for a user to ask again. Re-searching on the next click costs one
+        request and is what makes "try it again now" work."""
+        if mapping is None:
+            return
         with self._lock:
-            if mapping is None:
-                self._conn.execute(
-                    "INSERT INTO anidb_map (anilist_id, slug_id, numeric_id, title, poster_url, kind) "
-                    "VALUES (?, NULL, NULL, NULL, NULL, NULL) "
-                    "ON CONFLICT(anilist_id) DO UPDATE SET slug_id=NULL",
-                    (anilist_id,),
-                )
-            else:
-                self._conn.execute(
-                    "INSERT INTO anidb_map (anilist_id, slug_id, numeric_id, title, poster_url, kind) "
-                    "VALUES (?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT(anilist_id) DO UPDATE SET "
-                    "slug_id=excluded.slug_id, numeric_id=excluded.numeric_id, title=excluded.title, "
-                    "poster_url=excluded.poster_url, kind=excluded.kind",
-                    (
-                        anilist_id,
-                        mapping.slug_id,
-                        mapping.numeric_id,
-                        mapping.title,
-                        mapping.poster_url,
-                        mapping.kind,
-                    ),
-                )
+            self._conn.execute(
+                "INSERT INTO anidb_map (anilist_id, slug_id, numeric_id, title, poster_url, kind) "
+                "VALUES (?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(anilist_id) DO UPDATE SET "
+                "slug_id=excluded.slug_id, numeric_id=excluded.numeric_id, title=excluded.title, "
+                "poster_url=excluded.poster_url, kind=excluded.kind",
+                (
+                    anilist_id,
+                    mapping.slug_id,
+                    mapping.numeric_id,
+                    mapping.title,
+                    mapping.poster_url,
+                    mapping.kind,
+                ),
+            )
             self._conn.commit()

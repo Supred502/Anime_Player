@@ -76,6 +76,14 @@ _CARD_SUB_COUNT_RE = re.compile(r'tick-item tick-sub">.*?(\d+)</div>')
 _CARD_DUB_COUNT_RE = re.compile(r'tick-item tick-dub">.*?(\d+)</div>')
 _TRAILING_ID_RE = re.compile(r"-(\d+)$")
 
+# hianime's search does not tokenise punctuation: searching its *own* title
+# for a show returns nothing when that title contains any. Confirmed live --
+# "Re:ZERO -Starting Life in Another World- Season 3" is the exact title of
+# an entry on the site and finds zero results, while the same words with the
+# colon and dashes replaced by spaces finds it as the only hit.
+_QUERY_PUNCT_RE = re.compile(r"[^\w\s]+")
+_QUERY_WS_RE = re.compile(r"\s+")
+
 _EPISODE_RE = re.compile(r'<a\s[^>]*?data-number="([^"]*)"[^>]*?data-id="(\d+)"', re.S)
 _EPISODE_TITLE_RE = re.compile(r'title="([^"]*)"')
 _EPISODE_SLUG_RE = re.compile(r'/watch/([^"?]+)\?ep=')
@@ -183,9 +191,13 @@ def _first(pattern: re.Pattern[str], text: str, default: str = "") -> str:
     return match.group(1).strip() if match else default
 
 
+def _search_keyword(query: str) -> str:
+    return _QUERY_WS_RE.sub(" ", _QUERY_PUNCT_RE.sub(" ", query)).strip()
+
+
 def search(query: str, client: httpx.Client) -> list[SearchResult]:
     """Search hianime.at for anime matching `query`."""
-    resp = _get(SEARCH_URL, client, params={"keyword": query})
+    resp = _get(SEARCH_URL, client, params={"keyword": _search_keyword(query)})
     page = resp.text.split(_SIDEBAR_MARKER)[0]
 
     results: list[SearchResult] = []

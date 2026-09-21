@@ -55,6 +55,7 @@ def main() -> int:
     engine.rootContext().setContextProperty(
         "testHideControls", os.environ.get("ANIMEPLAYER_TEST_HIDECONTROLS", "")
     )
+    engine.rootContext().setContextProperty("testMode", os.environ.get("ANIMEPLAYER_TEST_MODE", ""))
     root_qml = os.environ.get("ANIMEPLAYER_TEST_QML", "Main.qml")
     engine.load(str(QML_DIR / root_qml))
     if not engine.rootObjects():

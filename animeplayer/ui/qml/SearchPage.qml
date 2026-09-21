@@ -65,17 +65,7 @@ Kirigami.ScrollablePage {
             page.hasMore = false
             page.recommendationsMessage = ""
             resultsModel.clear()
-            for (let i = 0; i < results.length; i++) {
-                // anilistLabel/anilistProgress start empty and are filled in later
-                // by onAnilistStatusesResolved, once that background match finishes.
-                // Declaring them here up front keeps the role set consistent across
-                // every row -- ListModel doesn't like a role appearing only on some.
-                let r = results[i]
-                r.anilistLabel = ""
-                r.anilistProgress = 0
-                r.source = "stream"
-                resultsModel.append(r)
-            }
+            for (let i = 0; i < results.length; i++) page.appendResult(results[i], "stream")
         }
         function onSearchFailed(message) {
             page.searching = false
@@ -90,11 +80,7 @@ Kirigami.ScrollablePage {
             page.hasMore = payload.hasMore
             page.recommendationsMessage = ""
             if (payload.page <= 1) resultsModel.clear()
-            for (let i = 0; i < payload.results.length; i++) {
-                let r = payload.results[i]
-                r.source = "anilist"
-                resultsModel.append(r)
-            }
+            for (let i = 0; i < payload.results.length; i++) page.appendResult(payload.results[i], "anilist")
         }
         function onRecommendationsFailed(message) {
             page.searching = false
@@ -141,6 +127,39 @@ Kirigami.ScrollablePage {
         function onAnilistAnimeResolveErrored(message) {
             showPassiveNotification("Couldn't reach the streaming source: " + message)
         }
+        function onDiscoverFailed(message) {
+            showPassiveNotification(message)
+        }
+    }
+
+    // Every row goes in through here, with every role spelled out, because a
+    // QML ListModel fixes its role set from the first row it is given: a later
+    // row missing one of those roles leaves it *present but unset*, which
+    // reads back as `undefined` and renders as the literal text "undefined".
+    // The two producers (the streaming source's search and AniList's catalog)
+    // describe an anime differently, so results from whichever one appended
+    // second showed an "undefined" badge on every single card.
+    function appendResult(r, sourceKind) {
+        resultsModel.append({
+            slug_id: r.slug_id || "",
+            numeric_id: r.numeric_id || "",
+            anilist_id: r.anilist_id || 0,
+            title: r.title || "",
+            poster_url: r.poster_url || "",
+            kind: r.kind || "",
+            rating: r.rating || "",
+            duration: r.duration || "",
+            sub_count: r.sub_count || 0,
+            dub_count: r.dub_count || 0,
+            // Why a recommendation was suggested ("Next season of X"). Empty
+            // for anything that isn't a recommendation.
+            reason: r.reason || "",
+            source: sourceKind,
+            // Filled in later by onAnilistStatusesResolved, once that
+            // background match finishes.
+            anilistLabel: "",
+            anilistProgress: 0
+        })
     }
 
     function applyTagFilterText(text) {
@@ -280,6 +299,13 @@ Kirigami.ScrollablePage {
             text: "Search"
             onClicked: page.doSearch()
         }
+        Controls.Button {
+            text: "Recommend"
+            icon.name: "games-highscores-symbolic"
+            // Used to be reachable only by clearing the box and pressing
+            // Search, which nothing on screen said.
+            onClicked: page.loadRecommendations()
+        }
     }
 
     function doSearch() {
@@ -367,10 +393,14 @@ Kirigami.ScrollablePage {
                 anchors.margins: Kirigami.Units.smallSpacing
                 posterUrl: model.poster_url
                 title: model.title
-                // The source's own cards carry no score, so this is the
-                // format plus its runtime rather than an always-empty "· ★".
-                subtitle: [model.kind, model.duration, model.rating ? "\u2605 " + model.rating : ""]
-                    .filter((part) => !!part).join(" · ")
+                // A recommendation says why it's being recommended; anything
+                // else falls back to describing itself. (The source's own
+                // cards carry no score, so that line is the format plus its
+                // runtime rather than an always-empty "· ★".)
+                subtitle: model.reason !== ""
+                    ? model.reason
+                    : [model.kind, model.duration, model.rating ? "\u2605 " + model.rating : ""]
+                        .filter((part) => !!part).join(" · ")
                 badgeText: model.anilistLabel !== ""
                     ? model.anilistLabel + (model.anilistProgress > 0 ? " " + model.anilistProgress : "")
                     : ""
@@ -411,7 +441,7 @@ Kirigami.ScrollablePage {
             visible: !page.searching && grid.count === 0
             text: page.showingRecommendations ? "No recommendations" : "No results yet"
             explanation: page.recommendationsMessage !== "" ? page.recommendationsMessage
-                : "Search for an anime, pick some genres/tags above, or clear the search to see recommendations"
+                : "Search for an anime, pick some genres/tags above, or hit Recommend for something new"
             icon.name: "edit-find-symbolic"
         }
     }

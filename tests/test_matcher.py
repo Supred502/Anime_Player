@@ -132,3 +132,147 @@ def test_best_source_result_returns_none_when_no_good_match() -> None:
     best = matcher.best_source_result("Hunter x Hunter", results)
 
     assert best is None
+
+
+# -- Season/part/side-story awareness --------------------------------------
+# Each of these is a wrong match that was observed live against the real
+# catalogs before the scoring below existed.
+
+
+def test_season_one_does_not_match_a_later_season() -> None:
+    # "Sousou no Frieren" vs "Sousou no Frieren 3rd Season" scores 0.77 on
+    # plain string similarity, so clicking season 1 opened season 3.
+    results = [
+        _result("sousou-no-frieren-3rd-7220", "Sousou no Frieren 3rd Season"),
+        _result("frieren-beyond-journeys-end-481", "Frieren: Beyond Journey's End"),
+    ]
+
+    best = matcher.best_source_result(
+        ("Sousou no Frieren", "Frieren: Beyond Journey's End"), results
+    )
+
+    assert best.slug_id == "frieren-beyond-journeys-end-481"
+
+
+def test_later_season_does_not_fall_back_to_season_one() -> None:
+    results = [_result("rezero-1387", "Re:ZERO -Starting Life in Another World-")]
+
+    best = matcher.best_source_result(
+        ("Re:Zero kara Hajimeru Isekai Seikatsu 3rd Season",), results
+    )
+
+    assert best is None
+
+
+def test_season_number_is_read_however_it_is_written() -> None:
+    # The two catalogs disagree on spelling in every one of these ways.
+    assert matcher._season_of("Show Season 2") == 2
+    assert matcher._season_of("GRANBLUE FANTASY The Animation Season2") == 2
+    assert matcher._season_of("Show 2nd Season") == 2
+    assert matcher._season_of("Show Season II") == 2
+    assert matcher._season_of("Overlord II") == 2
+    assert matcher._season_of("Psycho-Pass 3") == 3
+
+
+def test_a_number_that_is_part_of_the_name_is_not_a_season() -> None:
+    assert matcher._season_of("Steins;Gate 0") is None
+    assert matcher._season_of("Mob Psycho 100") is None
+    assert matcher._season_of("86 EIGHTY-SIX") is None
+    assert matcher._season_of("Sousou no Frieren") is None
+
+
+def test_a_recap_does_not_win_over_the_show_it_recaps() -> None:
+    results = [
+        _result("bakemonogatari-recap-1", "Bakemonogatari Recap"),
+        _result("bakemonogatari-2", "Bakemonogatari (The Monogatari Series)"),
+    ]
+
+    best = matcher.best_source_result(("Bakemonogatari",), results)
+
+    assert best.slug_id == "bakemonogatari-2"
+
+
+def test_a_show_that_really_is_a_special_still_matches_one() -> None:
+    # The penalty is for a mismatch, not for the word: an entry that is itself
+    # a set of specials has to still be findable.
+    results = [_result("high-school-dxd-specials-1", "High School DxD Specials")]
+
+    best = matcher.best_source_result(("High School DxD Specials",), results)
+
+    assert best.slug_id == "high-school-dxd-specials-1"
+
+
+def test_an_appended_qualifier_still_matches() -> None:
+    results = [_result("dorohedoro-2691", "Dorohedoro (The Complete Series)")]
+
+    best = matcher.best_source_result(("Dorohedoro",), results)
+
+    assert best.slug_id == "dorohedoro-2691"
+
+
+def test_a_short_shared_prefix_gets_no_bonus() -> None:
+    # "Monster" is a prefix of "Monster Eater" by coincidence, not because
+    # they are the same show, so it must score as plain similarity rather than
+    # being lifted to the prefix score the way a long title is.
+    coincidence = matcher.title_score(("Monster",), ("Monster Eater",))
+    real = matcher.title_score(("Bakemonogatari",), ("Bakemonogatari Series",))
+
+    assert coincidence < matcher._PREFIX_SCORE <= real
+
+
+# -- Searching under every name AniList knows -------------------------------
+
+
+def test_find_source_result_searches_each_title_variant() -> None:
+    # The source indexes the licensed English title and finds nothing for the
+    # romaji one, which is why a single query can't be fixed by better scoring.
+    catalog = {
+        "demon slayer kimetsu no yaiba swordsmith village arc": [
+            _result("demon-slayer-swordsmith-233", "Demon Slayer: Kimetsu no Yaiba Swordsmith Village Arc")
+        ],
+    }
+    queried: list[str] = []
+
+    def search(query: str) -> list[SearchResult]:
+        queried.append(query)
+        return catalog.get(query, [])
+
+    best = matcher.find_source_result(
+        (
+            "Kimetsu no Yaiba: Katanakaji no Sato-hen",
+            "Demon Slayer: Kimetsu no Yaiba Swordsmith Village Arc",
+        ),
+        search,
+    )
+
+    assert best.slug_id == "demon-slayer-swordsmith-233"
+    assert len(queried) == 2
+
+
+def test_find_source_result_stops_at_an_exact_match() -> None:
+    queried: list[str] = []
+
+    def search(query: str) -> list[SearchResult]:
+        queried.append(query)
+        return [_result("dorohedoro-2691", "Dorohedoro")]
+
+    best = matcher.find_source_result(("Dorohedoro", "ドロヘドロ", "Dorohedoro TV"), search)
+
+    assert best.slug_id == "dorohedoro-2691"
+    assert queried == ["dorohedoro"]  # no reason to try the rest
+
+
+def test_search_queries_drop_punctuation_and_native_script() -> None:
+    # The source's search does not tokenise punctuation -- searching its own
+    # title for Re:Zero season 3 verbatim returns nothing -- and its index is
+    # romaji/English, so a Japanese synonym is a wasted request.
+    queries = matcher.search_queries(
+        ("Re:ZERO -Starting Life in Another World- Season 3", "リゼロ", "Re:Zero Season 3")
+    )
+
+    assert queries == ["re zero starting life in another world season 3", "re zero season 3"]
+
+
+def test_a_single_title_string_is_not_iterated_into_characters() -> None:
+    # A str is a Sequence[str], so this mistake is silent without the guard.
+    assert matcher.title_score("Dorohedoro", "Dorohedoro") == 1.0

@@ -9,6 +9,7 @@ safe to call directly from worker threads too -- see storage/db.py.
 from __future__ import annotations
 
 import json
+import random
 import re
 import socket
 import tempfile
@@ -131,7 +132,11 @@ class Backend(QObject):
     anilistGenresLoaded = Signal(list)
     anilistTagsLoaded = Signal(list)
     filterSearchFinished = Signal(dict)  # {results, page, hasMore} -- AniList-sourced results
-    recommendationsFailed = Signal(str)  # empty-search recommendations couldn't be built (e.g. not logged in yet)
+    recommendationsFailed = Signal(str)  # recommendations couldn't be built (e.g. not logged in yet)
+    # Surprise Me couldn't land on anything. Its own signal because the text is
+    # a finished sentence for the user, where anilistAnimeResolveErrored's is a
+    # raw failure the UI has to introduce.
+    discoverFailed = Signal(str)
 
     skipTimesReady = Signal(dict)  # {"op": {"start","end"}, "ed": {...}} -- either/both keys may be absent
     nextEpisodeLoading = Signal(int, float)  # (episode_id, episode_number) -- fired before streamReady on auto-next
@@ -160,6 +165,13 @@ class Backend(QObject):
         self._anilist_public = AniListClient(self._http)
         self._genre_cache: list[str] | None = None
         self._tag_cache: list[str] | None = None
+        # AniList id -> every name AniList knows for it. Finding a show on the
+        # streaming source needs all of them, not just the one on the card
+        # (see anilist/matcher.py), but a card only carries its display title.
+        # Filled in from any MediaSummary that passes through, and backed by
+        # the anilist_list table for entries on the user's own list so it
+        # survives a restart.
+        self._titles_by_anilist_id: dict[int, tuple[str, ...]] = {}
         self._try_restore_anilist_session()
         self._emit_anilist_home_lists()
 
@@ -184,6 +196,22 @@ class Backend(QObject):
             return
         self._db.clear_anidb_mappings()
         self._db.set_setting("stream_source", source.BASE_URL)
+
+    def _remember_titles(self, summaries: list[MediaSummary]) -> None:
+        for m in summaries:
+            if m.titles:
+                self._titles_by_anilist_id[m.id] = m.titles
+
+    def _titles_for(self, anilist_id: int, display_title: str) -> tuple[str, ...]:
+        """Every name to try when looking this anime up on the source."""
+        known = self._titles_by_anilist_id.get(anilist_id)
+        if known is None:
+            entry = self._db.get_anilist_status(anilist_id)
+            known = entry.titles if entry else ()
+        # The display title stays first: it is the one the user just clicked,
+        # and it is the only name available at all for a card that came from
+        # somewhere with no AniList record behind it.
+        return (display_title, *(t for t in known if t != display_title))
 
     @Slot(bool)
     def setKeepScreenAwake(self, awake: bool) -> None:
@@ -211,7 +239,7 @@ class Backend(QObject):
             return source.search(query, self._http)
 
         def done(results: list[source.SearchResult]) -> None:
-            self.searchFinished.emit([asdict(r) for r in results])
+            self.searchFinished.emit([self._search_result_to_card(r) for r in results])
             if self._anilist_client is not None:
                 self._match_anilist_statuses(results)
 
@@ -271,17 +299,39 @@ class Backend(QObject):
 
         return sorted(results, key=affinity, reverse=True)
 
-    @staticmethod
-    def _media_summary_to_card(m: MediaSummary) -> dict[str, Any]:
-        return {
-            "anilist_id": m.id,
-            "title": m.title,
-            "poster_url": m.cover_url or "",
-            "kind": m.format or "",
+    # Every card the UI shows carries exactly these keys, whether it came from
+    # the streaming source's search or from AniList's catalog. The two used to
+    # emit different key sets into the same QML ListModel, and a ListModel
+    # fixes its roles from the first row it is given: rows from the other
+    # producer then had those roles present but unset, which QML reads as
+    # `undefined`. That rendered literally, as an "undefined" badge on every
+    # card of every genre search and recommendation.
+    _CARD_FIELDS: dict[str, Any] = {
+        "slug_id": "", "numeric_id": "", "anilist_id": 0, "title": "",
+        "poster_url": "", "kind": "", "rating": "", "duration": "",
+        "sub_count": 0, "dub_count": 0, "reason": "",
+    }
+
+    @classmethod
+    def _card(cls, **fields: Any) -> dict[str, Any]:
+        return {**cls._CARD_FIELDS, **fields}
+
+    @classmethod
+    def _media_summary_to_card(cls, m: MediaSummary, reason: str = "") -> dict[str, Any]:
+        return cls._card(
+            anilist_id=m.id,
+            title=m.title,
+            poster_url=m.cover_url or "",
+            kind=m.format or "",
             # Empty rather than "0.0" when AniList has no score yet, so the
             # card can leave the star out instead of advertising a zero.
-            "rating": f"{m.average_score / 10:.1f}" if m.average_score else "",
-        }
+            rating=f"{m.average_score / 10:.1f}" if m.average_score else "",
+            reason=reason,
+        )
+
+    @classmethod
+    def _search_result_to_card(cls, r: source.SearchResult) -> dict[str, Any]:
+        return cls._card(**asdict(r))
 
     _NOT_IN_LIST = "NOT_IN_LIST"  # synthetic status for the "not in my list" filter chip
 
@@ -337,6 +387,7 @@ class Backend(QObject):
             # "Load more" just keeps pulling subsequent catalog pages.
             filtered = self._apply_status_filter(results, status_include, status_exclude)
             ranked = self._affinity_sorted(filtered)
+            self._remember_titles(ranked)
             self.filterSearchFinished.emit(
                 {
                     "results": [self._media_summary_to_card(m) for m in ranked],
@@ -347,48 +398,168 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, done, self.searchFailed.emit))
 
+    # How many of the user's own shows to ask AniList about. One request per
+    # 50, so this is the knob trading "how much of your taste is considered"
+    # against how long the button takes to answer.
+    _RECOMMENDATION_SOURCE_LIMIT = 100
+    # A sequel to something already finished outranks any community
+    # suggestion: "season 2 exists" is the one recommendation that is never a
+    # guess. Above AniList's highest real rating counts, which run to a few
+    # thousand.
+    _SEQUEL_WEIGHT = 1_000_000
+
+    def _anilist_known_ids(self) -> set[int]:
+        """Everything already on the user's list in any status -- the things a
+        recommendation must never be."""
+        known: set[int] = set()
+        for status in ("CURRENT", "PLANNING", "COMPLETED", "DROPPED", "PAUSED", "REPEATING"):
+            known.update(e.anilist_id for e in self._db.get_anilist_by_status(status))
+        return known
+
+    def _recommendation_seed_ids(self) -> list[int]:
+        """Which of the user's shows to base suggestions on: everything
+        currently being watched (the strongest signal about what they're in
+        the mood for), then the most popular of what they've finished, since
+        a well-known show has far more community recommendations hanging off
+        it than an obscure one."""
+        current = self._db.get_anilist_by_status("CURRENT")
+        completed = sorted(
+            self._db.get_anilist_by_status("COMPLETED"),
+            key=lambda e: (e.score, e.popularity),
+            reverse=True,
+        )
+        seeds = [e.anilist_id for e in current]
+        for entry in completed:
+            if len(seeds) >= self._RECOMMENDATION_SOURCE_LIMIT:
+                break
+            if entry.anilist_id not in seeds:
+                seeds.append(entry.anilist_id)
+        return seeds
+
     @Slot()
     def loadRecommendations(self) -> None:
-        """Empty search (no query/genre/tag): surface sequels/later seasons of
-        shows the user has completed or is currently watching but hasn't
-        added to their list yet -- e.g. watched season 1+2 of something,
-        season 3 exists and isn't in any of their AniList lists yet."""
-        source_entries = self._db.get_anilist_by_status("COMPLETED") + self._db.get_anilist_by_status("CURRENT")
-        if not source_entries:
+        """"Recommend me something": what to watch next, based on what's
+        already been watched.
+
+        Two signals, blended and labelled so a card says why it's there:
+        unwatched sequels of shows already finished, and AniList's community
+        "if you liked this, try that" suggestions. This used to be sequels
+        only, which meant it could only ever offer more of the same shows --
+        and in practice offered mostly their recap episodes and picture
+        dramas, since those are sequel-linked too.
+        """
+        seeds = self._recommendation_seed_ids()
+        if not seeds:
             self.recommendationsFailed.emit(
                 "Log in to AniList and watch a few shows to see recommendations here."
             )
             return
+        known_ids = self._anilist_known_ids()
 
-        known_ids: set[int] = set()
-        for status in ("CURRENT", "PLANNING", "COMPLETED", "DROPPED", "PAUSED", "REPEATING"):
-            known_ids.update(e.anilist_id for e in self._db.get_anilist_by_status(status))
-        source_ids = [e.anilist_id for e in source_entries]
+        def work() -> list[tuple[str, MediaSummary, str, int]]:
+            return self._anilist_public.get_recommendation_sources(seeds)
 
-        def work() -> dict[int, list[MediaSummary]]:
-            return self._anilist_public.get_sequel_relations(source_ids)
-
-        def done(relations: dict[int, list[MediaSummary]]) -> None:
-            seen: dict[int, MediaSummary] = {}
-            for sequels in relations.values():
-                for m in sequels:
-                    if m.id not in known_ids:
-                        seen[m.id] = m
-            if not seen:
+        def done(rows: list[tuple[str, MediaSummary, str, int]]) -> None:
+            best: dict[int, tuple[int, MediaSummary, str]] = {}
+            for kind, suggestion, because_of, rating in rows:
+                if suggestion.id in known_ids:
+                    continue
+                weight = self._SEQUEL_WEIGHT if kind == "sequel" else rating
+                reason = (
+                    f"Next season of {because_of}" if kind == "sequel"
+                    else f"Because you watched {because_of}"
+                )
+                # Several watched shows can point at the same suggestion; keep
+                # the strongest reason rather than whichever arrived last.
+                if suggestion.id not in best or weight > best[suggestion.id][0]:
+                    best[suggestion.id] = (weight, suggestion, reason)
+            if not best:
                 self.recommendationsFailed.emit(
-                    "No unwatched sequels found -- looks like you're all caught up."
+                    "Nothing new to suggest yet -- watch a few more shows and try again."
                 )
                 return
-            ranked = self._affinity_sorted(list(seen.values()))
+            ranked = sorted(best.values(), key=lambda row: row[0], reverse=True)
+            self._remember_titles([m for _w, m, _r in ranked])
             self.filterSearchFinished.emit(
                 {
-                    "results": [self._media_summary_to_card(m) for m in ranked],
+                    "results": [self._media_summary_to_card(m, reason) for _w, m, reason in ranked],
                     "page": 1,
                     "hasMore": False,
                 }
             )
 
         self._pool.start(_Worker(work, done, self.recommendationsFailed.emit))
+
+    # Picked from the most popular slice of the catalog rather than the whole
+    # of it: a uniformly random AniList pick is nearly always a 1970s short or
+    # a music video, which is a joke the first time and tedious after that.
+    _SURPRISE_POOL_PAGES = 40  # 50 per page -> the top ~2000 anime
+    _SURPRISE_FORMATS = ["TV", "MOVIE", "ONA"]
+    _SURPRISE_ATTEMPTS = 6
+
+    @Slot()
+    def surpriseMe(self) -> None:
+        """"Just pick something": opens one random anime, chosen from the
+        popular end of AniList's catalog and skipping anything already on the
+        user's list.
+
+        Resolves it against the streaming source before answering, and tries
+        another pick if that fails, so the button always lands on something
+        actually watchable instead of on an apology.
+        """
+        known_ids = self._anilist_known_ids()
+
+        def work() -> source.SearchResult | None:
+            last_page = self._SURPRISE_POOL_PAGES
+            for _attempt in range(self._SURPRISE_ATTEMPTS):
+                page = random.randint(1, min(self._SURPRISE_POOL_PAGES, last_page))
+                candidates, last_page = self._anilist_public.get_popular_page(
+                    page, self._SURPRISE_FORMATS
+                )
+                random.shuffle(candidates)
+                for candidate in candidates:
+                    if candidate.id in known_ids:
+                        continue
+                    self._remember_titles([candidate])
+                    match = matcher.find_source_result(
+                        self._titles_for(candidate.id, candidate.title),
+                        lambda q: source.search(q, self._http),
+                    )
+                    if match is not None:
+                        self._db.save_anidb_mapping(
+                            candidate.id,
+                            AniDBMapping(
+                                anilist_id=candidate.id,
+                                slug_id=match.slug_id,
+                                numeric_id=match.numeric_id,
+                                title=match.title,
+                                poster_url=match.poster_url,
+                                kind=match.kind,
+                            ),
+                        )
+                        return match
+            return None
+
+        def done(match: source.SearchResult | None) -> None:
+            if match is None:
+                self.discoverFailed.emit(
+                    "Couldn't find anything to surprise you with just now -- try again."
+                )
+                return
+            self.anilistAnimeResolved.emit(
+                {
+                    "slug_id": match.slug_id,
+                    "numeric_id": match.numeric_id,
+                    "title": match.title,
+                    "poster_url": match.poster_url,
+                    "kind": match.kind,
+                }
+            )
+
+        def failed(message: str) -> None:
+            self.discoverFailed.emit("Couldn't pick an anime: " + message)
+
+        self._pool.start(_Worker(work, done, failed))
 
     @Slot(str, str, str, str)
     def loadEpisodes(self, slug_id: str, numeric_id: str, title: str, poster_url: str) -> None:
@@ -412,7 +583,11 @@ class Backend(QObject):
             # different backend, or the entry moved. Re-resolve it by title
             # once rather than showing an empty episode list, which reads as
             # "this anime has no episodes" and gives the user nothing to act on.
-            match = matcher.best_source_result(title, source.search(title, self._http))
+            # Only the one title here: this path starts from a source slug,
+            # not from an AniList entry, so there are no alternate names to
+            # try. find_source_result still normalises the query, which is
+            # what most of these misses actually needed.
+            match = matcher.find_source_result((title,), lambda q: source.search(q, self._http))
             if match is None:
                 return slug_id, numeric_id, []
             return match.slug_id, match.numeric_id, source.get_episodes(match.slug_id, self._http)
@@ -1019,6 +1194,7 @@ class Backend(QObject):
                         cover_url=e.cover_url,
                         genres=e.genres,
                         popularity=e.popularity,
+                        titles=e.titles,
                     )
                     for e in entries
                 ]
@@ -1075,9 +1251,10 @@ class Backend(QObject):
             )
             return
 
+        titles = self._titles_for(anilist_id, title)
+
         def work() -> source.SearchResult | None:
-            results = source.search(title, self._http)
-            return matcher.best_source_result(title, results)
+            return matcher.find_source_result(titles, lambda q: source.search(q, self._http))
 
         def done(result: source.SearchResult | None) -> None:
             if result is None:
@@ -1191,13 +1368,22 @@ class Backend(QObject):
 
         def done(_result: None) -> None:
             existing = self._db.get_anilist_status(media_id)
-            score = existing.score if existing else 0.0
-            title = existing.title if existing else anime_snapshot["title"]
-            cover_url = existing.cover_url if existing else anime_snapshot.get("poster_url")
             self._db.upsert_anilist_status(
                 AniListStatus(
-                    anilist_id=media_id, status=status, progress=progress, score=score,
-                    title=title, cover_url=cover_url,
+                    anilist_id=media_id,
+                    status=status,
+                    progress=progress,
+                    score=existing.score if existing else 0.0,
+                    title=existing.title if existing else anime_snapshot["title"],
+                    cover_url=existing.cover_url if existing else anime_snapshot.get("poster_url"),
+                    # Carried over rather than defaulted: this row is written
+                    # after every episode, and dropping them here would quietly
+                    # strip the genres the recommendation ranking reads and the
+                    # titles the source matcher needs from whatever the user
+                    # actually watches most.
+                    genres=existing.genres if existing else (),
+                    popularity=existing.popularity if existing else 0,
+                    titles=existing.titles if existing else (),
                 )
             )
             self._emit_anilist_home_lists()
