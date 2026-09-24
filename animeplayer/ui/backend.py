@@ -20,10 +20,15 @@ from typing import Any, Callable
 
 import httpx
 import qrcode
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import Property, QObject, QRunnable, QThreadPool, Signal, Slot
 
 from animeplayer.anilist import matcher
-from animeplayer.anilist.client import AniListClient, MediaSummary, build_authorize_url
+from animeplayer.anilist.client import (
+    AniListClient,
+    ChainEntry,
+    MediaSummary,
+    build_authorize_url,
+)
 from animeplayer.aniskip import client as aniskip
 from animeplayer.player.idle_inhibitor import IdleInhibitor
 from animeplayer.remote.server import RemoteServer
@@ -66,6 +71,30 @@ _STATUS_LABELS = {
     "PAUSED": "Paused",
     "REPEATING": "Rewatching",
 }
+
+# The app's accent, from AniList's own profile-colour swatches, so the two
+# look like the same product -- the user asked for exactly that.
+#
+# Only the accent. Backgrounds and text are left to the desktop's own colour
+# scheme, and that is a deliberate retreat rather than an oversight: three
+# separate mechanisms for imposing a full palette were tried here and all of
+# them either reached nothing or reached half of it (see AppTheming.qml for
+# what was measured). Half a palette is how a light scheme ends up drawing
+# dark text on a dark surface, so this app now changes the one thing it can
+# change correctly and follows the system for the rest -- which is also how
+# AniList itself splits it: a background scheme, and a profile colour on top.
+_THEME_ACCENTS: dict[str, str] = {
+    "blue": "#3db4f2",
+    "sky": "#02a8ff",
+    "purple": "#c063ff",
+    "green": "#4cca51",
+    "orange": "#ef881a",
+    "red": "#e13333",
+    "pink": "#fc9dd6",
+    "gray": "#677b94",
+}
+
+_DEFAULT_ACCENT = "blue"
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
@@ -152,6 +181,12 @@ class Backend(QObject):
     browseFinished = Signal(dict)      # {key, results, page, hasMore} -- a catalog/filter page
     browseFailed = Signal(str)
     sourceGenresLoaded = Signal(list)  # [{slug, name}] from the source's filter form
+    themeChanged = Signal()
+    # Everything the detail page shows beside the episode list: the franchise's
+    # watch order, related entries, community recommendations and reviews.
+    # One signal and one worker, because they all come from the same anime and
+    # arrive together.
+    animeExtrasReady = Signal(dict)
 
     remoteServerFailed = Signal(str)  # the phone remote couldn't start; the app itself is fine
     remoteCommand = Signal(str, "QVariant")  # (cmd, args) from the phone remote -- see remote/server.py
@@ -177,6 +212,9 @@ class Backend(QObject):
         self._genre_cache: list[str] | None = None
         self._tag_cache: list[str] | None = None
         self._source_genre_cache: list[dict[str, str]] | None = None
+        self._browse_token = 0
+        # Rebuilt lazily; dropped whenever the mirrored list is replaced.
+        self._anilist_index: "matcher.TitleIndex[AniListStatus] | None" = None
         # AniList id -> every name AniList knows for it. Finding a show on the
         # streaming source needs all of them, not just the one on the card
         # (see anilist/matcher.py), but a card only carries its display title.
@@ -256,6 +294,32 @@ class Backend(QObject):
                 self._match_anilist_statuses(results)
 
         self._pool.start(_Worker(work, done, self.searchFailed.emit))
+
+    # -- Theme -------------------------------------------------------------
+
+    @staticmethod
+    def _theme_from(db: Database) -> dict[str, Any]:
+        accent_name = db.get_setting("theme_accent") or _DEFAULT_ACCENT
+        return {
+            "accent": _THEME_ACCENTS.get(accent_name, _THEME_ACCENTS[_DEFAULT_ACCENT]),
+            "accentName": accent_name,
+        }
+
+    @Property("QVariantMap", notify=themeChanged)
+    def theme(self) -> dict[str, Any]:
+        """The app's accent colour -- see the note above _THEME_ACCENTS for
+        why it is only the accent."""
+        return self._theme_from(self._db)
+
+    @Slot(result=list)
+    def themeAccents(self) -> list[dict[str, str]]:
+        return [{"key": key, "color": value} for key, value in _THEME_ACCENTS.items()]
+
+    @Slot(str)
+    def setThemeAccent(self, accent: str) -> None:
+        if accent in _THEME_ACCENTS:
+            self._db.set_setting("theme_accent", accent)
+            self.themeChanged.emit()
 
     # -- Home feed / catalog browsing --------------------------------------
     #
@@ -346,13 +410,15 @@ class Backend(QObject):
     @Slot(str, int)
     def browseCatalog(self, category: str, page: int) -> None:
         """One page of a named catalog, for the Browse page's infinite scroll."""
+        token = self._begin_browse()
+
         def work() -> source.CatalogPage:
             return source.browse(category, max(1, page), self._http)
 
         def done(result: source.CatalogPage) -> None:
-            self._emit_browse_page(category, result)
+            self._emit_browse_page(category, result, token)
 
-        self._pool.start(_Worker(work, done, self.browseFailed.emit))
+        self._pool.start(_Worker(work, done, self._browse_failed(token)))
 
     # dict, not "QVariant": a plain JS object arrives through a QVariant slot
     # as an opaque QJSValue that isn't iterable on the Python side (confirmed
@@ -368,6 +434,7 @@ class Backend(QObject):
         """
         spec = dict(filters or {})
         genres = tuple(spec.get("genres") or ())
+        token = self._begin_browse()
 
         def work() -> source.CatalogPage:
             return source.filter_browse(
@@ -383,11 +450,29 @@ class Backend(QObject):
             )
 
         def done(result: source.CatalogPage) -> None:
-            self._emit_browse_page("filter", result)
+            self._emit_browse_page("filter", result, token)
 
-        self._pool.start(_Worker(work, done, self.browseFailed.emit))
+        self._pool.start(_Worker(work, done, self._browse_failed(token)))
 
-    def _emit_browse_page(self, key: str, result: source.CatalogPage) -> None:
+    # Browsing is driven by controls the user can change faster than a request
+    # round trip: flipping three filters fires three overlapping requests, and
+    # whichever the site answers last would otherwise win regardless of which
+    # the user actually asked for last. Each request takes a token, and only
+    # the newest one is allowed to report back.
+    def _begin_browse(self) -> int:
+        self._browse_token += 1
+        return self._browse_token
+
+    def _browse_failed(self, token: int) -> Callable[[str], None]:
+        def failed(message: str) -> None:
+            if token == self._browse_token:
+                self.browseFailed.emit(message)
+
+        return failed
+
+    def _emit_browse_page(self, key: str, result: source.CatalogPage, token: int) -> None:
+        if token != self._browse_token:
+            return
         self.browseFinished.emit(
             {
                 "key": key,
@@ -396,8 +481,7 @@ class Backend(QObject):
                 "hasMore": result.has_more,
             }
         )
-        if self._anilist_client is not None:
-            self._match_anilist_statuses(list(result.results))
+        self._match_anilist_statuses(list(result.results))
 
     @Slot()
     def fetchSourceGenres(self) -> None:
@@ -1390,6 +1474,7 @@ class Backend(QObject):
                     for e in entries
                 ]
             )
+            self._anilist_index = None
             self.anilistListRefreshed.emit()
             self._emit_anilist_home_lists()
 
@@ -1479,24 +1564,143 @@ class Backend(QObject):
         # text pasted in where a title belongs. Two causes, two messages.
         self._pool.start(_Worker(work, done, self.anilistAnimeResolveErrored.emit))
 
+    # How far behind counts as "not watched". Anything with no progress at
+    # all, or stopped short of the end, is worth warning about; an entry the
+    # user is one episode from finishing is not.
+    _PREQUEL_DONE_FRACTION = 0.9
+
+    def _watch_progress(self, entry: "ChainEntry") -> tuple[str, int, bool]:
+        """(status label, episodes watched, has the user effectively seen it)."""
+        status = self._db.get_anilist_status(entry.id)
+        if status is None:
+            return ("", 0, False)
+        if status.status in ("COMPLETED", "REPEATING"):
+            return (_STATUS_LABELS.get(status.status, status.status), status.progress, True)
+        total = entry.episodes or 0
+        watched_enough = bool(
+            total and status.progress >= total * self._PREQUEL_DONE_FRACTION
+        )
+        return (
+            _STATUS_LABELS.get(status.status, status.status),
+            status.progress,
+            watched_enough,
+        )
+
+    def _fetch_anime_extras(self, anilist_id: int, slug_id: str) -> None:
+        def work() -> dict[str, Any]:
+            client = self._anilist_public
+            extras = client.get_media_extras(anilist_id)
+            order = client.get_watch_order(anilist_id)
+
+            chain: list[dict[str, Any]] = []
+            unwatched: list[dict[str, Any]] = []
+            reached_current = False
+            for entry in order:
+                label, progress, done = self._watch_progress(entry)
+                is_current = entry.id == anilist_id
+                reached_current = reached_current or is_current
+                row = {
+                    "anilist_id": entry.id,
+                    "title": entry.title,
+                    "poster_url": entry.cover_url or "",
+                    "kind": entry.format or "",
+                    "episodes": entry.episodes or 0,
+                    "year": entry.year or 0,
+                    "current": is_current,
+                    "statusLabel": label,
+                    "progress": progress,
+                    "watched": done,
+                }
+                chain.append(row)
+                # Only what comes *before* this entry can be a spoiler risk or
+                # a missing prerequisite -- later seasons are simply unwatched.
+                if not reached_current and not done:
+                    unwatched.append(row)
+
+            # SOURCE/ADAPTATION edges point at the manga, and CHARACTER edges
+            # at unrelated shows sharing a cast; neither belongs on a page
+            # about what else there is to watch.
+            related = [
+                self._media_summary_to_card(
+                    r.media, reason=r.relation_type.replace("_", " ").title()
+                )
+                for r in extras.relations
+                if r.relation_type not in ("SOURCE", "ADAPTATION", "CHARACTER", "OTHER")
+            ]
+            self._remember_titles([r.media for r in extras.relations])
+            self._remember_titles(list(extras.recommendations))
+
+            return {
+                "slug_id": slug_id,
+                "watchOrder": chain,
+                "unwatchedPrequels": unwatched,
+                "related": related,
+                "recommendations": [
+                    self._media_summary_to_card(m) for m in extras.recommendations
+                ],
+                "reviews": [
+                    {
+                        "id": r.id,
+                        "summary": r.summary,
+                        "score": r.score or 0,
+                        "user": r.user,
+                        "helpful": r.rating,
+                        "url": f"https://anilist.co/review/{r.id}",
+                    }
+                    for r in extras.reviews
+                ],
+            }
+
+        def done(payload: dict[str, Any]) -> None:
+            # The user may have navigated on while this was in flight; a page
+            # that has already been replaced must not be handed another
+            # anime's relations.
+            if self._current_anime is not None and self._current_anime["slug_id"] == slug_id:
+                self.animeExtrasReady.emit(payload)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    def _anilist_title_index(self) -> "matcher.TitleIndex[AniListStatus] | None":
+        """The user's list, indexed for matching. Built once and kept: the
+        list only changes when it is re-synced, and rebuilding it per page of
+        results is most of the cost of badging them."""
+        if self._anilist_index is None:
+            entries = self._db.get_anilist_list()
+            if not entries:
+                return None
+            self._anilist_index = matcher.TitleIndex(
+                [(e, e.titles or (e.title,)) for e in entries]
+            )
+        return self._anilist_index
+
     def _match_anilist_statuses(self, results: list[source.SearchResult]) -> None:
-        client = self._anilist_client
-        if client is None:
+        """Badges a page of results with the user's own list status.
+
+        Matched against the *local* mirror of their list, not against AniList.
+        This used to call AniList once per result to resolve its id -- thirty
+        GraphQL searches for one page of browse results, against an API that
+        rate-limits, which is what made changing a filter take many seconds to
+        settle. The mirror already holds every name AniList knows for each
+        entry (see AniListStatus.titles), which is exactly what matching needs,
+        so the whole thing is now local and immediate.
+        """
+        if self._anilist_client is None:
             return
 
         def work() -> dict[str, dict[str, Any]]:
+            index = self._anilist_title_index()
+            if index is None:
+                return {}
             matches: dict[str, dict[str, Any]] = {}
             for result in results:
-                media_id = matcher.resolve_media_id(result.title, client, self._db)
-                if media_id is None:
+                entry = index.match(result.title)
+                if entry is None:
                     continue
-                status = self._db.get_anilist_status(media_id)
-                if status is not None:
-                    matches[result.slug_id] = {
-                        "status": status.status,
-                        "label": _STATUS_LABELS.get(status.status, status.status),
-                        "progress": status.progress,
-                    }
+                matches[result.slug_id] = {
+                    "status": entry.status,
+                    "label": _STATUS_LABELS.get(entry.status, entry.status),
+                    "progress": entry.progress,
+                }
             return matches
 
         def done(matches: dict[str, dict[str, Any]]) -> None:
@@ -1535,6 +1739,7 @@ class Backend(QObject):
             else:
                 self.anilistCurrentStatus.emit("", 0)
             if summary is not None:
+                self._fetch_anime_extras(summary.id, slug_id)
                 self.anilistMediaDetails.emit(
                     {
                         "average_score": summary.average_score or 0,

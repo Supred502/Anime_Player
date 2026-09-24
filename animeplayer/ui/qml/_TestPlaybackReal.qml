@@ -6,13 +6,9 @@
 import QtQuick
 import org.kde.kirigami as Kirigami
 
-Kirigami.ApplicationWindow {
+AppWindow {
     id: root
-    title: "Anime Player"
-    width: 1280
-    height: 800
     pageStack.initialPage: Qt.resolvedUrl("SearchPage.qml")
-    pageStack.columnView.columnResizeMode: Kirigami.ColumnView.SingleColumn
 
     property string query: "Dorohedoro"
     // ANIMEPLAYER_TEST_PAUSE lets a screenshot land mid-flow.

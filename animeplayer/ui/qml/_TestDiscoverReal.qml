@@ -7,13 +7,9 @@
 import QtQuick
 import org.kde.kirigami as Kirigami
 
-Kirigami.ApplicationWindow {
+AppWindow {
     id: root
-    title: "Anime Player"
-    width: 1280
-    height: 800
     pageStack.initialPage: Qt.resolvedUrl("HomePage.qml")
-    pageStack.columnView.columnResizeMode: Kirigami.ColumnView.SingleColumn
 
     // console.warn, not console.log: the message handler in __main__.py only
     // receives what Qt's logging rules let through, and debug-level QML output

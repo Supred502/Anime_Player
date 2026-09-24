@@ -14,6 +14,10 @@ import org.kde.kirigami as Kirigami
 // needed to reach them) rather than living at the bottom of the content.
 Kirigami.ScrollablePage {
     id: filterPage
+
+    // Paints this page in the app's colour scheme -- see AppTheming.qml
+    // for why this is per-page rather than set once on the window.
+    AppTheming {}
     title: "Filter by genre / tags"
 
     // The SearchPage instance that pushed this page -- all the actual filter

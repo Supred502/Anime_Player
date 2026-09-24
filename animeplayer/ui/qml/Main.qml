@@ -1,19 +1,10 @@
 import QtQuick
 import org.kde.kirigami as Kirigami
 
-Kirigami.ApplicationWindow {
+AppWindow {
     id: root
-    title: "Anime Player"
-    width: 1280
-    height: 800
 
     pageStack.initialPage: Qt.resolvedUrl("HomePage.qml")
-    // This app is a linear Search -> Detail -> Player stack, not a master-detail
-    // browser, so force single-column navigation. Without this, Kirigami's
-    // PageRow keeps previous pages visible side-by-side as "columns" once the
-    // window is wide enough (its default adaptive behavior), which reads as a
-    // stray sidebar here.
-    pageStack.columnView.columnResizeMode: Kirigami.ColumnView.SingleColumn
 
     // Translates phone-remote "open this anime" browse selections into the
     // exact same backend calls a card click already makes -- whichever page
@@ -33,8 +24,7 @@ Kirigami.ApplicationWindow {
     }
 
     globalDrawer: Kirigami.GlobalDrawer {
-        title: "Anime Player"
-        titleIcon: "video-television"
+            titleIcon: "video-television"
         actions: [
             Kirigami.Action {
                 text: "Home"

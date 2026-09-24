@@ -16,12 +16,8 @@ import QtQuick
 import QtQuick.Controls as Controls
 import org.kde.kirigami as Kirigami
 
-Kirigami.ApplicationWindow {
+AppWindow {
     id: root
-    title: "Anime Player"
-    width: 1280
-    height: 800
-    pageStack.columnView.columnResizeMode: Kirigami.ColumnView.SingleColumn
     pageStack.initialPage: Qt.resolvedUrl("HomePage.qml")
 
     readonly property string mode: testMode === "" ? "home" : testMode
@@ -61,14 +57,64 @@ Kirigami.ApplicationWindow {
                     + Math.round(flick.contentHeight))
                 return
             }
-            if (root.mode === "detail") {
+            // A real out-of-order case: the user's list has the previous
+            // cour as Dropped, so opening episode 1 here should prompt.
+            if (root.mode === "warn") {
+                if (root.step === 1) {
+                    root.pageStack.push(Qt.resolvedUrl("DetailPage.qml"), {
+                        anime: {
+                            slug_id: "mushoku-tensei-jobless-reincarnation-season-2-449",
+                            numeric_id: "449",
+                            title: "Mushoku Tensei: Jobless Reincarnation Season 2",
+                            poster_url: "", kind: "TV", rating: ""
+                        }
+                    })
+                    log("opened DetailPage")
+                    return
+                }
+                let detail = root.pageStack.get(root.pageStack.depth - 1)
+                if (root.step === 2) {
+                    log("unwatched=" + JSON.stringify(
+                        detail.unwatchedPrequels.map((e) => e.title + " [" + e.statusLabel + "]")))
+                    // Exactly what clicking episode 1 does.
+                    detail.requestEpisode(1)
+                    log("requested episode 1")
+                }
+                return
+            }
+            // Drives the real Settings controls: switch scheme and accent
+            // and confirm the whole window follows, not just that page.
+            if (root.mode === "theme") {
+                if (root.step === 1) {
+                    root.pageStack.replace(Qt.resolvedUrl("SettingsPage.qml"))
+                    log("opened Settings, theme=" + JSON.stringify(backend.theme))
+                    return
+                }
+                if (root.step === 2) {
+                    backend.setThemeAccent("purple")
+                    log("switched accent -> " + JSON.stringify(backend.theme))
+                    return
+                }
+                if (root.step === 3) {
+                    root.pageStack.replace(Qt.resolvedUrl("HomePage.qml"))
+                    log("back to Home under the new theme")
+                    return
+                }
+                if (root.step === 5) {
+                    backend.setThemeAccent("blue")
+                    log("restored blue")
+                }
+                return
+            }
+            if (root.mode === "detail" || root.mode === "detail2") {
                 if (root.step === 1) {
                     // A real entry with real key art, opened the same way a
                     // card click opens it.
                     root.pageStack.push(Qt.resolvedUrl("DetailPage.qml"), {
                         anime: {
-                            slug_id: "attack-on-titan-240", numeric_id: "240",
-                            title: "Attack on Titan", poster_url: "https://cdn.noitatnemucod.net/thumbnail/300x400/100/bcd84731a3eda4f4a306250769675065.jpg", kind: "TV", rating: ""
+                            slug_id: testMode === "detail2" ? "one-piece-1" : "attack-on-titan-season-2-98",
+                            numeric_id: testMode === "detail2" ? "1" : "98",
+                            title: "Attack on Titan Season 2", poster_url: "https://cdn.noitatnemucod.net/thumbnail/300x400/100/bcd84731a3eda4f4a306250769675065.jpg", kind: "TV", rating: ""
                         }
                     })
                     log("opened DetailPage")
@@ -78,9 +124,24 @@ Kirigami.ApplicationWindow {
                 // DetailPage (episodesModel) is file-scoped and reads back as
                 // undefined from out here.
                 let detail = root.pageStack.get(root.pageStack.depth - 1)
-                log("loading=" + detail.loading + " pages=" + detail.pageCount
-                    + " banner=" + (detail.bannerUrl !== "")
-                    + " facts=" + JSON.stringify(detail.headerFacts().map((f) => f.text)))
+                if (root.step === 2) {
+                    log("loading=" + detail.loading + " pages=" + detail.pageCount
+                        + " banner=" + (detail.bannerUrl !== "")
+                        + " facts=" + JSON.stringify(detail.headerFacts().map((f) => f.text)))
+                    return
+                }
+                if (root.step === 3) {
+                    log("order=" + detail.watchOrder.length
+                        + " unwatched=" + JSON.stringify(detail.unwatchedPrequels.map((e) => e.title))
+                        + " related=" + detail.related.length
+                        + " recs=" + detail.recommendations.length
+                        + " reviews=" + detail.reviews.length)
+                }
+                // Scroll down so a screenshot catches the sections below the
+                // episode grid.
+                detail.flickable.contentY = Math.min(
+                    detail.flickable.contentHeight - detail.flickable.height,
+                    detail.flickable.contentY + detail.flickable.height * 0.8)
                 return
             }
             if (root.step === 1) {

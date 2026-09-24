@@ -5,6 +5,10 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.ScrollablePage {
     id: page
+
+    // Paints this page in the app's colour scheme -- see AppTheming.qml
+    // for why this is per-page rather than set once on the window.
+    AppTheming {}
     title: "Settings"
 
     property bool loggedIn: false
@@ -69,6 +73,42 @@ Kirigami.ScrollablePage {
                 Controls.Button {
                     text: "Log out"
                     onClicked: backend.logoutAnilist()
+                }
+            }
+        }
+
+        Kirigami.Separator { Layout.fillWidth: true }
+
+        // Appearance. The swatches are AniList's own profile colours, and the
+        // default is its blue, so the app and the site it syncs with read as
+        // the same product. Light/dark follows the desktop -- see
+        // AppTheming.qml for why this app does not override that itself.
+        Kirigami.FormLayout {
+            Layout.fillWidth: true
+
+            RowLayout {
+                Kirigami.FormData.label: "Accent:"
+                spacing: Kirigami.Units.smallSpacing
+                Repeater {
+                    model: backend.themeAccents()
+                    Rectangle {
+                        required property var modelData
+                        readonly property bool current: backend.theme.accentName === modelData.key
+                        implicitWidth: Kirigami.Units.gridUnit * 1.6
+                        implicitHeight: implicitWidth
+                        radius: width / 2
+                        color: modelData.color
+                        // The selected swatch gets a ring in the page's own
+                        // text colour rather than a tick: a checkmark has to
+                        // be readable against eight different fills.
+                        border.width: current ? 3 : 0
+                        border.color: Kirigami.Theme.textColor
+                        scale: swatchHover.hovered ? 1.15 : 1
+                        Behavior on scale { NumberAnimation { duration: 100 } }
+
+                        HoverHandler { id: swatchHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: backend.setThemeAccent(modelData.key) }
+                    }
                 }
             }
         }

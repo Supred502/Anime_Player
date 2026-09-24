@@ -129,13 +129,28 @@ Item {
                         height: width
                         radius: width / 2
                         color: Kirigami.Theme.highlightColor
+                        // Grows in from slightly small, so the overlay reads
+                        // as appearing rather than as having been there all
+                        // along under a fade.
+                        scale: card.hovered ? 1 : 0.8
+                        Behavior on scale { NumberAnimation { duration: 140; easing.type: Easing.OutBack } }
 
                         Kirigami.Icon {
                             anchors.centerIn: parent
-                            source: "media-playback-start-symbolic"
-                            width: Kirigami.Units.iconSizes.medium
-                            height: width
+                            // Nudged right by an eighth of its width: the
+                            // glyph is a triangle, so its visual centre of
+                            // mass sits left of its bounding box's centre and
+                            // it looks off-centre in a circle without this.
+                            anchors.horizontalCenterOffset: Math.round(width / 8)
+                            source: Qt.resolvedUrl("../assets/images/play-button.png")
+                            // The asset is a solid black glyph on transparency
+                            // -- isMask throws the colour away and paints the
+                            // shape in `color`, which is what lets one file
+                            // work on the accent circle in every theme.
+                            isMask: true
                             color: Kirigami.Theme.highlightedTextColor
+                            width: Math.round(Kirigami.Units.iconSizes.medium * 0.8)
+                            height: width
                         }
                     }
                 }

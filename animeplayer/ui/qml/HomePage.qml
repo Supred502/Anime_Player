@@ -14,6 +14,10 @@ import org.kde.kirigami as Kirigami
 
 Kirigami.ScrollablePage {
     id: page
+
+    // Paints this page in the app's colour scheme -- see AppTheming.qml
+    // for why this is per-page rather than set once on the window.
+    AppTheming {}
     title: "Home"
     // The hero runs edge to edge; the padding that would normally inset it
     // is applied per-row instead (see contentColumn).

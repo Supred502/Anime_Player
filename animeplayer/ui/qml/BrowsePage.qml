@@ -16,6 +16,10 @@ import org.kde.kirigami as Kirigami
 Kirigami.ScrollablePage {
     id: page
 
+    // Paints this page in the app's colour scheme -- see AppTheming.qml
+    // for why this is per-page rather than set once on the window.
+    AppTheming {}
+
     // Set by the caller when arriving from a home row's "See all".
     property string startCategory: "top-airing"
     property string startLabel: ""
@@ -73,7 +77,7 @@ Kirigami.ScrollablePage {
                 if (all[i].key === page.category) page.categoryLabel = all[i].label
             }
         }
-        page.reload()
+        page.load(1)
     }
 
     Connections {
@@ -123,7 +127,19 @@ Kirigami.ScrollablePage {
         else backend.browseCatalog(page.category, pageNumber)
     }
 
-    function reload() { page.load(1) }
+    // Every filter control calls this rather than load(1) directly. Changing
+    // three filters in a row is three clicks in about as many hundred
+    // milliseconds, and firing a request per click means three page loads of
+    // which only the last matters -- against a site that takes a moment to
+    // answer. The backend drops stale answers too (see _begin_browse), but not
+    // sending them at all is what actually makes this feel quick.
+    function reload() { reloadDebounce.restart() }
+
+    Timer {
+        id: reloadDebounce
+        interval: 250
+        onTriggered: page.load(1)
+    }
 
     function loadMore() {
         if (!page.hasMore || page.loading || page.loadingMore) return
@@ -230,8 +246,8 @@ Kirigami.ScrollablePage {
                     onPicked: (v) => { page.filterSeason = v; page.reload() }
                 }
                 FilterCombo {
-                    label: "Audio"
-                    options: [["", "Sub or dub"], ["sub", "Subbed"], ["dub", "Dubbed"]]
+                    label: "Language"
+                    options: [["", "Any language"], ["sub", "Subbed"], ["dub", "Dubbed"]]
                     value: page.filterLanguage
                     onPicked: (v) => { page.filterLanguage = v; page.reload() }
                 }
@@ -264,9 +280,13 @@ Kirigami.ScrollablePage {
                 }
 
                 Controls.ToolButton {
-                    visible: page.genres.length > page.genreLimit
-                    text: "+" + (page.genres.length - page.genreLimit) + " more"
-                    onClicked: page.genreLimit = page.genres.length
+                    readonly property bool expanded: page.genreLimit >= page.genres.length
+                    visible: page.genres.length > page.collapsedGenreCount
+                    text: expanded ? "Show fewer"
+                                   : "+" + (page.genres.length - page.genreLimit) + " more"
+                    icon.name: expanded ? "go-up-symbolic" : "go-down-symbolic"
+                    onClicked: page.genreLimit = expanded ? page.collapsedGenreCount
+                                                          : page.genres.length
                 }
             }
         }
@@ -274,7 +294,8 @@ Kirigami.ScrollablePage {
         Kirigami.Separator { Layout.fillWidth: true }
     }
 
-    property int genreLimit: 18
+    readonly property int collapsedGenreCount: 18
+    property int genreLimit: collapsedGenreCount
     // Selected genres stay visible even when they fall outside the cap --
     // otherwise collapsing the list silently hides a filter that is still
     // being applied.

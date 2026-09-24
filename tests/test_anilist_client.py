@@ -1,7 +1,10 @@
+import json
+
 import httpx
 import pytest
 import respx
 
+from animeplayer.anilist import client as client_module
 from animeplayer.anilist.client import AniListClient, AniListError, build_authorize_url
 
 
@@ -321,3 +324,140 @@ def test_request_raises_on_graphql_errors() -> None:
         client = AniListClient(http_client, "bad-token")
         with pytest.raises(AniListError, match="Invalid token"):
             client.get_viewer()
+
+
+def _relation_media(media_id: int, romaji: str, year: int = 2020) -> dict:
+    return {
+        "id": media_id,
+        "idMal": None,
+        "title": {"romaji": romaji, "english": None},
+        "synonyms": [],
+        "coverImage": {"large": "cover.jpg"},
+        "bannerImage": None,
+        "averageScore": 80,
+        "popularity": 1,
+        "genres": [],
+        "format": "TV",
+        "episodes": 12,
+        "description": None,
+        "startDate": {"year": year},
+        "status": "FINISHED",
+    }
+
+
+def test_get_media_extras_splits_relations_recommendations_and_reviews() -> None:
+    payload = {
+        "data": {
+            "Media": {
+                "relations": {
+                    "edges": [
+                        {"relationType": "SEQUEL", "node": _relation_media(2, "Season 2")},
+                        {"relationType": "SOURCE", "node": _relation_media(3, "The Manga")},
+                        {"relationType": "PREQUEL", "node": {}},
+                    ]
+                },
+                "recommendations": {
+                    "nodes": [
+                        {"rating": 90, "mediaRecommendation": _relation_media(4, "Something Else")},
+                        {"rating": 5, "mediaRecommendation": None},
+                    ]
+                },
+                "reviews": {
+                    "nodes": [
+                        {
+                            "id": 11,
+                            "summary": "  Great follow-up.  ",
+                            "score": 88,
+                            "rating": 40,
+                            "ratingAmount": 50,
+                            "user": {"name": "someone"},
+                        },
+                        # A review with no summary is dropped: the summary is
+                        # the only part shown, and the only part that is
+                        # reliably spoiler-free.
+                        {"id": 12, "summary": "", "score": 10, "rating": 1,
+                         "ratingAmount": 1, "user": {"name": "quiet"}},
+                    ]
+                },
+            }
+        }
+    }
+    with respx.mock:
+        respx.post(client_module.API_URL).mock(return_value=httpx.Response(200, json=payload))
+        with httpx.Client() as http:
+            extras = AniListClient(http).get_media_extras(1)
+
+    # The node with no id is skipped rather than producing a broken entry.
+    assert [(r.relation_type, r.media.title) for r in extras.relations] == [
+        ("SEQUEL", "Season 2"),
+        ("SOURCE", "The Manga"),
+    ]
+    assert [m.title for m in extras.recommendations] == ["Something Else"]
+    assert len(extras.reviews) == 1
+    assert extras.reviews[0].summary == "Great follow-up."
+    assert extras.reviews[0].user == "someone"
+
+
+def _chain_media(media_id: int, romaji: str, edges: list[tuple[str, int]]) -> dict:
+    return {
+        "id": media_id,
+        "title": {"romaji": romaji, "english": None},
+        "format": "TV",
+        "episodes": 12,
+        "startDate": {"year": 2020},
+        "status": "FINISHED",
+        "coverImage": {"large": "cover.jpg"},
+        "relations": {
+            "edges": [
+                {"relationType": kind, "node": {"id": other}} for kind, other in edges
+            ]
+        },
+    }
+
+
+def test_get_watch_order_walks_back_to_the_start_and_forward() -> None:
+    """Started from the middle of a trilogy, the chain must come back in story
+    order -- not in the order the server happened to mention the entries."""
+    chain = {
+        1: _chain_media(1, "First", [("SEQUEL", 2)]),
+        2: _chain_media(2, "Second", [("PREQUEL", 1), ("SEQUEL", 3)]),
+        3: _chain_media(3, "Third", [("PREQUEL", 2)]),
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        ids = json.loads(request.content)["variables"]["ids"]
+        return httpx.Response(
+            200,
+            json={"data": {"Page": {"media": [chain[i] for i in ids if i in chain]}}},
+        )
+
+    with respx.mock:
+        respx.post(client_module.API_URL).mock(side_effect=respond)
+        with httpx.Client() as http:
+            order = AniListClient(http).get_watch_order(2)
+
+    assert [e.title for e in order] == ["First", "Second", "Third"]
+
+
+def test_get_watch_order_ignores_side_stories() -> None:
+    """A side story or spin-off is related viewing, not a position in the
+    watch order -- putting one in the chain is how an OVA gets announced as
+    'season 2'."""
+    chain = {
+        1: _chain_media(1, "Main", [("SIDE_STORY", 9), ("SPIN_OFF", 8), ("SEQUEL", 2)]),
+        2: _chain_media(2, "Main 2", [("PREQUEL", 1)]),
+    }
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        ids = json.loads(request.content)["variables"]["ids"]
+        return httpx.Response(
+            200,
+            json={"data": {"Page": {"media": [chain[i] for i in ids if i in chain]}}},
+        )
+
+    with respx.mock:
+        respx.post(client_module.API_URL).mock(side_effect=respond)
+        with httpx.Client() as http:
+            order = AniListClient(http).get_watch_order(1)
+
+    assert [e.title for e in order] == ["Main", "Main 2"]

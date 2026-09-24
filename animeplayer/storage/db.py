@@ -313,6 +313,14 @@ class Database:
             ).fetchone()
             return self._row_to_anilist_status(row) if row else None
 
+    def get_anilist_list(self) -> list[AniListStatus]:
+        """The whole mirrored list. Used to badge search/browse results with
+        the user's own status without going back to AniList for each one --
+        every name AniList knows for an entry is already stored here."""
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM anilist_list").fetchall()
+            return [self._row_to_anilist_status(row) for row in rows]
+
     def get_anilist_by_status(self, status: str) -> list[AniListStatus]:
         with self._lock:
             rows = self._conn.execute(

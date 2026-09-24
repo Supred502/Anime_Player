@@ -7,6 +7,10 @@ import AnimePlayer 1.0
 
 Kirigami.Page {
     id: page
+
+    // Paints this page in the app's colour scheme -- see AppTheming.qml
+    // for why this is per-page rather than set once on the window.
+    AppTheming {}
     property var anime: ({})
     property int episodeId: 0
     property real episodeNumber: 0

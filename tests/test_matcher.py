@@ -276,3 +276,50 @@ def test_search_queries_drop_punctuation_and_native_script() -> None:
 def test_a_single_title_string_is_not_iterated_into_characters() -> None:
     # A str is a Sequence[str], so this mistake is silent without the guard.
     assert matcher.title_score("Dorohedoro", "Dorohedoro") == 1.0
+
+
+def test_title_index_matches_the_same_entries_as_a_linear_scan() -> None:
+    """The index exists only to be faster, so it has to agree with the scan it
+    replaces on the cases that matter."""
+    candidates = [
+        ("frieren", ("Sousou no Frieren", "Frieren: Beyond Journey's End")),
+        ("aot", ("Shingeki no Kyojin", "Attack on Titan")),
+        ("aot2", ("Shingeki no Kyojin Season 2", "Attack on Titan Season 2")),
+    ]
+    index = matcher.TitleIndex(candidates)
+
+    assert index.match("Attack on Titan") == "aot"
+    assert index.match("Attack on Titan Season 2") == "aot2"
+    # An alternate name AniList knows but the source doesn't use.
+    assert index.match("Sousou no Frieren") == "frieren"
+    # Normalisation only: punctuation and case must not matter.
+    assert index.match("attack-on-titan") == "aot"
+
+
+def test_title_index_rejects_an_unrelated_title() -> None:
+    """A title sharing no real word with anything on the list must come back
+    unmatched rather than settling for the least-bad candidate -- the linear
+    scan this replaced badged "Naruto" as an unrelated film."""
+    index = matcher.TitleIndex([("aot", ("Attack on Titan",))])
+
+    assert index.match("Naruto") is None
+    assert index.match("Dorohedoro") is None
+
+
+def test_title_index_still_separates_seasons() -> None:
+    """The fast path must not skip the season check: an exact-normalised hit
+    is exact, but anything reaching the fuzzy path is scored as before."""
+    index = matcher.TitleIndex(
+        [("s1", ("Mushoku Tensei: Jobless Reincarnation",)),
+         ("s2", ("Mushoku Tensei: Jobless Reincarnation Season 2",))]
+    )
+
+    assert index.match("Mushoku Tensei: Jobless Reincarnation Season 2") == "s2"
+    assert index.match("Mushoku Tensei: Jobless Reincarnation") == "s1"
+
+
+def test_title_index_accepts_a_single_title_string() -> None:
+    """Same str-is-a-Sequence[str] footgun the rest of this module guards."""
+    index = matcher.TitleIndex([("aot", "Attack on Titan")])
+
+    assert index.match("Attack on Titan") == "aot"

@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from typing import TYPE_CHECKING, Callable, Sequence, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, Sequence, TypeVar
 
 from animeplayer.anilist.client import AniListClient, MediaSummary
 from animeplayer.storage.db import Database
@@ -189,6 +189,64 @@ def _best_match(
             best_score = score
             best_item = item
     return best_item if best_score >= _MATCH_THRESHOLD else None
+
+
+def best_named_match(
+    titles: str | Sequence[str], candidates: Sequence[tuple[T, Sequence[str]]]
+) -> T | None:
+    """The best of a set of already-known candidates, or None if none is close
+    enough. The same scoring every other match here uses, exposed for callers
+    that hold their own candidate list -- badging a page of results against the
+    locally mirrored AniList list, for instance, rather than asking AniList to
+    resolve each title over the network.
+    """
+    return _best_match(titles, candidates)
+
+
+class TitleIndex(Generic[T]):
+    """A prebuilt index over a fixed candidate set, for matching many titles
+    against the same list.
+
+    best_named_match() on its own is O(titles x candidates) difflib
+    comparisons, and difflib is not cheap: badging one page of 30 browse
+    results against a 900-entry AniList list measured at six seconds, which is
+    no better than the per-title network lookup it replaced.
+
+    Two things make it fast. Almost every match is exact once the titles are
+    normalised, so that is a dict lookup. What's left only gets compared
+    against candidates sharing a word with it, which is a handful rather than
+    the whole list -- and a title sharing no word at all could never have
+    scored above the threshold anyway.
+    """
+
+    def __init__(self, candidates: Sequence[tuple[T, Sequence[str]]]) -> None:
+        self._exact: dict[str, T] = {}
+        self._by_word: dict[str, list[tuple[T, Sequence[str]]]] = {}
+        for item, titles in candidates:
+            names = _as_titles(titles)
+            for name in names:
+                self._exact.setdefault(_normalize(name), item)
+            for word in {w for name in names for w in _words(name).split() if len(w) > 2}:
+                self._by_word.setdefault(word, []).append((item, names))
+
+    def match(self, titles: str | Sequence[str]) -> T | None:
+        names = _as_titles(titles)
+        for name in names:
+            found = self._exact.get(_normalize(name))
+            if found is not None:
+                return found
+
+        # Deduplicated by identity: one candidate shares many words with the
+        # query, and scoring it once per shared word is the cost this index
+        # exists to avoid.
+        seen: dict[int, tuple[T, Sequence[str]]] = {}
+        for name in names:
+            for word in set(_words(name).split()):
+                for entry in self._by_word.get(word, ()):
+                    seen.setdefault(id(entry[0]), entry)
+        if not seen:
+            return None
+        return _best_match(names, list(seen.values()))
 
 
 def search_queries(titles: str | Sequence[str]) -> list[str]:

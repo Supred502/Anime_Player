@@ -417,8 +417,246 @@ class AniListClient:
         last_page = (page_data.get("pageInfo") or {}).get("lastPage") or page
         return [_media_summary_of(m) for m in page_data["media"]], last_page
 
+    def get_media_extras(self, media_id: int) -> "MediaExtras":
+        """Everything the detail page shows beside the episode list: related
+        entries, what the community recommends next, and reviews."""
+        media = self._request(_MEDIA_EXTRAS_QUERY, {"id": media_id})["Media"]
+
+        relations = []
+        for edge in (media.get("relations") or {}).get("edges", []):
+            node = edge.get("node") or {}
+            if not node.get("id"):
+                continue
+            relations.append(
+                Relation(
+                    relation_type=edge.get("relationType") or "",
+                    media=_media_summary_of(node),
+                    year=(node.get("startDate") or {}).get("year"),
+                    status=node.get("status"),
+                )
+            )
+
+        recommendations = [
+            _media_summary_of(node["mediaRecommendation"])
+            for node in (media.get("recommendations") or {}).get("nodes", [])
+            if node.get("mediaRecommendation")
+        ]
+
+        reviews = [
+            Review(
+                id=node["id"],
+                summary=(node.get("summary") or "").strip(),
+                score=node.get("score"),
+                rating=node.get("rating") or 0,
+                rating_amount=node.get("ratingAmount") or 0,
+                user=((node.get("user") or {}).get("name")) or "Anonymous",
+            )
+            for node in (media.get("reviews") or {}).get("nodes", [])
+            if (node.get("summary") or "").strip()
+        ]
+
+        return MediaExtras(
+            relations=tuple(relations),
+            recommendations=tuple(recommendations),
+            reviews=tuple(reviews),
+        )
+
+    # Six rounds is plenty: each one steps one sequel/prequel further from
+    # where we started, and the longest real chains (Monogatari, JoJo) are
+    # well inside eight entries either side. A bound matters because this
+    # walks a graph the server describes one node at a time.
+    _CHAIN_ROUNDS = 6
+
+    def get_watch_order(self, media_id: int) -> list["ChainEntry"]:
+        """The franchise's entries in story order, starting from any one of
+        them.
+
+        Built by walking only PREQUEL/SEQUEL edges outwards until the chain
+        closes, then following it from the end that has no prequel. Side
+        stories, spin-offs and recaps are deliberately not in here -- they are
+        related viewing, not a watch order, and including them is how an OVA
+        ends up announced as "season 2".
+        """
+        nodes: dict[int, dict] = {}
+        # id -> the id that comes after it. Recorded from both directions,
+        # since a pair is described from each side and either may be the one
+        # we happen to fetch.
+        next_of: dict[int, int] = {}
+        frontier = {media_id}
+
+        for _round in range(self._CHAIN_ROUNDS):
+            pending = [i for i in frontier if i not in nodes]
+            if not pending:
+                break
+            frontier = set()
+            for start in range(0, len(pending), 50):
+                data = self._request(_CHAIN_QUERY, {"ids": pending[start : start + 50]})
+                for media in data["Page"]["media"]:
+                    nodes[media["id"]] = media
+                    for edge in (media.get("relations") or {}).get("edges", []):
+                        neighbour = (edge.get("node") or {}).get("id")
+                        kind = edge.get("relationType")
+                        if not neighbour or kind not in _STORY_RELATIONS:
+                            continue
+                        frontier.add(neighbour)
+                        if kind == "SEQUEL":
+                            next_of[media["id"]] = neighbour
+                        else:
+                            next_of[neighbour] = media["id"]
+
+        if media_id not in nodes:
+            return []
+
+        # Only entries actually reachable along the chain: a batch fetch also
+        # brings back neighbours-of-neighbours that were never linked in.
+        has_previous = set(next_of.values())
+        start_id = media_id
+        seen: set[int] = set()
+        while start_id in has_previous and start_id not in seen:
+            seen.add(start_id)
+            start_id = next(prev for prev, nxt in next_of.items() if nxt == start_id)
+
+        order: list[ChainEntry] = []
+        current: int | None = start_id
+        visited: set[int] = set()
+        while current is not None and current not in visited:
+            visited.add(current)
+            media = nodes.get(current)
+            if media is not None:
+                order.append(
+                    ChainEntry(
+                        id=media["id"],
+                        title=_primary_title(media),
+                        format=media.get("format"),
+                        episodes=media.get("episodes"),
+                        year=(media.get("startDate") or {}).get("year"),
+                        status=media.get("status"),
+                        cover_url=(media.get("coverImage") or {}).get("large"),
+                    )
+                )
+            current = next_of.get(current)
+        return order
+
     def save_progress(self, media_id: int, status: str, progress: int) -> None:
         self._request(
             _SAVE_MEDIA_LIST_ENTRY_MUTATION,
             {"mediaId": media_id, "status": status, "progress": progress},
         )
+
+
+# -- Detail-page extras ----------------------------------------------------
+#
+# Relations, community recommendations and reviews, for the "what else is
+# there" half of the detail page. One query rather than three: they are all
+# fields of the same Media, and AniList rate-limits by request.
+
+_RELATION_FIELDS = """
+      id
+      idMal
+      title { romaji english }
+      synonyms
+      coverImage { large }
+      bannerImage
+      averageScore
+      popularity
+      genres
+      format
+      episodes
+      description(asHtml: false)
+      startDate { year }
+      status
+"""
+
+_MEDIA_EXTRAS_QUERY = """
+query ($id: Int!) {
+  Media(id: $id, type: ANIME) {
+    relations {
+      edges {
+        relationType(version: 2)
+        node { %s }
+      }
+    }
+    recommendations(perPage: 12, sort: RATING_DESC) {
+      nodes {
+        rating
+        mediaRecommendation { %s }
+      }
+    }
+    reviews(perPage: 6, sort: RATING_DESC) {
+      nodes {
+        id
+        summary
+        score
+        rating
+        ratingAmount
+        user { name }
+      }
+    }
+  }
+}
+""" % (_RELATION_FIELDS, _RELATION_FIELDS)
+
+# Only the edges that mean "more of this story". SIDE_STORY, SPIN_OFF and the
+# rest are related viewing, not the same watch order, and putting them in the
+# chain is how a recap or an OVA ends up presented as "season 2".
+_STORY_RELATIONS = ("PREQUEL", "SEQUEL")
+
+_CHAIN_QUERY = """
+query ($ids: [Int]) {
+  Page(perPage: 50) {
+    media(id_in: $ids, type: ANIME) {
+      id
+      title { romaji english }
+      format
+      episodes
+      startDate { year }
+      status
+      coverImage { large }
+      relations {
+        edges {
+          relationType(version: 2)
+          node { id }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class Relation:
+    relation_type: str  # "SEQUEL", "PREQUEL", "SIDE_STORY", "SPIN_OFF", ...
+    media: MediaSummary
+    year: int | None
+    status: str | None  # "FINISHED", "RELEASING", "NOT_YET_RELEASED", ...
+
+
+@dataclass(frozen=True, slots=True)
+class Review:
+    id: int
+    summary: str  # the author's own one-line, spoiler-free teaser
+    score: int | None  # the reviewer's score out of 100
+    rating: int  # how many readers found it helpful
+    rating_amount: int
+    user: str
+
+
+@dataclass(frozen=True, slots=True)
+class MediaExtras:
+    relations: tuple[Relation, ...]
+    recommendations: tuple[MediaSummary, ...]
+    reviews: tuple[Review, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ChainEntry:
+    """One entry in a franchise's watch order."""
+
+    id: int
+    title: str
+    format: str | None
+    episodes: int | None
+    year: int | None
+    status: str | None
+    cover_url: str | None
