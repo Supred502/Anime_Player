@@ -80,10 +80,43 @@ Kirigami.ApplicationWindow {
     function goHome() { return root.goTo("home", "HomePage.qml") }
     function goBrowse(properties) { return root.goTo("browse", "BrowsePage.qml", properties) }
     function goSettings() { return root.goTo("settings", "SettingsPage.qml") }
+    // Its own section rather than a Browse preset arrived at sideways, so the
+    // nav entry stays lit while you are looking at it.
+    function goContinue() {
+        return root.goTo("continue", "BrowsePage.qml", { startCategory: "continue" })
+    }
 
     function toggleMaximised() {
         if (root.maximised) root.showNormal()
         else root.showMaximized()
+    }
+
+    // Size and maximised state are remembered between launches. Not position:
+    // a Wayland client cannot place itself, so a saved x/y could be written
+    // but never honoured (see backend.windowGeometry).
+    Component.onCompleted: {
+        let saved = backend.windowGeometry()
+        if (saved.width) { root.width = saved.width; root.height = saved.height }
+        if (saved.maximised) root.showMaximized()
+        // Only after the restore, or the restore itself would be saved back
+        // one resize event at a time as the window settles.
+        geometrySaver.armed = true
+    }
+
+    onWidthChanged: geometrySaver.restart()
+    onHeightChanged: geometrySaver.restart()
+    onVisibilityChanged: geometrySaver.restart()
+
+    Timer {
+        id: geometrySaver
+        // Debounced: dragging a window edge emits a resize per frame, and
+        // each one would otherwise be a database write.
+        property bool armed: false
+        interval: 500
+        onTriggered: {
+            if (!armed || root.visibility === Window.Minimized) return
+            backend.saveWindowGeometry(root.width, root.height, root.maximised)
+        }
     }
 
     header: Rectangle {
@@ -165,6 +198,13 @@ Kirigami.ApplicationWindow {
                 iconName: "view-list-details-symbolic"
                 current: root.section === "browse"
                 onClicked: root.goBrowse()
+            }
+
+            NavButton {
+                text: "Continue"
+                iconName: "media-playback-start-symbolic"
+                current: root.section === "continue"
+                onClicked: root.goContinue()
             }
 
             Item { Layout.fillWidth: true }

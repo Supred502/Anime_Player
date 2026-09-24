@@ -66,6 +66,12 @@ Kirigami.ScrollablePage {
     // Filled in once on load -- see the Instantiator below for why this is
     // not a binding.
     property var catalogPresets: []
+    // Listings built from this machine (Continue Watching, Downloaded) rather
+    // than from a catalog. Non-empty means one of them is showing, and the
+    // filter controls are put away while it is: "what I have on disk" is not
+    // something AniList can be asked to narrow.
+    property string localKey: ""
+    property var localCatalogs: []
     property var genres: []
     property var allTags: []
     property var shownTags: []
@@ -88,6 +94,7 @@ Kirigami.ScrollablePage {
                                    : (page.filterCount > 0 ? "Filters (" + page.filterCount + ")"
                                                            : "Filters")
             icon.name: "view-filter-symbolic"
+            visible: page.localKey === ""
             onTriggered: page.filtersOpen = !page.filtersOpen
         },
         Kirigami.Action {
@@ -105,22 +112,88 @@ Kirigami.ScrollablePage {
         }
     ]
 
+    // Everything worth putting back when this page is opened again. Saved on
+    // every change and restored on open, so Browse comes back where it was
+    // left rather than resetting to Top Airing each time.
+    function browseState() {
+        return {
+            localKey: page.localKey,
+            presetLabel: page.presetLabel,
+            keyword: queryField.text,
+            season: page.filterSeason,
+            year: page.filterYear,
+            sort: page.filterSort,
+            minScore: page.filterMinScore,
+            genreStates: page.genreStates,
+            tagStates: page.tagStates,
+            listStates: page.listStates,
+            formatStates: page.formatStates,
+            airingStates: page.airingStates,
+            countryStates: page.countryStates,
+            filtersOpen: page.filtersOpen
+        }
+    }
+
+    function restoreBrowseState(saved) {
+        page.localKey = saved.localKey || ""
+        page.presetLabel = saved.presetLabel || ""
+        queryField.text = saved.keyword || ""
+        page.filterSeason = saved.season || ""
+        page.filterYear = saved.year || ""
+        page.filterSort = saved.sort || ""
+        page.filterMinScore = saved.minScore || 0
+        page.genreStates = saved.genreStates || ({})
+        page.tagStates = saved.tagStates || ({})
+        page.listStates = saved.listStates || ({})
+        page.formatStates = saved.formatStates || ({})
+        page.airingStates = saved.airingStates || ({})
+        page.countryStates = saved.countryStates || ({})
+        page.filtersOpen = !!saved.filtersOpen
+        page.load(1)
+    }
+
+    // Saved from load() rather than from each control, so there is one place
+    // that knows the page's state has settled -- and it is debounced there
+    // already, so this is not a database write per keystroke.
+    function rememberState() {
+        // A page opened *at* something specific (a genre from Home, a
+        // "See all") is a one-off destination, not the user's own working
+        // set, so it doesn't overwrite what they had.
+        if (page.openedAtTarget || page.showingRecommendations) return
+        backend.saveBrowseState(page.browseState())
+    }
+
+    // True when this page was opened pointing at something particular.
+    // Not "transient": that is a reserved QML keyword, and using it makes the
+    // whole page fail to load with "Reserved keyword cannot be used as a QML
+    // identifier".
+    readonly property bool openedAtTarget: page.startGenre !== ""
+        || page.startListStatus !== "" || page.startWithRecommendations
+        || page.startLabel !== ""
+
     Component.onCompleted: {
         page.catalogPresets = backend.catalogs()
+        page.localCatalogs = backend.localCatalogs()
         backend.fetchAnilistGenres()
         backend.fetchAnilistTags()
         if (page.startWithRecommendations) {
             page.loadRecommendations()
-        } else {
-            if (page.startGenre !== "") {
-                page.genreStates = { [page.startGenre]: 1 }
-                page.filtersOpen = true
-            }
-            if (page.startListStatus !== "") {
-                page.listStates = { [page.startListStatus]: 1 }
-                page.filtersOpen = true
-            }
+        } else if (page.startGenre !== "") {
+            page.genreStates = { [page.startGenre]: 1 }
+            page.filtersOpen = true
             page.applyPreset(page.startCategory)
+        } else if (page.startListStatus !== "") {
+            page.listStates = { [page.startListStatus]: 1 }
+            page.filtersOpen = true
+            page.applyPreset(page.startCategory)
+        } else if (page.startLabel !== "" || page.startCategory !== "top-airing") {
+            // Arrived from a "See all" or the Continue nav entry: that names
+            // the listing to show, so it wins over what was saved.
+            page.applyPreset(page.startCategory)
+        } else {
+            let saved = backend.browseState()
+            if (saved && Object.keys(saved).length > 0) page.restoreBrowseState(saved)
+            else page.applyPreset(page.startCategory)
         }
     }
 
@@ -221,7 +294,9 @@ Kirigami.ScrollablePage {
         // it is one request rather than a search plus a match. Anything with a
         // filter on it goes to AniList, which is the only side that can
         // exclude, and knows tags, origin and scores.
-        if (!page.filtered && queryField.text.trim() !== "") {
+        if (page.localKey !== "") {
+            backend.browseLocal(page.localKey)
+        } else if (!page.filtered && queryField.text.trim() !== "") {
             backend.search(queryField.text.trim())
         } else {
             backend.searchByFilters(page.filterSpec(), pageNumber)
@@ -237,7 +312,7 @@ Kirigami.ScrollablePage {
     Timer {
         id: reloadDebounce
         interval: 250
-        onTriggered: page.load(1)
+        onTriggered: { page.load(1); page.rememberState() }
     }
 
     function loadMore() {
@@ -259,19 +334,35 @@ Kirigami.ScrollablePage {
     // which silently ignored every other filter -- so "Top Airing" plus
     // "Movies" plus "China" quietly answered only the first of the three.
     function applyPreset(key) {
-        let all = backend.catalogs()
+        // A local listing replaces the filters rather than composing with
+        // them, so switching to one clears whatever was set.
+        for (let i = 0; i < page.localCatalogs.length; i++) {
+            if (page.localCatalogs[i].key === key) {
+                page.clearFilters(true)
+                page.localKey = key
+                page.presetLabel = page.localCatalogs[i].label
+                page.load(1)
+                page.rememberState()
+                return
+            }
+        }
+
+        let all = page.catalogPresets
         let preset = null
         for (let i = 0; i < all.length; i++) if (all[i].key === key) preset = all[i]
         if (preset === null) { page.load(1); return }
 
+        page.localKey = ""
         page.presetLabel = preset.label
         page.filterSort = preset.sort || ""
         if (preset.airing) page.airingStates = { [preset.airing]: 1 }
         if (preset.format) page.formatStates = { [preset.format]: 1 }
         page.load(1)
+        page.rememberState()
     }
 
-    function clearFilters() {
+    function clearFilters(skipReload) {
+        page.localKey = ""
         page.filterSeason = ""
         page.filterYear = ""
         page.filterSort = ""
@@ -285,7 +376,13 @@ Kirigami.ScrollablePage {
         page.presetLabel = ""
         page.showingRecommendations = false
         queryField.text = ""
-        page.load(1)
+        // skipReload is for callers that are about to load something else
+        // themselves -- without it, switching to a local listing fires a
+        // catalog request first and the two race.
+        if (skipReload !== true) {
+            page.load(1)
+            backend.clearBrowseState()
+        }
     }
 
     function applyTagFilterText(text) {
@@ -314,7 +411,13 @@ Kirigami.ScrollablePage {
                     title: entry.title,
                     poster_url: entry.poster_url || "",
                     kind: entry.kind || "",
-                    rating: entry.rating || ""
+                    rating: entry.rating || "",
+                    // Carried through so the detail page can say how far the
+                    // dub is behind the sub. The source publishes both counts
+                    // on the card and nothing else knows them -- AniList has
+                    // no dub data at all.
+                    sub_count: entry.sub_count || 0,
+                    dub_count: entry.dub_count || 0
                 }
             }
         )
@@ -372,6 +475,25 @@ Kirigami.ScrollablePage {
                 Controls.Menu {
                     Kirigami.Theme.inherit: true
                     id: catalogMenu
+
+                    // The two listings built from this machine, above the
+                    // ranked catalogs: they answer "where was I" and "what do
+                    // I already have", which is what someone opening this
+                    // picker most often wants.
+                    Instantiator {
+                        model: page.localCatalogs
+                        onObjectAdded: (index, object) => catalogMenu.insertItem(index, object)
+                        onObjectRemoved: (index, object) => catalogMenu.removeItem(object)
+                        delegate: Controls.MenuItem {
+                            required property var modelData
+                            text: modelData.label
+                            icon.name: modelData.key === "downloaded"
+                                ? "folder-download-symbolic" : "media-playback-start-symbolic"
+                            onTriggered: page.applyPreset(modelData.key)
+                        }
+                    }
+                    Controls.MenuSeparator {}
+
                     Instantiator {
                         // Assigned once, not left as a live binding on
                         // backend.catalogs(): the preset list never changes,
@@ -399,7 +521,10 @@ Kirigami.ScrollablePage {
             Layout.rightMargin: Kirigami.Units.smallSpacing
             Layout.bottomMargin: Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing
-            visible: page.filtersOpen
+            // Hidden outright rather than merely ignored while a local
+            // listing is showing: a panel of controls that silently do
+            // nothing is worse than no panel.
+            visible: page.filtersOpen && page.localKey === ""
 
             Controls.Label {
                 Layout.fillWidth: true
@@ -524,29 +649,29 @@ Kirigami.ScrollablePage {
                 onToggled: (key) => { page.genreStates = page.tristate(page.genreStates, key); page.reload() }
             }
 
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: Kirigami.Units.smallSpacing
-                Controls.Label {
-                    text: "Tags"
-                    opacity: 0.7
-                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                }
-                Controls.TextField {
-                    Kirigami.Theme.inherit: true
-                    id: tagField
-                    Layout.fillWidth: true
-                    placeholderText: "Find a tag, e.g. \"Time Skip\" or \"Isekai\"..."
-                    onTextChanged: page.applyTagFilterText(text)
-                }
-            }
-
             ChipSection {
+                id: tagSection
+                label: "Tags"
                 names: page.shownTags
                 keys: page.shownTags
                 states: page.tagStates
                 collapsible: true
                 onToggled: (key) => { page.tagStates = page.tristate(page.tagStates, key); page.reload() }
+            }
+
+            // Below its section rather than above it, and only while that
+            // section is open: AniList publishes several hundred tags, so the
+            // search field is the only practical way through them -- but a
+            // search box for a list nobody has opened is just more to look at.
+            Controls.TextField {
+                Kirigami.Theme.inherit: true
+                id: tagField
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.gridUnit
+                Layout.bottomMargin: Kirigami.Units.smallSpacing
+                visible: tagSection.open
+                placeholderText: "Find a tag, e.g. \"Time Skip\" or \"Isekai\"..."
+                onTextChanged: page.applyTagFilterText(text)
             }
         }
 
@@ -648,6 +773,14 @@ Kirigami.ScrollablePage {
 
     // A labelled run of tri-state chips, optionally capped until expanded.
     // AniList's nineteen genres all fit; its tags run to several hundred.
+    // One collapsible group of chips.
+    //
+    // Collapsed by default, and that is the whole point: six sections opened
+    // at once put well over a hundred identically-weighted chips on screen,
+    // which is a wall to read rather than a set of choices. Closed, each
+    // section is one line saying what it filters and how many are set -- and
+    // a section with something set opens itself, so a filter can never be
+    // applied out of sight.
     component ChipSection: ColumnLayout {
         id: section
         property string label: ""
@@ -656,7 +789,18 @@ Kirigami.ScrollablePage {
         property var states: ({})
         property bool collapsible: false
         property int limit: 20
+        // Tracked separately from `open` so that a section the user closed by
+        // hand stays closed even though it has an active filter.
+        property bool touched: false
+        property bool open: false
         signal toggled(string key)
+
+        readonly property int activeCount: {
+            let n = 0
+            for (let i = 0; i < keys.length; i++) if (states[keys[i]] !== undefined) n++
+            return n
+        }
+        onActiveCountChanged: if (!touched && activeCount > 0) open = true
 
         readonly property bool expanded: !collapsible || limit >= names.length
         // A selected chip stays visible past the cap: collapsing the list must
@@ -673,16 +817,67 @@ Kirigami.ScrollablePage {
         spacing: Kirigami.Units.smallSpacing
         visible: names.length > 0
 
-        Controls.Label {
-            text: section.label
-            visible: section.label !== ""
-            opacity: 0.7
-            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+        // The header is the whole clickable row, not just the arrow -- a
+        // disclosure triangle is a small target for something used this often.
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: headerRow.implicitHeight + Kirigami.Units.smallSpacing
+            radius: Kirigami.Units.smallSpacing
+            color: headerHover.hovered
+                ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                          Kirigami.Theme.highlightColor.b, 0.08)
+                : "transparent"
+
+            RowLayout {
+                id: headerRow
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Kirigami.Units.smallSpacing
+                spacing: Kirigami.Units.smallSpacing
+
+                Kirigami.Icon {
+                    source: section.open ? "go-down-symbolic" : "go-next-symbolic"
+                    isMask: true
+                    color: Kirigami.Theme.textColor
+                    implicitWidth: Kirigami.Units.iconSizes.small
+                    implicitHeight: Kirigami.Units.iconSizes.small
+                }
+                Controls.Label {
+                    text: section.label
+                    font.bold: true
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                }
+                Rectangle {
+                    visible: section.activeCount > 0
+                    implicitWidth: countLabel.implicitWidth + Kirigami.Units.smallSpacing * 2
+                    implicitHeight: countLabel.implicitHeight + 2
+                    radius: height / 2
+                    color: Kirigami.Theme.highlightColor
+                    Controls.Label {
+                        id: countLabel
+                        anchors.centerIn: parent
+                        text: section.activeCount
+                        color: Kirigami.Theme.highlightedTextColor
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                        font.bold: true
+                    }
+                }
+                Item { Layout.fillWidth: true }
+            }
+
+            HoverHandler { id: headerHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler {
+                onTapped: { section.touched = true; section.open = !section.open }
+            }
         }
 
         Flow {
             Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.gridUnit
+            Layout.bottomMargin: Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing
+            visible: section.open
 
             Repeater {
                 model: section.visibleIndexes

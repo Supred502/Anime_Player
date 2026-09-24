@@ -9,6 +9,52 @@ Kirigami.ScrollablePage {
     // Paints this page in the app's colour scheme -- see AppTheming.qml
     // for why this is per-page rather than set once on the window.
     AppTheming {}
+
+    property var themeAccents: []
+    property string currentAccent: ""
+    property bool canDownload: false
+    property int downloadBytes: 0
+
+    function refreshDownloadSize() { page.downloadBytes = backend.downloadBytes() }
+
+    function formatSize(bytes) {
+        if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB"
+        return Math.round(bytes / (1024 * 1024)) + " MB"
+    }
+
+    Connections {
+        target: backend
+        function onDownloadsChanged() { page.refreshDownloadSize() }
+        function onThemeChanged() { page.currentAccent = backend.theme.accentName }
+    }
+
+    // Deleting every saved episode is not undoable and not obviously
+    // reversible from the button's label alone, so it asks first.
+    Kirigami.PromptDialog {
+        id: clearDownloadsPrompt
+        title: "Delete all downloads?"
+        subtitle: "Every episode saved for offline watching will be removed from "
+                + "this computer. They can be downloaded again."
+        standardButtons: Kirigami.Dialog.NoButton
+        customFooterActions: [
+            Kirigami.Action {
+                text: "Delete them"
+                icon.name: "edit-delete-symbolic"
+                onTriggered: {
+                    let rows = backend.allDownloads()
+                    for (let i = 0; i < rows.length; i++) {
+                        backend.removeDownload(rows[i].episode_id, rows[i].dub)
+                    }
+                    clearDownloadsPrompt.close()
+                }
+            },
+            Kirigami.Action {
+                text: "Keep them"
+                icon.name: "dialog-cancel-symbolic"
+                onTriggered: clearDownloadsPrompt.close()
+            }
+        ]
+    }
     title: "Settings"
 
     property bool loggedIn: false
@@ -25,6 +71,11 @@ Kirigami.ScrollablePage {
         skipFinalToggle.checked = backend.getSkipFinalEpisodeEnabled()
         autoNextToggle.checked = backend.getAutoNextEnabled()
         autoFullscreenToggle.checked = backend.getAutoFullscreenEnabled()
+        deleteWatchedToggle.checked = backend.getDeleteAfterWatchingEnabled()
+        page.themeAccents = backend.themeAccents()
+        page.currentAccent = backend.theme.accentName
+        page.canDownload = backend.canDownload()
+        page.refreshDownloadSize()
         page.remoteRunning = backend.isRemoteServerRunning()
         page.remoteUrl = backend.getRemoteUrl()
         page.remotePin = backend.getRemotePin()
@@ -98,10 +149,13 @@ Kirigami.ScrollablePage {
                 Kirigami.FormData.label: "Accent:"
                 spacing: Kirigami.Units.smallSpacing
                 Repeater {
-                    model: backend.themeAccents()
+                    // Assigned once, not bound: the swatch list never changes,
+                    // and a binding that reads `backend` is re-evaluated during
+                    // teardown after the context property is gone.
+                    model: page.themeAccents
                     Rectangle {
                         required property var modelData
-                        readonly property bool current: backend.theme.accentName === modelData.key
+                        readonly property bool current: page.currentAccent === modelData.key
                         implicitWidth: Kirigami.Units.gridUnit * 1.6
                         implicitHeight: implicitWidth
                         radius: width / 2
@@ -126,33 +180,55 @@ Kirigami.ScrollablePage {
         Kirigami.FormLayout {
             Layout.fillWidth: true
 
-            Controls.CheckBox {
-                Kirigami.Theme.inherit: true
+            AppCheckBox {
                 id: autoSkipToggle
                 Kirigami.FormData.label: "Playback:"
                 text: "Auto-skip intro/outro"
                 onToggled: backend.setAutoSkipEnabled(checked)
             }
-            Controls.CheckBox {
-                Kirigami.Theme.inherit: true
+            AppCheckBox {
                 id: skipFinalToggle
                 Kirigami.FormData.label: " "
                 text: "Also auto-skip on the last episode"
                 onToggled: backend.setSkipFinalEpisodeEnabled(checked)
             }
-            Controls.CheckBox {
-                Kirigami.Theme.inherit: true
+            AppCheckBox {
                 id: autoNextToggle
                 Kirigami.FormData.label: " "
                 text: "Auto-play next episode"
                 onToggled: backend.setAutoNextEnabled(checked)
             }
-            Controls.CheckBox {
-                Kirigami.Theme.inherit: true
+            AppCheckBox {
                 id: autoFullscreenToggle
                 Kirigami.FormData.label: " "
                 text: "Go fullscreen when an episode starts"
                 onToggled: backend.setAutoFullscreenEnabled(checked)
+            }
+
+            AppCheckBox {
+                id: deleteWatchedToggle
+                Kirigami.FormData.label: "Downloads:"
+                enabled: page.canDownload
+                text: "Delete a saved episode once I've watched it"
+                onToggled: backend.setDeleteAfterWatchingEnabled(checked)
+            }
+            Controls.Label {
+                Kirigami.FormData.label: " "
+                text: !page.canDownload
+                    ? "ffmpeg isn't installed, so episodes can't be saved for offline watching."
+                    : page.downloadBytes > 0
+                      ? page.formatSize(page.downloadBytes) + " saved on disk"
+                      : "Nothing saved right now."
+                opacity: 0.7
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
+            Controls.Button {
+                Kirigami.Theme.inherit: true
+                Kirigami.FormData.label: " "
+                text: "Delete all downloads"
+                enabled: page.downloadBytes > 0
+                icon.name: "edit-delete-symbolic"
+                onClicked: clearDownloadsPrompt.open()
             }
         }
 

@@ -46,6 +46,17 @@ AppWindow {
             searchDone.restart()
         }
         function onBrowseFailed(message) { root.log("SEARCH FAILED: " + message) }
+        // BrowsePage runs an unfiltered title search against the source
+        // itself, which answers on searchFinished rather than browseFinished
+        // -- the page has two engines behind it (see BrowsePage.load).
+        function onSearchFinished(results) {
+            if (!root.typed) return
+            root.log("search -> " + results.length + " results; first=" +
+                     (results.length ? results[0].title + " (" + results[0].slug_id + ")" : "NONE"))
+            if (!results.length) return
+            searchDone.restart()
+        }
+        function onSearchFailed(message) { root.log("SEARCH FAILED: " + message) }
         function onEpisodesFinished(episodes) {
             root.log("episodes -> " + episodes.length)
             if (episodes.length) episodesDone.restart()
@@ -75,7 +86,11 @@ AppWindow {
             // real filters now -- searching a finished show underneath one
             // correctly returns nothing. Clear them first, which is what a
             // user typing a title means.
-            page.clearFilters()
+            // skipReload: clearFilters() otherwise fires a load of its own,
+            // and that result arrives after `typed` is set -- so the driver
+            // acted on the default catalog and opened whatever was top of it
+            // rather than what it had searched for.
+            page.clearFilters(true)
             root.typed = true
             page.setQuery(root.query)
             page.load(1)

@@ -79,6 +79,30 @@ CREATE TABLE IF NOT EXISTS anime_prefs (
     anilist_id     INTEGER PRIMARY KEY,
     ignore_anilist INTEGER NOT NULL DEFAULT 0
 );
+
+-- Episodes saved to disk for offline playback. Keyed by (episode, audio)
+-- rather than by episode alone: the sub and the dub of one episode share an
+-- episode_id on the source but are two different files here.
+--
+-- The row is the record, not the file: a row in 'ready' whose file has been
+-- deleted from underneath us is treated as missing (see get_download), so the
+-- app never offers to play something that is not there.
+CREATE TABLE IF NOT EXISTS downloads (
+    episode_id     INTEGER NOT NULL,
+    dub            INTEGER NOT NULL DEFAULT 0,
+    slug_id        TEXT NOT NULL,
+    numeric_id     TEXT,
+    anime_title    TEXT NOT NULL,
+    poster_url     TEXT,
+    episode_number REAL NOT NULL,
+    path           TEXT NOT NULL,
+    subtitle_path  TEXT,
+    status         TEXT NOT NULL,      -- queued | downloading | ready | failed
+    bytes          INTEGER NOT NULL DEFAULT 0,
+    message        TEXT,               -- why it failed, for the UI to show
+    created_at     REAL NOT NULL,
+    PRIMARY KEY (episode_id, dub)
+);
 """
 
 
@@ -108,6 +132,23 @@ class AniListStatus:
     # finding a show on the streaming source needs every name AniList knows
     # for it, not just the one shown on the card -- see anilist/matcher.py.
     titles: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadEntry:
+    episode_id: int
+    dub: bool
+    slug_id: str
+    numeric_id: str
+    anime_title: str
+    poster_url: str | None
+    episode_number: float
+    path: str
+    subtitle_path: str | None
+    status: str
+    bytes: int
+    message: str
+    created_at: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,6 +318,110 @@ class Database:
                 "INSERT INTO anime_prefs (anilist_id, ignore_anilist) VALUES (?, ?) "
                 "ON CONFLICT(anilist_id) DO UPDATE SET ignore_anilist=excluded.ignore_anilist",
                 (anilist_id, 1 if ignore else 0),
+            )
+            self._conn.commit()
+
+    # -- downloads ---------------------------------------------------------
+
+    @staticmethod
+    def _row_to_download(row: sqlite3.Row) -> DownloadEntry:
+        return DownloadEntry(
+            episode_id=row["episode_id"],
+            dub=bool(row["dub"]),
+            slug_id=row["slug_id"],
+            numeric_id=row["numeric_id"] or "",
+            anime_title=row["anime_title"],
+            poster_url=row["poster_url"],
+            episode_number=row["episode_number"],
+            path=row["path"],
+            subtitle_path=row["subtitle_path"],
+            status=row["status"],
+            bytes=row["bytes"],
+            message=row["message"] or "",
+            created_at=row["created_at"],
+        )
+
+    def upsert_download(self, entry: DownloadEntry) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO downloads (episode_id, dub, slug_id, numeric_id, anime_title, "
+                "poster_url, episode_number, path, subtitle_path, status, bytes, message, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(episode_id, dub) DO UPDATE SET "
+                "slug_id=excluded.slug_id, numeric_id=excluded.numeric_id, "
+                "anime_title=excluded.anime_title, poster_url=excluded.poster_url, "
+                "episode_number=excluded.episode_number, path=excluded.path, "
+                "subtitle_path=excluded.subtitle_path, status=excluded.status, "
+                "bytes=excluded.bytes, message=excluded.message",
+                (entry.episode_id, 1 if entry.dub else 0, entry.slug_id, entry.numeric_id,
+                 entry.anime_title, entry.poster_url, entry.episode_number, entry.path,
+                 entry.subtitle_path, entry.status, entry.bytes, entry.message, entry.created_at),
+            )
+            self._conn.commit()
+
+    def set_download_status(self, episode_id: int, dub: bool, status: str,
+                            *, bytes_written: int = 0, message: str = "") -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE downloads SET status = ?, bytes = ?, message = ? "
+                "WHERE episode_id = ? AND dub = ?",
+                (status, bytes_written, message, episode_id, 1 if dub else 0),
+            )
+            self._conn.commit()
+
+    def get_download(self, episode_id: int, dub: bool) -> DownloadEntry | None:
+        """The download for this episode, or None.
+
+        A 'ready' row whose file has since been deleted (by the user, or by a
+        cleaned-out home directory) is reported as gone and the stale row
+        dropped -- otherwise the app would hand mpv a path to nothing and the
+        episode would simply fail to start with no explanation.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM downloads WHERE episode_id = ? AND dub = ?",
+                (episode_id, 1 if dub else 0),
+            ).fetchone()
+        if row is None:
+            return None
+        entry = self._row_to_download(row)
+        if entry.status == "ready" and not Path(entry.path).exists():
+            self.delete_download(episode_id, dub)
+            return None
+        return entry
+
+    def downloads_for(self, slug_id: str) -> list[DownloadEntry]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM downloads WHERE slug_id = ? ORDER BY episode_number",
+                (slug_id,),
+            ).fetchall()
+        return [self._row_to_download(r) for r in rows]
+
+    def all_downloads(self) -> list[DownloadEntry]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM downloads ORDER BY created_at DESC"
+            ).fetchall()
+        return [self._row_to_download(r) for r in rows]
+
+    def downloaded_anime(self) -> list[tuple[DownloadEntry, int]]:
+        """One row per anime that has at least one episode on disk -- what the
+        'Downloaded' listing is built from. The row returned is the most
+        recently saved episode of that anime, so the listing can show its
+        title and poster without a second query."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT *, COUNT(*) AS episode_count FROM downloads "
+                "WHERE status = 'ready' GROUP BY slug_id ORDER BY MAX(created_at) DESC"
+            ).fetchall()
+        return [(self._row_to_download(r), r["episode_count"]) for r in rows]
+
+    def delete_download(self, episode_id: int, dub: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM downloads WHERE episode_id = ? AND dub = ?",
+                (episode_id, 1 if dub else 0),
             )
             self._conn.commit()
 

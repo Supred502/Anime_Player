@@ -100,7 +100,13 @@ Kirigami.ScrollablePage {
                     title: entry.title,
                     poster_url: entry.poster_url || "",
                     kind: entry.kind || "",
-                    rating: entry.rating || ""
+                    rating: entry.rating || "",
+                    // Carried through so the detail page can say how far the
+                    // dub is behind the sub. The source publishes both counts
+                    // on the card and nothing else knows them -- AniList has
+                    // no dub data at all.
+                    sub_count: entry.sub_count || 0,
+                    dub_count: entry.dub_count || 0
                 }
             }
         )

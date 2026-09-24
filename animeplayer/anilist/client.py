@@ -12,6 +12,7 @@ Redirect URL set to exactly https://anilist.co/api/v2/oauth/pin.
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from collections import OrderedDict, deque
@@ -21,6 +22,7 @@ from typing import Any
 import httpx
 
 API_URL = "https://graphql.anilist.co"
+USER_AGENT = "AnimePlayer/1.0 (+https://github.com/Supred502/Anime_Player)"
 AUTHORIZE_URL_TEMPLATE = "https://anilist.co/api/v2/oauth/authorize?client_id={client_id}&response_type=token"
 
 _VIEWER_QUERY = """
@@ -373,6 +375,29 @@ class _RateLimiter:
 _limiter = _RateLimiter()
 
 
+class _Counter:
+    """Counts real network calls, for measuring how much this app actually
+    asks of AniList. Off unless ANIMEPLAYER_COUNT_ANILIST is set."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.on = bool(os.environ.get("ANIMEPLAYER_COUNT_ANILIST"))
+
+    def record(self, query: str) -> None:
+        if not self.on:
+            return
+        name = "unknown"
+        for line in query.strip().splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith(("query", "mutation", "{")):
+                name = stripped.split("(")[0].split("{")[0].strip()
+                break
+        self.calls.append(name)
+
+
+_counter = _Counter()
+
+
 class AniListClient:
     # Shared across instances for the same reason the limiter is: the
     # unauthenticated catalog client and the logged-in one are two views of
@@ -410,6 +435,14 @@ class AniListClient:
             cls._cache.move_to_end(key)
             return data
 
+    # Identical queries that are already in flight, so a second caller waits
+    # for the first one's answer instead of asking again. The cache alone does
+    # not cover this: three filter toggles in a second all miss, because none
+    # of them has come back yet to populate it. Measured -- three identical
+    # searches fired together cost three requests before this, and one after.
+    _inflight: dict[tuple, threading.Event] = {}
+    _inflight_lock = threading.Lock()
+
     @classmethod
     def _remember(cls, key: tuple, data: dict) -> None:
         with cls._cache_lock:
@@ -431,13 +464,52 @@ class AniListClient:
             hit = self._cached(key)
             if hit is not None:
                 return hit
+            # Someone else is already asking this exact question -- wait for
+            # their answer rather than asking it again.
+            with self._inflight_lock:
+                waiting = self._inflight.get(key)
+                if waiting is None:
+                    self._inflight[key] = threading.Event()
+            if waiting is not None:
+                # Bounded: if the leader dies without setting the event, this
+                # falls through and makes the request itself rather than
+                # hanging the worker thread forever.
+                waiting.wait(timeout=self._INFLIGHT_WAIT_SECONDS)
+                hit = self._cached(key)
+                if hit is not None:
+                    return hit
 
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # AniList asks third-party clients to identify themselves so they
+            # can see where their API traffic comes from (and contact an app
+            # that misbehaves rather than just blocking it).
+            "User-Agent": USER_AGENT,
+        }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
 
+        try:
+            data = self._send(query, variables, headers)
+        finally:
+            if cache:
+                with self._inflight_lock:
+                    done = self._inflight.pop(key, None)
+                if done is not None:
+                    done.set()
+        if cache:
+            self._remember(key, data)
+        return data
+
+    # How long a caller waits on an identical in-flight request before giving
+    # up and making its own.
+    _INFLIGHT_WAIT_SECONDS = 30.0
+
+    def _send(self, query: str, variables: dict, headers: dict) -> dict:
         for attempt in range(self._RETRY_ATTEMPTS):
             _limiter.acquire()
+            _counter.record(query)
             resp = self._client.post(API_URL, json={"query": query, "variables": variables}, headers=headers)
             if resp.status_code == 429 and attempt < self._RETRY_ATTEMPTS - 1:
                 # Retry-After is what AniList actually tells us to wait; the
@@ -461,10 +533,7 @@ class AniListClient:
         if payload.get("errors"):
             messages = "; ".join(e.get("message", "unknown error") for e in payload["errors"])
             raise AniListError(messages)
-        data = payload["data"]
-        if cache:
-            self._remember(key, data)
-        return data
+        return payload["data"]
 
     def get_viewer(self) -> Viewer:
         data = self._request(_VIEWER_QUERY)
@@ -647,10 +716,14 @@ class AniListClient:
             if (node.get("summary") or "").strip()
         ]
 
+        airing = media.get("nextAiringEpisode") or {}
         return MediaExtras(
             relations=tuple(relations),
             recommendations=tuple(recommendations),
             reviews=tuple(reviews),
+            next_episode=airing.get("episode"),
+            next_airing_at=airing.get("airingAt"),
+            status=media.get("status") or "",
         )
 
     # Six rounds is plenty: each one steps one sequel/prequel further from
@@ -816,6 +889,8 @@ query ($id: Int!) {
         mediaRecommendation { %s }
       }
     }
+    status
+    nextAiringEpisode { episode airingAt }
     reviews(perPage: 6, sort: RATING_DESC) {
       nodes {
         id
@@ -892,6 +967,14 @@ class MediaExtras:
     relations: tuple[Relation, ...]
     recommendations: tuple[MediaSummary, ...]
     reviews: tuple[Review, ...]
+    # The next broadcast, for a show still airing: (episode number, unix time
+    # it airs). None for anything finished or not yet scheduled. This is the
+    # Japanese broadcast -- AniList has no dub schedule, and neither does
+    # anything else that could be asked cheaply, so the UI says "episode N
+    # airs ..." rather than implying the dub follows it.
+    next_episode: int | None = None
+    next_airing_at: int | None = None
+    status: str = ""
 
 
 def _is_side_content(media: dict, anchor: dict) -> bool:

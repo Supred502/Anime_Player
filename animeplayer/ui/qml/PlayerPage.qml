@@ -34,6 +34,7 @@ Kirigami.Page {
     property bool skipFinalEpisodeEnabled: false
     property bool autoNextEnabled: true
     property int episodeCount: 0
+    property real firstEpisodeNumber: 1
     readonly property bool isLastEpisode: page.episodeCount > 0 && page.episodeNumber >= page.episodeCount
     // On the last episode, auto-skip is suppressed unless skipFinalEpisodeEnabled
     // is explicitly on -- nothing left to spoil by watching the real ending.
@@ -57,6 +58,7 @@ Kirigami.Page {
         page.skipFinalEpisodeEnabled = backend.getSkipFinalEpisodeEnabled()
         page.autoNextEnabled = backend.getAutoNextEnabled()
         page.episodeCount = backend.getCurrentEpisodeCount()
+        page.firstEpisodeNumber = backend.getFirstEpisodeNumber()
         page.startLoad()
         // Straight into fullscreen on the way in, unless the user turned that
         // off. Picking an episode is an unambiguous "I am going to watch
@@ -116,7 +118,24 @@ Kirigami.Page {
         function onAboutToQuit() { page.showingPointerAgain = true }
     }
 
+    // Watched enough of it to count. Deliberately not "reached the end":
+    // most people stop during the credits, and an episode that never counts
+    // as watched is one whose saved copy never gets cleaned up.
+    readonly property real watchedThreshold: 0.9
+    property bool reportedWatched: false
+
+    function reportWatched() {
+        if (page.reportedWatched) return
+        page.reportedWatched = true
+        backend.episodeWatched(page.episodeId, page.dub)
+    }
+
     Component.onDestruction: {
+        // Leaving part-way through the credits still counts -- see above.
+        if (video && video.duration > 0
+                && video.position >= video.duration * page.watchedThreshold) {
+            page.reportWatched()
+        }
         page.showingPointerAgain = true
         backend.setKeepScreenAwake(false)
         if (page.isFullscreen) applicationWindow().visibility = Window.Windowed
@@ -203,6 +222,10 @@ Kirigami.Page {
             page.opAutoSkipped = false
             page.edAutoSkipped = false
             page.autoRetried = false
+            // This page is reused for the next episode rather than rebuilt,
+            // so the "already counted as watched" guard has to be cleared or
+            // every episode after the first would skip its own cleanup.
+            page.reportedWatched = false
             stallTimer.restart()
         }
         function onNoNextEpisode() {
@@ -323,6 +346,7 @@ Kirigami.Page {
             hideTimer.restart()
         }
         onEndOfFile: {
+            page.reportWatched()
             if (page.autoNextEnabled) page.nextEpisode()
         }
     }
@@ -491,10 +515,32 @@ Kirigami.Page {
 
         RowLayout {
             Layout.fillWidth: true
+            // Previous / play / next, in that order, because that is the
+            // order every transport control has been in for forty years.
+            // Both were already reachable by keyboard and from the phone
+            // remote but had no button of their own here.
+            Controls.Button {
+                Kirigami.Theme.inherit: true
+                icon.name: "media-skip-backward-symbolic"
+                // Episode numbers can be fractional (x.5 specials), so
+                // "there is an earlier one" is not simply number > 1.
+                enabled: page.episodeNumber > page.firstEpisodeNumber
+                onClicked: page.previousEpisode()
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: "Previous episode"
+            }
             Controls.Button {
                 Kirigami.Theme.inherit: true
                 icon.name: video.paused ? "media-playback-start" : "media-playback-pause"
                 onClicked: video.togglePause()
+            }
+            Controls.Button {
+                Kirigami.Theme.inherit: true
+                icon.name: "media-skip-forward-symbolic"
+                enabled: !page.isLastEpisode
+                onClicked: page.nextEpisode()
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: "Next episode"
             }
             Controls.Label {
                 text: page.formatTime(video.position) + " / " + page.formatTime(video.duration)

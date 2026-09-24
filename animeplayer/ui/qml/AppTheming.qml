@@ -90,9 +90,39 @@ Item {
 
     function apply() {
         let page = theming.pageOf(theming)
-        if (page) theming.applyTo(page)
+        if (page) { theming.applyTo(page); theming.applyDeep(page, 0) }
         for (let i = 0; i < theming.targets.length; i++) {
-            if (theming.targets[i]) theming.applyTo(theming.targets[i])
+            if (theming.targets[i]) {
+                theming.applyTo(theming.targets[i])
+                theming.applyDeep(theming.targets[i], 0)
+            }
+        }
+    }
+
+    // Paints the accent onto every descendant that has opted out of
+    // inheriting it.
+    //
+    // Declaring `Kirigami.Theme.inherit: true` on our own use of a control
+    // covers the control itself, but not the items the style builds inside
+    // it: a CheckBox's indicator is a separate item that sets inherit = false
+    // again, and it is the indicator that actually draws the tick's colour --
+    // measured live, a checkbox reading #ff0000 still had an indicator
+    // reading Breeze's #3daee9.
+    //
+    // The accent roles are set rather than inherit being flipped back on:
+    // flipping it would also hand the item its parent's colour *set*, so a
+    // control drawn from the Button set would start drawing itself from the
+    // Window set and change colour in ways nobody asked for.
+    function applyDeep(item, depth) {
+        // Deep enough for a control inside a delegate inside a layout, and
+        // bounded so a cycle or a pathological tree cannot hang the UI.
+        if (!item || depth > 12) return
+        let kids = item.children
+        for (let i = 0; i < kids.length; i++) {
+            let child = kids[i]
+            if (!child) continue
+            if (child.Kirigami.Theme.inherit === false) theming.applyTo(child)
+            theming.applyDeep(child, depth + 1)
         }
     }
 

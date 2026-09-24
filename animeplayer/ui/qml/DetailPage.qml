@@ -29,6 +29,35 @@ Kirigami.ScrollablePage {
     property var related: []
     property var recommendations: []
     property var reviews: []
+    // The next Japanese broadcast, when the show is still airing. Only ever
+    // the sub: no public API publishes a dub schedule, so the page says how
+    // far behind the dub currently is rather than inventing a date for it.
+    property string airingStatus: ""
+    property int nextEpisode: 0
+    property int nextAiringAt: 0
+    // Ticks so the countdown counts down rather than freezing at whatever it
+    // said when the page opened.
+    property real nowSeconds: Date.now() / 1000
+
+    readonly property bool airingSoon: page.nextAiringAt > 0
+        && page.nextAiringAt > page.nowSeconds
+
+    // How many dubbed episodes are behind the subbed ones, from the source's
+    // own two counts (AniList has neither).
+    readonly property int subCount: page.anime.sub_count || 0
+    readonly property int dubCount: page.anime.dub_count || 0
+    readonly property int dubBehind: page.subCount > 0 && page.dubCount > 0
+        ? Math.max(0, page.subCount - page.dubCount) : 0
+
+    function countdownText(seconds) {
+        if (seconds <= 0) return "any moment"
+        let days = Math.floor(seconds / 86400)
+        let hours = Math.floor((seconds % 86400) / 3600)
+        let minutes = Math.floor((seconds % 3600) / 60)
+        if (days > 0) return days + "d " + hours + "h"
+        if (hours > 0) return hours + "h " + minutes + "m"
+        return minutes + "m"
+    }
     // Set once the user has answered the out-of-order prompt, so it asks at
     // most once per visit to this page rather than on every episode click.
     property bool warningAcknowledged: false
@@ -85,6 +114,80 @@ Kirigami.ScrollablePage {
     property bool ignoreAnilist: false
     onAnilistIdChanged: {
         if (page.anilistId !== 0) page.ignoreAnilist = backend.isAnilistIgnored(page.anilistId)
+    }
+
+    // episode_id -> {status, progress} for this anime, refreshed whenever the
+    // backend says something changed. A plain object reassigned wholesale, for
+    // the same reason the home rows are arrays: QML only notifies `var`
+    // properties on assignment.
+    property var downloadState: ({})
+    // Assigned once rather than bound: whether ffmpeg exists cannot change
+    // while the app runs, and a binding that reads `backend` is re-evaluated
+    // during teardown after the context property is gone.
+    property bool canDownload: false
+
+    function refreshDownloads() {
+        if (!page.anime.slug_id) return
+        let next = {}
+        let rows = backend.downloadsFor(page.anime.slug_id)
+        for (let i = 0; i < rows.length; i++) {
+            let row = rows[i]
+            // Keyed by episode and audio together: the sub and the dub are two
+            // separate files (see the downloads table).
+            next[row.episode_id + ":" + (row.dub ? 1 : 0)] =
+                { status: row.status, progress: 0, message: row.message }
+        }
+        page.downloadState = next
+    }
+
+    function downloadKey(episodeId) { return episodeId + ":" + (page.dub ? 1 : 0) }
+
+    function downloadFor(episodeId) {
+        return page.downloadState[page.downloadKey(episodeId)] || null
+    }
+
+    function episodeSpec(episodeId, number) {
+        return {
+            episode_id: episodeId,
+            dub: page.dub,
+            slug_id: page.anime.slug_id,
+            numeric_id: page.anime.numeric_id || "",
+            title: page.anime.title || "",
+            poster_url: page.coverUrl,
+            episode_number: number
+        }
+    }
+
+    function toggleDownload(episodeId, number) {
+        let existing = page.downloadFor(episodeId)
+        if (existing === null || existing.status === "failed") {
+            backend.downloadEpisode(page.episodeSpec(episodeId, number))
+        } else if (existing.status === "ready") {
+            backend.removeDownload(episodeId, page.dub)
+        } else {
+            backend.cancelDownload(episodeId, page.dub)
+        }
+    }
+
+    // Everything on the page currently shown, skipping what is already saved
+    // or already running -- pressing this twice must not queue the season
+    // twice.
+    function downloadShownPage() {
+        let specs = []
+        for (let i = 0; i < pageEpisodesModel.count; i++) {
+            let ep = pageEpisodesModel.get(i)
+            let existing = page.downloadFor(ep.episode_id)
+            if (existing === null || existing.status === "failed") {
+                specs.push(page.episodeSpec(ep.episode_id, ep.number))
+            }
+        }
+        if (specs.length === 0) {
+            showPassiveNotification("Everything on this page is already saved or downloading.")
+            return
+        }
+        backend.downloadEpisodes(specs)
+        showPassiveNotification("Saving " + specs.length + " episode"
+                                + (specs.length === 1 ? "" : "s") + "...")
     }
 
     function episodeTitleFor(number) {
@@ -155,13 +258,37 @@ Kirigami.ScrollablePage {
     property int currentPage: 0
     readonly property int pageCount: Math.max(1, Math.ceil(episodesModel.count / pageSize))
 
+    Timer {
+        // A minute, not a second: the countdown is shown in days and hours,
+        // so a per-second tick would repaint sixty times for nothing.
+        interval: 60000
+        running: page.airingSoon
+        repeat: true
+        onTriggered: page.nowSeconds = Date.now() / 1000
+    }
+
     Component.onCompleted: {
         backend.loadEpisodes(anime.slug_id, anime.numeric_id, anime.title, anime.poster_url)
         page.localProgress = backend.getLocalProgress(anime.slug_id)
+        page.canDownload = backend.canDownload()
+        page.refreshDownloads()
     }
 
     Connections {
         target: backend
+        function onDownloadsChanged() { page.refreshDownloads() }
+        function onDownloadProgress(episodeId, dub, fraction, bytesWritten) {
+            let key = episodeId + ":" + (dub ? 1 : 0)
+            let existing = page.downloadState[key]
+            if (!existing) return
+            // Rebuilt rather than mutated in place: assigning into the nested
+            // object notifies nothing, and the bars would sit at zero for the
+            // whole download.
+            let next = Object.assign({}, page.downloadState)
+            next[key] = { status: "downloading", progress: fraction, message: "" }
+            page.downloadState = next
+        }
+        function onDownloadFailed(message) { showPassiveNotification(message) }
         function onEpisodesFinished(episodes) {
             page.loading = false
             episodesModel.clear()
@@ -222,6 +349,9 @@ Kirigami.ScrollablePage {
             page.related = extras.related
             page.recommendations = extras.recommendations
             page.reviews = extras.reviews
+            page.airingStatus = extras.airingStatus || ""
+            page.nextEpisode = extras.nextEpisode || 0
+            page.nextAiringAt = extras.nextAiringAt || 0
         }
         function onFillerEpisodesUpdated(episodeNumbers) {
             // The streaming source had no filler data for this show; these came from the
@@ -515,6 +645,75 @@ Kirigami.ScrollablePage {
             Layout.alignment: Qt.AlignHCenter
         }
 
+        // What is still to come. Only drawn for a show that is actually
+        // still running -- on a finished series there is nothing to say and a
+        // permanently empty strip is worse than none.
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.largeSpacing
+            Layout.rightMargin: Kirigami.Units.largeSpacing
+            Layout.preferredHeight: airingRow.implicitHeight + Kirigami.Units.largeSpacing
+            visible: page.airingSoon || (page.airingStatus === "RELEASING" && page.dubBehind > 0)
+            radius: Kirigami.Units.smallSpacing
+            color: Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                           Kirigami.Theme.highlightColor.b, 0.12)
+            border.width: 1
+            border.color: Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                                  Kirigami.Theme.highlightColor.b, 0.35)
+
+            RowLayout {
+                id: airingRow
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Kirigami.Units.largeSpacing
+                anchors.rightMargin: Kirigami.Units.largeSpacing
+                spacing: Kirigami.Units.largeSpacing
+
+                Kirigami.Icon {
+                    source: "clock-symbolic"
+                    isMask: true
+                    color: Kirigami.Theme.highlightColor
+                    implicitWidth: Kirigami.Units.iconSizes.small
+                    implicitHeight: Kirigami.Units.iconSizes.small
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+
+                    Controls.Label {
+                        visible: page.airingSoon
+                        text: "Episode " + page.nextEpisode + " (sub) airs in "
+                            + page.countdownText(page.nextAiringAt - page.nowSeconds)
+                        font.bold: true
+                    }
+                    Controls.Label {
+                        visible: page.airingSoon
+                        text: Qt.formatDateTime(new Date(page.nextAiringAt * 1000),
+                                                "dddd d MMMM, h:mm ap")
+                        opacity: 0.7
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        // Said plainly rather than as a second countdown: no
+                        // public source publishes dub air dates, so the only
+                        // honest thing to report is the gap that exists now.
+                        visible: page.dubBehind > 0 || page.dubCount === 0
+                        text: page.dubCount === 0
+                            ? "No dub available yet."
+                            : "Dub is " + page.dubBehind + " episode"
+                              + (page.dubBehind === 1 ? "" : "s") + " behind ("
+                              + page.dubCount + " of " + page.subCount + " dubbed)."
+                        opacity: 0.8
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                }
+            }
+        }
+
         RowLayout {
             Layout.fillWidth: true
             Layout.leftMargin: Kirigami.Units.largeSpacing
@@ -555,6 +754,19 @@ Kirigami.ScrollablePage {
                     opacity: 0.6
                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                 }
+            }
+
+            AppButton {
+                // "This page", not "this season": a long-runner is paged in
+                // hundreds, and a button on One Piece that quietly starts
+                // eleven hundred downloads is a trap rather than a
+                // convenience.
+                text: page.pageCount > 1 ? "Save these" : "Save season"
+                icon.name: "folder-download-symbolic"
+                visible: page.canDownload && episodesModel.count > 0
+                onClicked: page.downloadShownPage()
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: "Save every episode shown below for offline watching"
             }
         }
 
@@ -677,11 +889,61 @@ Kirigami.ScrollablePage {
                                 ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
                         }
 
+                        // Saved / downloading marker. A corner dot rather
+                        // than a badge: a hundred badges in a grid of a
+                        // hundred cells is just noise, and the only question
+                        // being answered here is "is this one on disk".
+                        Rectangle {
+                            readonly property var state: page.downloadFor(model.episode_id)
+                            visible: state !== null
+                            anchors.top: parent.top
+                            anchors.right: parent.right
+                            anchors.margins: 3
+                            width: Math.max(6, Math.round(episodeGrid.cellSize * 0.16))
+                            height: width
+                            radius: width / 2
+                            color: !state ? "transparent"
+                                 : state.status === "ready" ? Kirigami.Theme.positiveTextColor
+                                 : state.status === "failed" ? Kirigami.Theme.negativeTextColor
+                                 : Kirigami.Theme.neutralTextColor
+                        }
+
+                        // Fills along the bottom edge as the episode saves, so
+                        // a queue of them reads at a glance.
+                        Rectangle {
+                            readonly property var state: page.downloadFor(model.episode_id)
+                            visible: !!state && state.status === "downloading"
+                            anchors.left: parent.left
+                            anchors.bottom: parent.bottom
+                            anchors.margins: 2
+                            height: 3
+                            radius: 1.5
+                            width: (parent.width - 4) * (state ? state.progress : 0)
+                            color: Kirigami.Theme.highlightColor
+                        }
+
                         HoverHandler { id: cellHover; cursorShape: Qt.PointingHandCursor }
                         TapHandler { onTapped: page.requestEpisode(model.number) }
+                        // Right-click saves or removes it. A second button on
+                        // every cell would double the grid's weight for
+                        // something used on a handful of episodes.
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: if (page.canDownload) page.toggleDownload(model.episode_id, model.number)
+                        }
 
-                        Controls.ToolTip.visible: cellHover.hovered && model.title !== ""
-                        Controls.ToolTip.text: model.title
+                        Controls.ToolTip.visible: cellHover.hovered
+                        Controls.ToolTip.text: {
+                            let parts = []
+                            if (model.title !== "") parts.push(model.title)
+                            let state = page.downloadFor(model.episode_id)
+                            if (state && state.status === "ready") parts.push("Saved -- right-click to remove")
+                            else if (state && state.status === "downloading") parts.push("Saving... right-click to cancel")
+                            else if (state && state.status === "queued") parts.push("Queued -- right-click to cancel")
+                            else if (state && state.status === "failed") parts.push("Failed: " + state.message)
+                            else if (page.canDownload) parts.push("Right-click to save offline")
+                            return parts.join("\n")
+                        }
                         Controls.ToolTip.delay: 400
                     }
                 }
@@ -789,8 +1051,7 @@ Kirigami.ScrollablePage {
                         visible: page.anilistId !== 0
                     }
 
-                    Controls.CheckBox {
-                        Kirigami.Theme.inherit: true
+                    AppCheckBox {
                         Layout.fillWidth: true
                         visible: page.anilistId !== 0
                         text: "Don't sync to AniList"

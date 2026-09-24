@@ -1,4 +1,5 @@
 import json
+import time
 
 import httpx
 import pytest
@@ -645,3 +646,76 @@ def test_the_limiter_blocks_once_the_window_is_full(fake_clock) -> None:
     # The fourth has to wait for the first to age out of the window.
     limiter.acquire()
     assert now[0] >= 1060.0
+
+
+@respx.mock
+def test_identical_concurrent_requests_become_one() -> None:
+    """Three filter toggles in a second all miss the cache, because none of
+    them has come back yet to populate it. Without collapsing them, rapid use
+    of the filter panel is one AniList request per click -- measured live at
+    three requests for three identical searches, and one after this.
+    """
+    import threading
+
+    release = threading.Event()
+
+    arrived = threading.Event()
+
+    def responder(_request):
+        # Hold the first request open so the others are genuinely in flight.
+        arrived.set()
+        release.wait(timeout=5)
+        return httpx.Response(200, json={"data": {"GenreCollection": ["Action"]}})
+
+    route = respx.post(client_module.API_URL).mock(side_effect=responder)
+
+    results: list[list[str]] = []
+
+    def ask():
+        with httpx.Client() as http:
+            results.append(AniListClient(http).get_genre_collection())
+
+    leader = threading.Thread(target=ask)
+    leader.start()
+    # Wait for the leader to actually be mid-request rather than guessing with
+    # a sleep, so the followers below are certain to find it in flight.
+    assert arrived.wait(timeout=5)
+
+    followers = [threading.Thread(target=ask) for _ in range(2)]
+    for thread in followers:
+        thread.start()
+    # Give the followers a moment to register as waiters before the leader is
+    # allowed to answer and clear the in-flight marker.
+    time.sleep(0.2)
+    release.set()
+    for thread in [leader, *followers]:
+        thread.join(timeout=10)
+
+    assert route.call_count == 1
+    # ...and every caller still got the answer.
+    assert results == [["Action"]] * 3
+
+
+@respx.mock
+def test_a_failing_leader_does_not_strand_the_followers() -> None:
+    """If the request that others are waiting on fails, they must go and ask
+    themselves rather than waiting out the timeout and returning nothing."""
+    respx.post(client_module.API_URL).mock(
+        side_effect=[
+            httpx.Response(500),
+            httpx.Response(200, json={"data": {"GenreCollection": ["Action"]}}),
+        ]
+    )
+    with httpx.Client() as http:
+        client = AniListClient(http)
+        with pytest.raises(httpx.HTTPStatusError):
+            client.get_genre_collection()
+        # The in-flight marker was released, so this is a fresh attempt rather
+        # than a wait on something that will never arrive.
+        assert client.get_genre_collection() == ["Action"]
+
+
+def test_the_client_identifies_itself() -> None:
+    """AniList asks third-party clients to say who they are, so they can reach
+    an app that misbehaves instead of blocking it."""
+    assert "AnimePlayer" in client_module.USER_AGENT

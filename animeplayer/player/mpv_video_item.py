@@ -57,6 +57,11 @@ class _MpvRenderer(QQuickFramebufferObject.Renderer):
                 opengl_init_params={"get_proc_address": self._item.proc_address_fn},
             )
             self._render_ctx.update_cb = self._on_render_update
+            # Tells the item it is now safe to start playing. Until this
+            # exists, mpv has nowhere to put video and fails the file outright
+            # with "Error opening/initializing the selected video_out (--vo)
+            # device" -- see MpvVideoItem.loadUrl.
+            self._item.render_ready = True
 
         if self._item.closed:
             return
@@ -96,6 +101,12 @@ class MpvVideoItem(QQuickFramebufferObject):
         self.frameReady.connect(self.update)
         self.fileLoaded.connect(self._attach_pending_subtitle)
         self.proc_address_fn = _GetProcAddressFn(_get_proc_address)
+
+        # Set from the render thread once mpv's render context exists. A plain
+        # bool, so reading it from the GUI thread is safe under the GIL.
+        self.render_ready = False
+        self._pending_url = ""
+        self._render_waited_ms = 0
 
         self._position = 0.0
         self._duration = 0.0
@@ -294,7 +305,42 @@ class MpvVideoItem(QQuickFramebufferObject):
         # A global option rather than a per-file one so it also covers the
         # variant-playlist and segment fetches mpv makes on its own later.
         self.mpv["referrer"] = referer
-        self.mpv.play(url)
+        self._pending_url = url
+        self._start_when_rendered()
+
+    # How long to wait for the scene graph's first paint before giving up and
+    # playing anyway. Generous: the alternative to waiting is the error this
+    # exists to avoid, and in practice the context arrives within a frame.
+    _RENDER_WAIT_MS = 5000
+
+    def _start_when_rendered(self) -> None:
+        """Holds the file back until mpv has somewhere to draw it.
+
+        The render context is built on the first paint (see _MpvRenderer), and
+        calling play() before that fails the file with "Error
+        opening/initializing the selected video_out (--vo) device".
+
+        This never showed up on a streamed episode because resolving a stream
+        takes a few hundred milliseconds, by which time the first paint has
+        long happened -- it only appeared once episodes could be played from a
+        local file, which opens instantly and loses the race.
+        """
+        if self.closed or not self._pending_url:
+            return
+        # update() rather than merely waiting: if nothing else invalidates the
+        # item, the paint that builds the context might not be scheduled at
+        # all.
+        self.update()
+        if self.render_ready:
+            url, self._pending_url = self._pending_url, ""
+            self.mpv.play(url)
+            return
+        self._render_waited_ms += 16
+        if self._render_waited_ms >= self._RENDER_WAIT_MS:
+            url, self._pending_url = self._pending_url, ""
+            self.mpv.play(url)
+            return
+        QTimer.singleShot(16, self._start_when_rendered)
 
     @Slot()
     def togglePause(self) -> None:

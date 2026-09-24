@@ -13,6 +13,7 @@ import random
 import re
 import socket
 import tempfile
+import time
 import webbrowser
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -30,12 +31,23 @@ from animeplayer.anilist.client import (
     build_authorize_url,
 )
 from animeplayer.aniskip import client as aniskip
+from animeplayer.player.downloads import (
+    DownloadRequest,
+    Downloader,
+    DownloadError,
+    delete_files,
+    disk_usage,
+    download_subtitle,
+    ffmpeg_available,
+    probe_duration,
+    target_path,
+)
 from animeplayer.player.idle_inhibitor import IdleInhibitor
 from animeplayer.remote.server import RemoteServer
 from animeplayer.sources import hianime as source
 from animeplayer.sources import jikan
 from animeplayer.storage import secrets
-from animeplayer.storage.db import AniDBMapping, AniListStatus, Database
+from animeplayer.storage.db import AniDBMapping, AniListStatus, Database, DownloadEntry
 
 # The Android remote app is a thin WebView shell (see android-remote/) around
 # the same page RemoteServer already serves. Also published as a GitHub
@@ -188,6 +200,11 @@ class Backend(QObject):
     remoteServerFailed = Signal(str)  # the phone remote couldn't start; the app itself is fine
     remoteCommand = Signal(str, "QVariant")  # (cmd, args) from the phone remote -- see remote/server.py
 
+    # -- downloads ---------------------------------------------------------
+    downloadsChanged = Signal()                 # any row added/removed/finished
+    downloadProgress = Signal(int, bool, float, int)  # (episode id, dub, 0..1, bytes)
+    downloadFailed = Signal(str)
+
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._http = httpx.Client(follow_redirects=True, timeout=15)
@@ -228,6 +245,20 @@ class Backend(QObject):
             "title": None, "episode_number": 0, "position": 0.0, "duration": 0.0, "paused": True,
         }
         self._remote_server: RemoteServer | None = None
+
+        # Downloads run one at a time on their own single-thread pool, not on
+        # the shared QThreadPool: an ffmpeg run lasts tens of seconds, and
+        # parking one of the shared pool's threads on it for that long starves
+        # the searches and catalog loads the user is waiting on.
+        self._downloader = Downloader()
+        self._download_pool = QThreadPool()
+        self._download_pool.setMaxThreadCount(1)
+        # Anything left mid-flight when the app was last closed is not
+        # running any more, whatever the database says.
+        for entry in self._db.all_downloads():
+            if entry.status in ("queued", "downloading"):
+                self._db.set_download_status(entry.episode_id, entry.dub, "failed",
+                                             message="Interrupted -- start it again.")
         # Auto-start the phone remote on launch, unless the user explicitly
         # turned it off last time via the Settings Stop button -- requested
         # so "open the anime, then open the phone app" needs zero manual
@@ -375,35 +406,61 @@ class Backend(QObject):
     # and scores. A playable source match is resolved lazily, once a specific
     # result is clicked (openAnilistAnime).
 
-    @Slot()
-    def fetchAnilistGenres(self) -> None:
-        if self._genre_cache is not None:
-            self.anilistGenresLoaded.emit(self._genre_cache)
+    # AniList's genre list and tag vocabulary are effectively static -- a
+    # handful of tags get added a year. Re-fetching them on every launch is
+    # two requests per start of the app for data that has not changed, so they
+    # are kept on disk and only refreshed once a week. AniList has asked
+    # publicly for third-party clients to be lighter on their API; this and
+    # the response cache in anilist/client.py are most of this app's answer.
+    _STATIC_LIST_MAX_AGE = 7 * 24 * 60 * 60
+
+    def _cached_static_list(self, name: str) -> list[str] | None:
+        raw = self._db.get_setting(f"anilist_{name}")
+        stamp = self._db.get_setting(f"anilist_{name}_at")
+        if not raw or not stamp:
+            return None
+        try:
+            if time.time() - float(stamp) > self._STATIC_LIST_MAX_AGE:
+                return None
+            values = json.loads(raw)
+        except (ValueError, json.JSONDecodeError):
+            return None
+        return values if isinstance(values, list) and values else None
+
+    def _store_static_list(self, name: str, values: list[str]) -> None:
+        self._db.set_setting(f"anilist_{name}", json.dumps(values))
+        self._db.set_setting(f"anilist_{name}_at", str(time.time()))
+
+    def _fetch_static_list(self, name: str, fetch, signal) -> None:
+        cached = getattr(self, f"_{name}_cache")
+        if cached is not None:
+            signal.emit(cached)
+            return
+        stored = self._cached_static_list(name)
+        if stored is not None:
+            setattr(self, f"_{name}_cache", stored)
+            signal.emit(stored)
             return
 
-        def work() -> list[str]:
-            return self._anilist_public.get_genre_collection()
+        def done(values: list[str]) -> None:
+            ordered = sorted(values)
+            setattr(self, f"_{name}_cache", ordered)
+            self._store_static_list(name, ordered)
+            signal.emit(ordered)
 
-        def done(genres: list[str]) -> None:
-            self._genre_cache = sorted(genres)
-            self.anilistGenresLoaded.emit(self._genre_cache)
+        self._pool.start(_Worker(fetch, done, lambda _msg: None))
 
-        self._pool.start(_Worker(work, done, lambda _msg: None))
+    @Slot()
+    def fetchAnilistGenres(self) -> None:
+        self._fetch_static_list(
+            "genre", self._anilist_public.get_genre_collection, self.anilistGenresLoaded
+        )
 
     @Slot()
     def fetchAnilistTags(self) -> None:
-        if self._tag_cache is not None:
-            self.anilistTagsLoaded.emit(self._tag_cache)
-            return
-
-        def work() -> list[str]:
-            return self._anilist_public.get_tag_collection()
-
-        def done(tags: list[str]) -> None:
-            self._tag_cache = sorted(tags)
-            self.anilistTagsLoaded.emit(self._tag_cache)
-
-        self._pool.start(_Worker(work, done, lambda _msg: None))
+        self._fetch_static_list(
+            "tag", self._anilist_public.get_tag_collection, self.anilistTagsLoaded
+        )
 
     def _affinity_sorted(self, results: list[MediaSummary]) -> list[MediaSummary]:
         # Same relevance heuristic as the Home page's Planning row: shows
@@ -931,6 +988,26 @@ class Backend(QObject):
         if self._current_anime is not None:
             self._current_anime["current_episode_number"] = episode_number
 
+        # A saved copy wins over resolving a stream: it is faster, it is the
+        # only thing that works offline, and the stream URL it was built from
+        # has very likely expired by now anyway.
+        saved = self._db.get_download(episode_id, dub)
+        if saved is not None and saved.status == "ready":
+            self._progressReady.emit(episode_id, episode_number)
+            if self._anilist_client is not None and anime_snapshot and anime_snapshot.get("anilist_id"):
+                self._push_anilist_progress(anime_snapshot, episode_number)
+            self.streamReady.emit(
+                Path(saved.path).as_uri(),
+                "",
+                Path(saved.subtitle_path).as_uri() if saved.subtitle_path else "",
+            )
+            # No variants to choose between in a file that was saved at one
+            # quality -- the selector stays empty rather than offering
+            # switches that would silently do nothing.
+            self.streamQualitiesAvailable.emit([])
+            self._maybe_fetch_skip_times(episode_number)
+            return
+
         def finish_up(info: source.StreamInfo) -> None:
             self._progressReady.emit(episode_id, episode_number)
             if self._anilist_client is not None and anime_snapshot and anime_snapshot.get("anilist_id"):
@@ -1139,6 +1216,302 @@ class Backend(QObject):
     def setAutoNextEnabled(self, value: bool) -> None:
         self._db.set_setting("auto_next_enabled", "true" if value else "false")
 
+    # -- Downloads ----------------------------------------------------------
+    #
+    # An episode saved here is played from disk instead of being resolved
+    # again, which is both faster and the only thing that works with no
+    # network. By default an episode deletes itself once it has been watched
+    # (see episodeWatched) -- that is what the feature was asked for.
+
+    def _download_card(self, entry: DownloadEntry, episode_count: int = 0) -> dict[str, Any]:
+        return {
+            "episode_id": entry.episode_id,
+            "dub": entry.dub,
+            "slug_id": entry.slug_id,
+            "numeric_id": entry.numeric_id,
+            "title": entry.anime_title,
+            "poster_url": entry.poster_url or "",
+            "episode_number": entry.episode_number,
+            "status": entry.status,
+            "bytes": entry.bytes,
+            "message": entry.message,
+            "episode_count": episode_count,
+        }
+
+    @Slot(result=bool)
+    def canDownload(self) -> bool:
+        """Whether saving episodes is possible at all. The UI hides its
+        download controls when it isn't, rather than offering a button that
+        can only ever report the same failure."""
+        return ffmpeg_available()
+
+    @Slot(str, result=list)
+    def downloadsFor(self, slug_id: str) -> list[dict[str, Any]]:
+        return [self._download_card(e) for e in self._db.downloads_for(slug_id)]
+
+    @Slot(result=list)
+    def allDownloads(self) -> list[dict[str, Any]]:
+        return [self._download_card(e) for e in self._db.all_downloads()]
+
+    @Slot(result=int)
+    def downloadBytes(self) -> int:
+        return disk_usage()
+
+    @Slot(int, bool, result=bool)
+    def isDownloaded(self, episode_id: int, dub: bool) -> bool:
+        entry = self._db.get_download(episode_id, dub)
+        return entry is not None and entry.status == "ready"
+
+    @Slot(dict)
+    def downloadEpisode(self, spec: dict[str, Any]) -> None:
+        """Queues one episode. spec carries what the detail page already knows
+        about it, so the worker never has to re-resolve the anime itself."""
+        self._queue_download(spec)
+        self.downloadsChanged.emit()
+
+    @Slot(list)
+    def downloadEpisodes(self, specs: list[Any]) -> None:
+        """Queues a whole season at once. Each is an independent job, so one
+        episode failing doesn't take the rest of the season with it."""
+        for spec in specs:
+            self._queue_download(dict(spec))
+        self.downloadsChanged.emit()
+
+    def _queue_download(self, spec: dict[str, Any]) -> None:
+        request = DownloadRequest(
+            episode_id=int(spec.get("episode_id") or 0),
+            dub=bool(spec.get("dub")),
+            slug_id=str(spec.get("slug_id") or ""),
+            numeric_id=str(spec.get("numeric_id") or ""),
+            anime_title=str(spec.get("title") or "Unknown"),
+            poster_url=str(spec.get("poster_url") or ""),
+            episode_number=float(spec.get("episode_number") or 0),
+        )
+        if not request.episode_id:
+            return
+        existing = self._db.get_download(request.episode_id, request.dub)
+        if existing is not None and existing.status in ("ready", "queued", "downloading"):
+            return
+
+        self._downloader.clear_cancelled(request.episode_id, request.dub)
+        destination = target_path(request)
+        self._db.upsert_download(
+            DownloadEntry(
+                episode_id=request.episode_id, dub=request.dub, slug_id=request.slug_id,
+                numeric_id=request.numeric_id, anime_title=request.anime_title,
+                poster_url=request.poster_url, episode_number=request.episode_number,
+                path=str(destination), subtitle_path=None, status="queued",
+                bytes=0, message="", created_at=time.time(),
+            )
+        )
+
+        def work() -> None:
+            self._run_download(request, destination)
+
+        def done(_result: None) -> None:
+            self.downloadsChanged.emit()
+
+        def failed(message: str) -> None:
+            # "cancelled" is the user's own doing, not something to report at
+            # them -- the row is already gone by the time this runs.
+            if message != "cancelled":
+                self._db.set_download_status(request.episode_id, request.dub, "failed",
+                                             message=message)
+                self.downloadFailed.emit(f"{request.anime_title} episode "
+                                         f"{request.episode_number:g}: {message}")
+            self.downloadsChanged.emit()
+
+        self._download_pool.start(_Worker(work, done, failed))
+
+    def _run_download(self, request: DownloadRequest, destination: Path) -> None:
+        """Runs on the download thread. Raises to report failure -- _Worker
+        turns that into the failed() callback above."""
+        if self._downloader.is_cancelled(request.episode_id, request.dub):
+            raise DownloadError("cancelled")
+
+        self._db.set_download_status(request.episode_id, request.dub, "downloading")
+        self.downloadsChanged.emit()
+
+        info = source.resolve_stream(request.episode_id, self._http, dub=request.dub)
+        # Save the best single rendition rather than the adaptive master: an
+        # mp4 built from a master playlist ends up with every variant's tracks
+        # muxed in, which is three times the size for one watchable video.
+        url = info.variants[0].url if info.variants else info.master_url
+        duration = probe_duration(url, info.referer)
+
+        def on_progress(fraction: float, written: int) -> None:
+            # Already throttled to roughly one call per percent by the
+            # downloader -- see the note in Downloader.fetch.
+            self.downloadProgress.emit(request.episode_id, request.dub, fraction, written)
+
+        self._downloader.fetch(url, info.referer, destination, duration, on_progress)
+
+        subtitle_path = None
+        if info.subtitle_url:
+            subtitle_path = download_subtitle(
+                info.subtitle_url, destination.with_suffix(".vtt"), self._http
+            )
+
+        self._db.upsert_download(
+            DownloadEntry(
+                episode_id=request.episode_id, dub=request.dub, slug_id=request.slug_id,
+                numeric_id=request.numeric_id, anime_title=request.anime_title,
+                poster_url=request.poster_url, episode_number=request.episode_number,
+                path=str(destination), subtitle_path=str(subtitle_path) if subtitle_path else None,
+                status="ready", bytes=destination.stat().st_size, message="",
+                created_at=time.time(),
+            )
+        )
+
+    @Slot(int, bool)
+    def cancelDownload(self, episode_id: int, dub: bool) -> None:
+        self._downloader.cancel(episode_id, dub)
+        self.removeDownload(episode_id, dub)
+
+    @Slot(int, bool)
+    def removeDownload(self, episode_id: int, dub: bool) -> None:
+        entry = self._db.get_download(episode_id, dub)
+        if entry is not None:
+            delete_files(entry.path, entry.subtitle_path,
+                         str(Path(entry.path).with_suffix(".part.mp4")))
+        self._db.delete_download(episode_id, dub)
+        self.downloadsChanged.emit()
+
+    @Slot(str)
+    def removeDownloadsFor(self, slug_id: str) -> None:
+        for entry in self._db.downloads_for(slug_id):
+            self.removeDownload(entry.episode_id, entry.dub)
+
+    @Slot(result=bool)
+    def getDeleteAfterWatchingEnabled(self) -> bool:
+        return (self._db.get_setting("delete_after_watching") or "true") == "true"
+
+    @Slot(bool)
+    def setDeleteAfterWatchingEnabled(self, value: bool) -> None:
+        self._db.set_setting("delete_after_watching", "true" if value else "false")
+
+    @Slot(int, bool)
+    def episodeWatched(self, episode_id: int, dub: bool) -> None:
+        """Called by the player once an episode has actually been watched
+        through. Deletes its saved copy if the user left that on -- which is
+        the whole point of downloading it in the first place: watch it, then
+        get the space back without having to think about it."""
+        if not self.getDeleteAfterWatchingEnabled():
+            return
+        if self._db.get_download(episode_id, dub) is None:
+            return
+        self.removeDownload(episode_id, dub)
+
+    # Listings built from this machine rather than from a catalog. They can't
+    # be expressed as AniList filters -- "what I have on disk" and "what I was
+    # part-way through" are facts about this install -- so Browse asks for
+    # them by name and the filter controls don't apply while one is showing.
+    _LOCAL_PRESETS: dict[str, str] = {
+        "continue": "Continue Watching",
+        "downloaded": "Downloaded",
+    }
+
+    @Slot(result=list)
+    def localCatalogs(self) -> list[dict[str, str]]:
+        return [{"key": key, "label": label} for key, label in self._LOCAL_PRESETS.items()]
+
+    @Slot(str)
+    def browseLocal(self, key: str) -> None:
+        """Answers on the same signal a catalog page does, so Browse renders
+        these exactly like any other listing."""
+        token = self._begin_browse()
+        if key == "downloaded":
+            cards = [
+                self._card(
+                    slug_id=entry.slug_id,
+                    numeric_id=entry.numeric_id,
+                    title=entry.anime_title,
+                    poster_url=entry.poster_url or "",
+                    reason=f"{count} episode{'s' if count != 1 else ''} saved",
+                )
+                for entry, count in self._db.downloaded_anime()
+            ]
+        else:
+            cards = [
+                self._card(
+                    slug_id=row["slug_id"],
+                    numeric_id=row["numeric_id"],
+                    anilist_id=row["anilist_id"],
+                    title=row["title"],
+                    poster_url=row["poster_url"],
+                    reason=(f"Episode {row['episode_number']:g}"
+                            if row["episode_number"] else ""),
+                )
+                for row in self._continue_watching_rows()
+            ]
+        if token != self._browse_token:
+            return
+        self.browseFinished.emit(
+            {"key": key, "results": cards, "page": 1, "hasMore": False}
+        )
+
+    # -- Remembered browse state -------------------------------------------
+    #
+    # Browse used to open on Top Airing every time, throwing away whatever was
+    # last set up. The filters are what the user was actually working with, so
+    # they are what gets restored.
+
+    @Slot(result="QVariantMap")
+    def browseState(self) -> dict[str, Any]:
+        raw = self._db.get_setting("browse_state")
+        if not raw:
+            return {}
+        try:
+            saved = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        return saved if isinstance(saved, dict) else {}
+
+    @Slot(dict)
+    def saveBrowseState(self, state: dict[str, Any]) -> None:
+        self._db.set_setting("browse_state", json.dumps(dict(state or {})))
+
+    @Slot()
+    def clearBrowseState(self) -> None:
+        self._db.delete_setting("browse_state")
+
+    # -- Window geometry ----------------------------------------------------
+    #
+    # Size and maximised state only, deliberately. A Wayland client cannot
+    # place itself on screen at all -- there is no API for it, which is the
+    # same reason dragging the window goes through the compositor (see
+    # ui/window_chrome.py) -- so a saved x/y could be stored but never
+    # honoured, and storing it would only suggest otherwise.
+
+    @Slot(result="QVariantMap")
+    def windowGeometry(self) -> dict[str, Any]:
+        raw = self._db.get_setting("window_geometry")
+        if not raw:
+            return {}
+        try:
+            saved = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        # Clamped to something usable: a window restored at 40x30 because of a
+        # bad write is one the user cannot get hold of to fix.
+        width = max(800, int(saved.get("width") or 0))
+        height = max(600, int(saved.get("height") or 0))
+        return {"width": width, "height": height, "maximised": bool(saved.get("maximised"))}
+
+    @Slot(int, int, bool)
+    def saveWindowGeometry(self, width: int, height: int, maximised: bool) -> None:
+        # A maximised window reports the screen's size; saving that as the
+        # restored size means unmaximising gives back a full-screen-sized
+        # "normal" window. Only the flag is updated in that case.
+        current = self.windowGeometry()
+        if maximised:
+            width = int(current.get("width") or width)
+            height = int(current.get("height") or height)
+        self._db.set_setting(
+            "window_geometry",
+            json.dumps({"width": int(width), "height": int(height), "maximised": bool(maximised)}),
+        )
+
     @Slot(result=bool)
     def getAutoFullscreenEnabled(self) -> bool:
         return (self._db.get_setting("auto_fullscreen_enabled") or "true") == "true"
@@ -1168,6 +1541,15 @@ class Backend(QObject):
     def getCurrentEpisodeCount(self) -> int:
         anime = self._current_anime
         return int(anime.get("episode_count") or 0) if anime else 0
+
+    @Slot(result=float)
+    def getFirstEpisodeNumber(self) -> float:
+        """The lowest episode number this anime actually has, so the player's
+        Previous button can be disabled on it. Not simply 1: some entries
+        start at 0, and specials come through as fractional numbers."""
+        anime = self._current_anime
+        episodes = anime.get("episodes") if anime else None
+        return float(min(e.number for e in episodes)) if episodes else 1.0
 
     # -- phone remote ---------------------------------------------------------
     # See remote/server.py's module docstring for the (deliberately simple,
@@ -1379,6 +1761,9 @@ class Backend(QObject):
         and in most-recent order, then anything AniList says is in progress
         that hasn't been played here.
         """
+        self.continueWatchingChanged.emit(self._continue_watching_rows())
+
+    def _continue_watching_rows(self) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         local_ids: set[int] = set()
         index = self._anilist_title_index()
@@ -1418,7 +1803,7 @@ class Backend(QObject):
                 }
             )
 
-        self.continueWatchingChanged.emit(rows)
+        return rows
 
     # -- AniList: settings ---------------------------------------------------
 
@@ -1708,6 +2093,12 @@ class Backend(QObject):
 
             return {
                 "slug_id": slug_id,
+                # The Japanese broadcast of the next episode. Named for what
+                # it is rather than "next episode": AniList publishes no dub
+                # schedule, so the UI must not let this read as one.
+                "airingStatus": extras.status,
+                "nextEpisode": extras.next_episode or 0,
+                "nextAiringAt": extras.next_airing_at or 0,
                 "watchOrder": chain,
                 "unwatchedPrequels": unwatched,
                 "related": related,

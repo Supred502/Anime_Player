@@ -106,12 +106,18 @@ AppWindow {
                 }
                 return
             }
-            if (root.mode === "detail" || root.mode === "detail2") {
+            if (root.mode === "detail" || root.mode === "detail2" || root.mode === "airing") {
                 if (root.step === 1) {
                     // A real entry with real key art, opened the same way a
                     // card click opens it.
                     root.pageStack.push(Qt.resolvedUrl("DetailPage.qml"), {
-                        anime: {
+                        anime: testMode === "airing"
+                            // A show genuinely still broadcasting, so the
+                            // countdown has something real to count.
+                            ? { slug_id: "one-piece-100", numeric_id: "100",
+                                title: "One Piece", poster_url: "", kind: "TV",
+                                rating: "", sub_count: 1179, dub_count: 1122 }
+                            : {
                             slug_id: testMode === "detail2"
                                 ? "rezero-starting-life-in-another-world-season-2-858"
                                 : "attack-on-titan-season-2-98",
@@ -141,11 +147,77 @@ AppWindow {
                         + " recs=" + detail.recommendations.length
                         + " reviews=" + detail.reviews.length)
                 }
+                if (root.mode === "airing") {
+                    root.log("airing=" + detail.airingStatus + " nextEp=" + detail.nextEpisode
+                             + " in=" + detail.countdownText(detail.nextAiringAt - detail.nowSeconds)
+                             + " dubBehind=" + detail.dubBehind)
+                    return
+                }
                 // Scroll down so a screenshot catches the sections below the
                 // episode grid.
                 detail.flickable.contentY = Math.min(
                     detail.flickable.contentHeight - detail.flickable.height,
                     detail.flickable.contentY + detail.flickable.height * 0.8)
+                return
+            }
+            // Browse must come back where it was left. Two runs: "remember"
+            // sets filters on a plain Browse page (no startLabel -- arriving
+            // from a "See all" is a one-off destination, not a working set),
+            // "recall" opens the same page again and reports what came back.
+            if (root.mode === "remember" || root.mode === "recall") {
+                if (root.step === 1) {
+                    root.pageStack.push(Qt.resolvedUrl("BrowsePage.qml"), {})
+                    log("opened plain BrowsePage")
+                    return
+                }
+                let b = root.pageStack.get(root.pageStack.depth - 1)
+                if (root.step === 2) {
+                    if (root.mode === "remember") {
+                        b.formatStates = { "MOVIE": 1 }
+                        b.countryStates = { "KR": 2 }
+                        b.filterMinScore = 60
+                        b.filterSort = "SCORE_DESC"
+                        b.reload()
+                        log("set filters")
+                    } else {
+                        log("restored: preset=" + b.presetLabel
+                            + " format=" + JSON.stringify(b.formatStates)
+                            + " country=" + JSON.stringify(b.countryStates)
+                            + " minScore=" + b.filterMinScore
+                            + " sort=" + b.filterSort
+                            + " results=" + b.results.length)
+                    }
+                    return
+                }
+                if (root.step === 3 && root.mode === "remember") {
+                    log("saved=" + JSON.stringify(backend.browseState()).substring(0, 120))
+                }
+                return
+            }
+
+            // The two listings built from this machine rather than a catalog.
+            if (root.mode === "local") {
+                if (root.step === 1) {
+                    root.pageStack.push(Qt.resolvedUrl("BrowsePage.qml"),
+                                        { startCategory: "downloaded" })
+                    log("opened Downloaded")
+                    return
+                }
+                let local = root.pageStack.get(root.pageStack.depth - 1)
+                if (root.step === 2) {
+                    log("downloaded: " + local.results.length
+                        + (local.results.length ? " first=" + local.results[0].title
+                                                  + " (" + local.results[0].reason + ")" : ""))
+                    local.applyPreset("continue")
+                    return
+                }
+                if (root.step === 3) {
+                    log("continue: " + local.results.length
+                        + (local.results.length ? " first=" + local.results[0].title
+                                                  + " (" + local.results[0].reason + ")" : ""))
+                    root.pageStack.replace(Qt.resolvedUrl("SettingsPage.qml"))
+                    log("opened Settings")
+                }
                 return
             }
             if (root.step === 1) {
