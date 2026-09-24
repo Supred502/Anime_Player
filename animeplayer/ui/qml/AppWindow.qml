@@ -33,6 +33,31 @@ Kirigami.ApplicationWindow {
     readonly property bool maximised: root.visibility === Window.Maximized
                                       || root.visibility === Window.FullScreen
 
+    // Set to false by the player when it goes fullscreen. The nav bar is the
+    // window's own header, not part of any page, so a page hiding its own
+    // toolbar left this one sitting across the top of the video.
+    property bool chromeVisible: true
+
+    // Every clickable thing in the nav bar is this tall -- the logo, the nav
+    // entries and the window buttons. They were three different heights
+    // before, which read as a row that had been assembled rather than
+    // designed.
+    readonly property int navItemHeight: Math.round(Kirigami.Units.gridUnit * 1.9)
+
+    // The accent has to be painted onto the window's own root item: the
+    // header is a sibling of the whole page stack, so nothing a page sets can
+    // reach it. Pages paint themselves (see AppTheming.qml).
+    AppTheming { targets: [root.windowRoot] }
+
+    // The top of the item chain -- the ancestor the header, the page stack
+    // and the popup overlay all share. Walked rather than reached through
+    // contentItem.parent.parent, which is the same thing spelled fragilely.
+    readonly property Item windowRoot: {
+        let node = root.contentItem
+        while (node && node.parent) node = node.parent
+        return node
+    }
+
     // This app is a linear Home -> Detail -> Player stack, not a
     // master-detail browser, so force single-column navigation. Without this,
     // Kirigami's PageRow keeps previous pages visible side-by-side as
@@ -63,7 +88,9 @@ Kirigami.ApplicationWindow {
 
     header: Rectangle {
         id: navBar
-        implicitHeight: navRow.implicitHeight + Kirigami.Units.smallSpacing * 2
+        visible: root.chromeVisible
+        implicitHeight: root.chromeVisible
+            ? root.navItemHeight + Kirigami.Units.smallSpacing * 2 : 0
         color: Kirigami.Theme.alternateBackgroundColor
 
         // The whole bar is the drag handle, except where a control sits on
@@ -100,8 +127,13 @@ Kirigami.ApplicationWindow {
             // destination.
             Controls.AbstractButton {
                 id: logoButton
-                Layout.preferredWidth: Kirigami.Units.iconSizes.large
-                Layout.preferredHeight: Kirigami.Units.iconSizes.large
+                // Wider than tall, and the artwork is inset rather than
+                // filling the button: a square tint box drawn tight around a
+                // wordmark reads as a stray border around the logo rather
+                // than as a button.
+                Layout.preferredWidth: Math.round(root.navItemHeight * 1.5)
+                Layout.preferredHeight: root.navItemHeight
+                padding: Kirigami.Units.smallSpacing
                 hoverEnabled: true
                 onClicked: root.goHome()
 
@@ -109,26 +141,24 @@ Kirigami.ApplicationWindow {
                 Controls.ToolTip.text: "Home"
                 Controls.ToolTip.delay: 500
 
-                background: Rectangle {
-                    radius: Kirigami.Units.smallSpacing
-                    color: root.section === "home"
-                        ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
-                                  Kirigami.Theme.highlightColor.b, 0.2)
-                        : (logoButton.hovered
-                           ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
-                                     Kirigami.Theme.highlightColor.b, 0.1)
-                           : "transparent")
-                    Behavior on color { ColorAnimation { duration: 100 } }
-                }
+                // Hover only, with no "you are here" tint. On Home -- where
+                // the app opens -- a permanent tint box drawn around a
+                // wordmark just reads as a border someone forgot to remove,
+                // and the page's own title already says Home.
+                background: NavBackground { lit: logoButton.hovered }
 
                 contentItem: Image {
                     source: Qt.resolvedUrl("../assets/images/AP.svg")
-                    sourceSize.width: Kirigami.Units.iconSizes.large * 2
+                    sourceSize.width: root.navItemHeight * 3
                     fillMode: Image.PreserveAspectFit
                 }
 
                 HoverHandler { cursorShape: Qt.PointingHandCursor }
             }
+
+            // The logo is a wordmark, not an icon in a row of icons -- butted
+            // straight up against the first nav entry it read as one control.
+            Item { Layout.preferredWidth: Kirigami.Units.largeSpacing }
 
             NavButton {
                 text: "Browse"
@@ -146,18 +176,26 @@ Kirigami.ApplicationWindow {
                 onClicked: root.goSettings()
             }
 
-            // Window buttons. Close is the only one that gets a colour, so a
-            // mis-aimed click on the row is a minimise rather than a quit.
+            // Window buttons. Sized and tinted like the nav entries beside
+            // them rather than like a system titlebar's -- they share a row,
+            // so they should share a shape. Close is the only one that gets a
+            // colour, so a mis-aimed click on the row is a minimise rather
+            // than a quit.
+            Item { Layout.preferredWidth: Kirigami.Units.smallSpacing }
+
             WindowButton {
                 iconName: "window-minimize-symbolic"
+                hint: "Minimise"
                 onClicked: root.showMinimized()
             }
             WindowButton {
                 iconName: root.maximised ? "window-restore-symbolic" : "window-maximize-symbolic"
+                hint: root.maximised ? "Restore" : "Maximise"
                 onClicked: root.toggleMaximised()
             }
             WindowButton {
                 iconName: "window-close-symbolic"
+                hint: "Close"
                 danger: true
                 onClicked: root.close()
             }
@@ -209,8 +247,24 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    // Flat until it is the current section or hovered, so the bar reads as
-    // navigation rather than as a row of buttons competing with the page.
+    // The one tint every control in the nav bar shares. Flat until it is the
+    // current section or hovered, so the bar reads as navigation rather than
+    // as a row of buttons competing with the page.
+    component NavBackground: Rectangle {
+        property bool on: false
+        property bool lit: false
+
+        radius: Kirigami.Units.smallSpacing
+        color: on
+            ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                      Kirigami.Theme.highlightColor.b, 0.2)
+            : (lit
+               ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                         Kirigami.Theme.highlightColor.b, 0.1)
+               : "transparent")
+        Behavior on color { ColorAnimation { duration: 100 } }
+    }
+
     component NavButton: Controls.AbstractButton {
         id: nav
         property bool current: false
@@ -221,20 +275,10 @@ Kirigami.ApplicationWindow {
         property string iconName: ""
 
         hoverEnabled: true
-        implicitWidth: navContent.implicitWidth + Kirigami.Units.largeSpacing * 2
-        implicitHeight: navContent.implicitHeight + Kirigami.Units.smallSpacing * 2
+        Layout.preferredWidth: navContent.implicitWidth + Kirigami.Units.largeSpacing * 2
+        Layout.preferredHeight: root.navItemHeight
 
-        background: Rectangle {
-            radius: Kirigami.Units.smallSpacing
-            color: nav.current
-                ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
-                          Kirigami.Theme.highlightColor.b, 0.2)
-                : (nav.hovered
-                   ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
-                             Kirigami.Theme.highlightColor.b, 0.1)
-                   : "transparent")
-            Behavior on color { ColorAnimation { duration: 100 } }
-        }
+        background: NavBackground { on: nav.current; lit: nav.hovered }
 
         contentItem: RowLayout {
             id: navContent
@@ -261,12 +305,20 @@ Kirigami.ApplicationWindow {
         id: winButton
         property string iconName: ""
         property bool danger: false
+        // Shown on hover. "Restore" and "Maximise" are the same button, so
+        // the caller passes the label rather than it being derived here.
+        property string hint: ""
 
         hoverEnabled: true
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 2.2
-        Layout.preferredHeight: Kirigami.Units.gridUnit * 1.8
+        Layout.preferredWidth: root.navItemHeight
+        Layout.preferredHeight: root.navItemHeight
+
+        Controls.ToolTip.visible: hovered && winButton.hint !== ""
+        Controls.ToolTip.text: winButton.hint
+        Controls.ToolTip.delay: 400
 
         background: Rectangle {
+            radius: Kirigami.Units.smallSpacing
             color: !winButton.hovered ? "transparent"
                  : winButton.danger ? Kirigami.Theme.negativeTextColor
                  : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
@@ -274,10 +326,19 @@ Kirigami.ApplicationWindow {
             Behavior on color { ColorAnimation { duration: 100 } }
         }
 
-        contentItem: Kirigami.Icon {
-            source: winButton.iconName
-            isMask: true
-            color: winButton.danger && winButton.hovered ? "white" : Kirigami.Theme.textColor
+        // Wrapped rather than the icon being the contentItem directly: a
+        // button stretches its contentItem to the whole content area, so an
+        // icon put there ignores its own implicit size and comes out as the
+        // heaviest glyph in the bar.
+        contentItem: Item {
+            Kirigami.Icon {
+                anchors.centerIn: parent
+                source: winButton.iconName
+                isMask: true
+                width: Kirigami.Units.iconSizes.small
+                height: width
+                color: winButton.danger && winButton.hovered ? "white" : Kirigami.Theme.textColor
+            }
         }
 
         HoverHandler { cursorShape: Qt.PointingHandCursor }

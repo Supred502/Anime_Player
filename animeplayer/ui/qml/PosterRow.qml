@@ -59,6 +59,12 @@ ColumnLayout {
         }
 
         Controls.BusyIndicator {
+            // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
+            // controls, which stops the app's accent reaching them -- measured
+            // live: a page themed red still drew Breeze-blue Sub/Dub buttons.
+            // Turning inheritance back on is what makes one accent value reach
+            // every control in the app. See AppTheming.qml.
+            Kirigami.Theme.inherit: true
             running: row.loading
             visible: row.loading
             Layout.preferredHeight: headingLabel.implicitHeight
@@ -68,6 +74,7 @@ ColumnLayout {
         Item { Layout.fillWidth: true }
 
         Controls.ToolButton {
+            Kirigami.Theme.inherit: true
             visible: row.showSeeAll && shelf.count > 0
             text: "See all"
             icon.name: "go-next-symbolic"

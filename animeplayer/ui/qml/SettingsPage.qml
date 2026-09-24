@@ -24,6 +24,7 @@ Kirigami.ScrollablePage {
         autoSkipToggle.checked = backend.getAutoSkipEnabled()
         skipFinalToggle.checked = backend.getSkipFinalEpisodeEnabled()
         autoNextToggle.checked = backend.getAutoNextEnabled()
+        autoFullscreenToggle.checked = backend.getAutoFullscreenEnabled()
         page.remoteRunning = backend.isRemoteServerRunning()
         page.remoteUrl = backend.getRemoteUrl()
         page.remotePin = backend.getRemotePin()
@@ -67,10 +68,17 @@ Kirigami.ScrollablePage {
                 Kirigami.FormData.label: " "
                 visible: page.loggedIn
                 Controls.Button {
+                    // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
+                    // controls, which stops the app's accent reaching them -- measured
+                    // live: a page themed red still drew Breeze-blue Sub/Dub buttons.
+                    // Turning inheritance back on is what makes one accent value reach
+                    // every control in the app. See AppTheming.qml.
+                    Kirigami.Theme.inherit: true
                     text: "Refresh lists"
                     onClicked: backend.refreshAnilistList()
                 }
                 Controls.Button {
+                    Kirigami.Theme.inherit: true
                     text: "Log out"
                     onClicked: backend.logoutAnilist()
                 }
@@ -119,22 +127,32 @@ Kirigami.ScrollablePage {
             Layout.fillWidth: true
 
             Controls.CheckBox {
+                Kirigami.Theme.inherit: true
                 id: autoSkipToggle
                 Kirigami.FormData.label: "Playback:"
                 text: "Auto-skip intro/outro"
                 onToggled: backend.setAutoSkipEnabled(checked)
             }
             Controls.CheckBox {
+                Kirigami.Theme.inherit: true
                 id: skipFinalToggle
                 Kirigami.FormData.label: " "
                 text: "Also auto-skip on the last episode"
                 onToggled: backend.setSkipFinalEpisodeEnabled(checked)
             }
             Controls.CheckBox {
+                Kirigami.Theme.inherit: true
                 id: autoNextToggle
                 Kirigami.FormData.label: " "
                 text: "Auto-play next episode"
                 onToggled: backend.setAutoNextEnabled(checked)
+            }
+            Controls.CheckBox {
+                Kirigami.Theme.inherit: true
+                id: autoFullscreenToggle
+                Kirigami.FormData.label: " "
+                text: "Go fullscreen when an episode starts"
+                onToggled: backend.setAutoFullscreenEnabled(checked)
             }
         }
 
@@ -146,6 +164,7 @@ Kirigami.ScrollablePage {
             RowLayout {
                 Kirigami.FormData.label: "Phone remote:"
                 Controls.Button {
+                    Kirigami.Theme.inherit: true
                     text: page.remoteRunning ? "Stop" : "Start"
                     onClicked: {
                         if (page.remoteRunning) backend.stopRemoteServer()
@@ -230,6 +249,7 @@ Kirigami.ScrollablePage {
                 Layout.fillWidth: true
 
                 Controls.TextField {
+                    Kirigami.Theme.inherit: true
                     id: clientIdField
                     Kirigami.FormData.label: "Client ID:"
                     placeholderText: "e.g. 12345"
@@ -237,6 +257,7 @@ Kirigami.ScrollablePage {
                 }
 
                 Controls.Button {
+                    Kirigami.Theme.inherit: true
                     Kirigami.FormData.label: " "
                     text: "Open AniList Login"
                     onClicked: {
@@ -246,6 +267,7 @@ Kirigami.ScrollablePage {
                 }
 
                 Controls.TextField {
+                    Kirigami.Theme.inherit: true
                     id: tokenField
                     Kirigami.FormData.label: "Access token:"
                     placeholderText: "Paste token here"
@@ -253,6 +275,7 @@ Kirigami.ScrollablePage {
                 }
 
                 Controls.Button {
+                    Kirigami.Theme.inherit: true
                     Kirigami.FormData.label: " "
                     text: "Confirm Login"
                     onClicked: backend.confirmAnilistLogin(tokenField.text)

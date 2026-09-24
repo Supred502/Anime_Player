@@ -11,6 +11,10 @@ Redirect URL set to exactly https://anilist.co/api/v2/oauth/pin.
 
 from __future__ import annotations
 
+import json
+import threading
+import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -309,7 +313,74 @@ def _media_summary_of(media: dict) -> MediaSummary:
     )
 
 
+# AniList publishes a 90 requests/minute budget and has been serving a
+# degraded 30/minute for some time now. Either way the app has to stay under
+# it on its own, because the only feedback the server gives is a 429 that has
+# already cost the user whatever they were looking at -- which is exactly what
+# they hit after a few trips between Home and Browse.
+#
+# Deliberately under 30 rather than at it: the window the server measures is
+# not the window measured here, so a burst that is exactly at the limit
+# locally can still straddle the boundary there.
+_REQUESTS_PER_MINUTE = 25
+_RATE_WINDOW_SECONDS = 60.0
+# How long a read stays good for. Everything this app asks AniList is a
+# catalog or a list, and neither changes minute to minute -- whereas going
+# Home, Browse, Home costs the same three queries again every time without
+# this. Mutations bypass it in both directions (see _request).
+_CACHE_TTL_SECONDS = 300.0
+_CACHE_MAX_ENTRIES = 256
+
+
+class _RateLimiter:
+    """Spreads requests across a sliding window, shared by every client.
+
+    Shared, not per-client, because AniList counts per user/IP and this app
+    runs an unauthenticated client for catalog browsing alongside the
+    logged-in one. Blocking (rather than dropping) is right here: every caller
+    is already on a worker thread, so waiting costs a slower row, not a frozen
+    window.
+    """
+
+    def __init__(self, limit: int = _REQUESTS_PER_MINUTE, window: float = _RATE_WINDOW_SECONDS) -> None:
+        self._limit = limit
+        self._window = window
+        self._times: deque[float] = deque()
+        self._lock = threading.Lock()
+        # Set from a 429's Retry-After: a wall everything waits behind, so one
+        # rejected request doesn't let the other nine workers keep hammering.
+        self._blocked_until = 0.0
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                while self._times and now - self._times[0] >= self._window:
+                    self._times.popleft()
+                wait = max(0.0, self._blocked_until - now)
+                if wait <= 0 and len(self._times) < self._limit:
+                    self._times.append(now)
+                    return
+                if wait <= 0:
+                    wait = self._window - (now - self._times[0])
+            time.sleep(max(0.05, wait))
+
+    def back_off(self, seconds: float) -> None:
+        with self._lock:
+            self._blocked_until = max(self._blocked_until, time.monotonic() + seconds)
+
+
+_limiter = _RateLimiter()
+
+
 class AniListClient:
+    # Shared across instances for the same reason the limiter is: the
+    # unauthenticated catalog client and the logged-in one are two views of
+    # one budget. Keyed by token as well as query, so one user's list can
+    # never be served to another.
+    _cache: "OrderedDict[tuple, tuple[float, dict]]" = OrderedDict()
+    _cache_lock = threading.Lock()
+
     def __init__(self, client: httpx.Client, token: str | None = None) -> None:
         """token is only required for viewer-specific calls (get_viewer,
         get_list_collection, save_progress). Search/genre/tag queries are
@@ -318,17 +389,82 @@ class AniListClient:
         self._token = token
         self._client = client
 
-    def _request(self, query: str, variables: dict | None = None) -> dict:
+    @classmethod
+    def clear_cache(cls) -> None:
+        """Drops every cached read. Called after anything that writes to the
+        user's list, so the next read reflects the write instead of a
+        five-minute-old copy of it."""
+        with cls._cache_lock:
+            cls._cache.clear()
+
+    @classmethod
+    def _cached(cls, key: tuple) -> dict | None:
+        with cls._cache_lock:
+            hit = cls._cache.get(key)
+            if hit is None:
+                return None
+            stored_at, data = hit
+            if time.monotonic() - stored_at > _CACHE_TTL_SECONDS:
+                del cls._cache[key]
+                return None
+            cls._cache.move_to_end(key)
+            return data
+
+    @classmethod
+    def _remember(cls, key: tuple, data: dict) -> None:
+        with cls._cache_lock:
+            cls._cache[key] = (time.monotonic(), data)
+            cls._cache.move_to_end(key)
+            while len(cls._cache) > _CACHE_MAX_ENTRIES:
+                cls._cache.popitem(last=False)
+
+    # How many times to sit out a 429 before giving up and telling the user.
+    _RETRY_ATTEMPTS = 3
+    # AniList's Retry-After is in whole seconds and is usually well under a
+    # minute, but a bad value shouldn't be able to wedge a worker thread.
+    _MAX_BACKOFF_SECONDS = 70.0
+
+    def _request(self, query: str, variables: dict | None = None, *, cache: bool = True) -> dict:
+        variables = variables or {}
+        key = (self._token or "", query, json.dumps(variables, sort_keys=True, default=str))
+        if cache:
+            hit = self._cached(key)
+            if hit is not None:
+                return hit
+
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
-        resp = self._client.post(API_URL, json={"query": query, "variables": variables or {}}, headers=headers)
+
+        for attempt in range(self._RETRY_ATTEMPTS):
+            _limiter.acquire()
+            resp = self._client.post(API_URL, json={"query": query, "variables": variables}, headers=headers)
+            if resp.status_code == 429 and attempt < self._RETRY_ATTEMPTS - 1:
+                # Retry-After is what AniList actually tells us to wait; the
+                # window length is the honest fallback when the header is
+                # missing or unparseable.
+                try:
+                    wait = float(resp.headers.get("Retry-After", ""))
+                except ValueError:
+                    wait = _RATE_WINDOW_SECONDS
+                wait = min(max(wait, 1.0), self._MAX_BACKOFF_SECONDS)
+                _limiter.back_off(wait)
+                continue
+            break
+
+        if resp.status_code == 429:
+            raise AniListError(
+                "AniList is rate-limiting us right now -- give it a minute and try again."
+            )
         resp.raise_for_status()
         payload = resp.json()
         if payload.get("errors"):
             messages = "; ".join(e.get("message", "unknown error") for e in payload["errors"])
             raise AniListError(messages)
-        return payload["data"]
+        data = payload["data"]
+        if cache:
+            self._remember(key, data)
+        return data
 
     def get_viewer(self) -> Viewer:
         data = self._request(_VIEWER_QUERY)
@@ -336,7 +472,9 @@ class AniListClient:
         return Viewer(id=viewer["id"], name=viewer["name"])
 
     def get_list_collection(self, user_id: int) -> list[ListEntry]:
-        data = self._request(_MEDIA_LIST_COLLECTION_QUERY, {"userId": user_id})
+        # Uncached: this is the "refresh my list" call, and a refresh that can
+        # answer from a cache is not a refresh.
+        data = self._request(_MEDIA_LIST_COLLECTION_QUERY, {"userId": user_id}, cache=False)
         entries: list[ListEntry] = []
         for lst in data["MediaListCollection"]["lists"]:
             for entry in lst["entries"]:
@@ -418,7 +556,12 @@ class AniListClient:
             "seasonYear": season_year or None,
             "statuses": statuses or None,
             "notStatuses": exclude_statuses or None,
-            "sort": [sort] if sort else None,
+            # A typed title with no chosen order sorts by how well it matches
+            # what was typed. Without this the query falls through to the
+            # POPULARITY_DESC default, and searching "Dorohedoro" answered
+            # with Re:ZERO -- the most popular thing AniList thought was
+            # vaguely relevant (confirmed live through the real search field).
+            "sort": [sort] if sort else (["SEARCH_MATCH"] if search else None),
         }
         used = [name for name, value in optional.items() if value]
         variables.update({name: optional[name] for name in used})
@@ -588,11 +731,16 @@ class AniListClient:
             for media in _main_line(chain, media_id)
         ]
 
+    # Writes never read from the cache and drop all of it afterwards: the
+    # very next thing the UI does is re-read the list to show what changed,
+    # and a five-minute-old copy of it would show the opposite.
     def save_progress(self, media_id: int, status: str, progress: int) -> None:
         self._request(
             _SAVE_MEDIA_LIST_ENTRY_MUTATION,
             {"mediaId": media_id, "status": status, "progress": progress},
+            cache=False,
         )
+        self.clear_cache()
 
     def set_list_status(self, media_id: int, status: str) -> None:
         """Puts an anime on the viewer's list with the given status, or moves
@@ -601,13 +749,18 @@ class AniListClient:
         self._request(
             _SAVE_MEDIA_LIST_ENTRY_MUTATION,
             {"mediaId": media_id, "status": status, "progress": None},
+            cache=False,
         )
+        self.clear_cache()
 
     def get_list_entry(self, media_id: int, user_id: int) -> tuple[int, str] | None:
         """(entry id, status) for this viewer's list entry, or None if the
         anime isn't on their list."""
+        # Uncached: this is read immediately after a write, to find the entry
+        # the write just created.
         data = self._request(
-            _MEDIA_LIST_ENTRY_ID_QUERY, {"mediaId": media_id, "userId": user_id}
+            _MEDIA_LIST_ENTRY_ID_QUERY, {"mediaId": media_id, "userId": user_id},
+            cache=False,
         )
         entry = data.get("MediaList")
         if not entry:
@@ -620,7 +773,8 @@ class AniListClient:
         found = self.get_list_entry(media_id, user_id)
         if found is None:
             return False
-        self._request(_DELETE_MEDIA_LIST_ENTRY_MUTATION, {"id": found[0]})
+        self._request(_DELETE_MEDIA_LIST_ENTRY_MUTATION, {"id": found[0]}, cache=False)
+        self.clear_cache()
         return True
 
 

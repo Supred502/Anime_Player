@@ -10,6 +10,12 @@ import QtQuick.Controls as Controls
 import org.kde.kirigami as Kirigami
 
 Controls.Button {
+    // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
+    // controls, which stops the app's accent reaching them -- measured
+    // live: a page themed red still drew Breeze-blue Sub/Dub buttons.
+    // Turning inheritance back on is what makes one accent value reach
+    // every control in the app. See AppTheming.qml.
+    Kirigami.Theme.inherit: true
     id: button
 
     // Filled in the accent colour rather than outlined. For the one primary

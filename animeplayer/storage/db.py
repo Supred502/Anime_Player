@@ -69,6 +69,16 @@ CREATE TABLE IF NOT EXISTS anidb_map (
     poster_url TEXT,
     kind       TEXT
 );
+
+-- Per-anime opt-outs. One so far: shows whose progress must never be pushed
+-- to AniList, for the rewatch nobody wants on their profile. Keyed by AniList
+-- id rather than by source slug because AniList is the thing being opted out
+-- of -- an anime with no AniList match has nothing to sync in the first
+-- place, and a slug changes when the source renames a show.
+CREATE TABLE IF NOT EXISTS anime_prefs (
+    anilist_id     INTEGER PRIMARY KEY,
+    ignore_anilist INTEGER NOT NULL DEFAULT 0
+);
 """
 
 
@@ -250,6 +260,24 @@ class Database:
     def delete_setting(self, key: str) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+            self._conn.commit()
+
+    # -- anime_prefs (per-anime opt-outs) ----------------------------------
+
+    def get_ignore_anilist(self, anilist_id: int) -> bool:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT ignore_anilist FROM anime_prefs WHERE anilist_id = ?", (anilist_id,)
+            ).fetchone()
+            return bool(row["ignore_anilist"]) if row else False
+
+    def set_ignore_anilist(self, anilist_id: int, ignore: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO anime_prefs (anilist_id, ignore_anilist) VALUES (?, ?) "
+                "ON CONFLICT(anilist_id) DO UPDATE SET ignore_anilist=excluded.ignore_anilist",
+                (anilist_id, 1 if ignore else 0),
+            )
             self._conn.commit()
 
     # -- title_map (source title -> AniList media id) ----------------------

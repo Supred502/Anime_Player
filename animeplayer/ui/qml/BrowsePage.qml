@@ -63,6 +63,9 @@ Kirigami.ScrollablePage {
     property var formatStates: ({})
     property var airingStates: ({})
     property var countryStates: ({})
+    // Filled in once on load -- see the Instantiator below for why this is
+    // not a binding.
+    property var catalogPresets: []
     property var genres: []
     property var allTags: []
     property var shownTags: []
@@ -103,6 +106,7 @@ Kirigami.ScrollablePage {
     ]
 
     Component.onCompleted: {
+        page.catalogPresets = backend.catalogs()
         backend.fetchAnilistGenres()
         backend.fetchAnilistTags()
         if (page.startWithRecommendations) {
@@ -346,6 +350,12 @@ Kirigami.ScrollablePage {
             spacing: Kirigami.Units.smallSpacing
 
             Controls.TextField {
+                // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
+                // controls, which stops the app's accent reaching them -- measured
+                // live: a page themed red still drew Breeze-blue Sub/Dub buttons.
+                // Turning inheritance back on is what makes one accent value reach
+                // every control in the app. See AppTheming.qml.
+                Kirigami.Theme.inherit: true
                 id: queryField
                 Layout.fillWidth: true
                 placeholderText: "Search anime..."
@@ -360,9 +370,15 @@ Kirigami.ScrollablePage {
                 onClicked: catalogMenu.popup()
 
                 Controls.Menu {
+                    Kirigami.Theme.inherit: true
                     id: catalogMenu
                     Instantiator {
-                        model: backend.catalogs()
+                        // Assigned once, not left as a live binding on
+                        // backend.catalogs(): the preset list never changes,
+                        // and a binding that reads `backend` is re-evaluated
+                        // during teardown after the context property is gone
+                        // ("Cannot call method 'catalogs' of null" on quit).
+                        model: page.catalogPresets
                         onObjectAdded: (index, object) => catalogMenu.insertItem(index, object)
                         onObjectRemoved: (index, object) => catalogMenu.removeItem(object)
                         delegate: Controls.MenuItem {
@@ -517,6 +533,7 @@ Kirigami.ScrollablePage {
                     font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                 }
                 Controls.TextField {
+                    Kirigami.Theme.inherit: true
                     id: tagField
                     Layout.fillWidth: true
                     placeholderText: "Find a tag, e.g. \"Time Skip\" or \"Isekai\"..."
@@ -584,6 +601,7 @@ Kirigami.ScrollablePage {
             width: grid.width
             height: Kirigami.Units.gridUnit * 4
             Controls.BusyIndicator {
+                Kirigami.Theme.inherit: true
                 anchors.centerIn: parent
                 running: page.loadingMore
                 visible: page.loadingMore
@@ -591,6 +609,7 @@ Kirigami.ScrollablePage {
         }
 
         Controls.BusyIndicator {
+            Kirigami.Theme.inherit: true
             anchors.centerIn: parent
             running: page.loading
             visible: page.loading
@@ -676,6 +695,7 @@ Kirigami.ScrollablePage {
             }
 
             Controls.ToolButton {
+                Kirigami.Theme.inherit: true
                 visible: section.collapsible && section.names.length > 20
                 text: section.expanded ? "Show fewer"
                                        : "+" + (section.names.length - section.limit) + " more"

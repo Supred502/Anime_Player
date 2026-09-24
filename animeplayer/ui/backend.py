@@ -665,10 +665,13 @@ class Backend(QObject):
             excluded_countries = set(as_list("excludeCountries"))
             if excluded_countries:
                 filtered = [m for m in filtered if m.country not in excluded_countries]
-            # Only re-rank by affinity when the user hasn't asked for an order.
-            # Sorting their chosen "highest scored first" by genre overlap
-            # instead is the kind of helpfulness that reads as a bug.
-            ranked = filtered if spec.get("sort") else self._affinity_sorted(filtered)
+            # Only re-rank by affinity when the user hasn't asked for an order
+            # and hasn't typed a title. Sorting their chosen "highest scored
+            # first" by genre overlap instead is the kind of helpfulness that
+            # reads as a bug -- and doing it to a title search is worse, since
+            # it pushes the thing they actually typed down the page.
+            keep_order = bool(spec.get("sort")) or bool(spec.get("keyword"))
+            ranked = filtered if keep_order else self._affinity_sorted(filtered)
             self._remember_titles(ranked)
             self.browseFinished.emit(
                 {
@@ -1135,6 +1138,31 @@ class Backend(QObject):
     @Slot(bool)
     def setAutoNextEnabled(self, value: bool) -> None:
         self._db.set_setting("auto_next_enabled", "true" if value else "false")
+
+    @Slot(result=bool)
+    def getAutoFullscreenEnabled(self) -> bool:
+        return (self._db.get_setting("auto_fullscreen_enabled") or "true") == "true"
+
+    @Slot(bool)
+    def setAutoFullscreenEnabled(self, value: bool) -> None:
+        self._db.set_setting("auto_fullscreen_enabled", "true" if value else "false")
+
+    # -- Per-anime AniList opt-out -----------------------------------------
+    #
+    # Only automatic syncing is suppressed. The buttons on the detail page
+    # still work when this is on: pressing Plan to Watch is an explicit
+    # instruction, and silently ignoring it would be a bug rather than a
+    # setting. What this stops is a rewatch quietly rewriting the user's
+    # progress on their profile.
+
+    @Slot(int, result=bool)
+    def isAnilistIgnored(self, anilist_id: int) -> bool:
+        return self._db.get_ignore_anilist(anilist_id) if anilist_id else False
+
+    @Slot(int, bool)
+    def setAnilistIgnored(self, anilist_id: int, ignore: bool) -> None:
+        if anilist_id:
+            self._db.set_ignore_anilist(anilist_id, ignore)
 
     @Slot(result=int)
     def getCurrentEpisodeCount(self) -> int:
@@ -1808,6 +1836,10 @@ class Backend(QObject):
         client = self._anilist_client
         media_id = anime_snapshot.get("anilist_id")
         if client is None or media_id is None:
+            return
+        # Opted out on the detail page -- watch it without it showing up on
+        # the profile. See isAnilistIgnored.
+        if self._db.get_ignore_anilist(media_id):
             return
         episode_count = anime_snapshot.get("episode_count")
         status = "COMPLETED" if episode_count and episode_number >= episode_count else "CURRENT"

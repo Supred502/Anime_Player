@@ -58,6 +58,17 @@ Kirigami.Page {
         page.autoNextEnabled = backend.getAutoNextEnabled()
         page.episodeCount = backend.getCurrentEpisodeCount()
         page.startLoad()
+        // Straight into fullscreen on the way in, unless the user turned that
+        // off. Picking an episode is an unambiguous "I am going to watch
+        // this", and the alternative is everyone reaching for the same button
+        // every time.
+        if (backend.getAutoFullscreenEnabled() && !page.isFullscreen) {
+            // Deferred: the page is not in the PageRow yet at this point (the
+            // same reason normalToolBarStyle above is read via callLater), and
+            // toggling visibility before it is wired in leaves the toolbar
+            // state snapshot wrong on the way back out.
+            Qt.callLater(function() { page.toggleFullscreen() })
+        }
     }
 
     function startLoad(resetAutoRetry) {
@@ -109,12 +120,20 @@ Kirigami.Page {
         page.showingPointerAgain = true
         backend.setKeepScreenAwake(false)
         if (page.isFullscreen) applicationWindow().visibility = Window.Windowed
+        // Always, not only when leaving fullscreen: this page is the only
+        // thing that hides the window chrome, so it is the only thing that
+        // can leave the app with no nav bar at all.
+        applicationWindow().chromeVisible = true
     }
 
     function toggleFullscreen() {
         page.isFullscreen = !page.isFullscreen
         applicationWindow().visibility = page.isFullscreen ? Window.FullScreen : Window.Windowed
         page.globalToolBarStyle = page.isFullscreen ? Kirigami.ApplicationHeaderStyle.None : page.normalToolBarStyle
+        // The app draws its own titlebar now, and that bar belongs to the
+        // window rather than to any page -- so hiding this page's own toolbar
+        // used to leave the nav bar sitting across the top of the video.
+        applicationWindow().chromeVisible = !page.isFullscreen
     }
 
     // Shared actions -- used by both the keyboard shortcuts below and by
@@ -333,6 +352,12 @@ Kirigami.Page {
         spacing: Kirigami.Units.smallSpacing
 
         Controls.BusyIndicator {
+            // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
+            // controls, which stops the app's accent reaching them -- measured
+            // live: a page themed red still drew Breeze-blue Sub/Dub buttons.
+            // Turning inheritance back on is what makes one accent value reach
+            // every control in the app. See AppTheming.qml.
+            Kirigami.Theme.inherit: true
             Layout.alignment: Qt.AlignHCenter
             visible: !page.stalled
             running: page.loadingStream && !page.stalled
@@ -348,6 +373,7 @@ Kirigami.Page {
             text: "The stream may have expired or the source is unavailable."
         }
         Controls.Button {
+            Kirigami.Theme.inherit: true
             Layout.alignment: Qt.AlignHCenter
             visible: page.stalled
             text: "Retry"
@@ -363,12 +389,14 @@ Kirigami.Page {
         visible: !page.loadingStream && page.controlsVisible
 
         Controls.ComboBox {
+            Kirigami.Theme.inherit: true
             id: qualityCombo
             model: qualityModel
             textRole: "label"
             onActivated: backend.selectQuality(currentIndex === 0 ? "" : currentText)
         }
         Controls.Button {
+            Kirigami.Theme.inherit: true
             icon.name: page.isFullscreen ? "view-restore-symbolic" : "view-fullscreen-symbolic"
             onClicked: page.toggleFullscreen()
         }
@@ -418,6 +446,7 @@ Kirigami.Page {
             Layout.preferredHeight: seekSlider.implicitHeight
 
             Controls.Slider {
+                Kirigami.Theme.inherit: true
                 id: seekSlider
                 anchors.fill: parent
                 from: 0
@@ -463,6 +492,7 @@ Kirigami.Page {
         RowLayout {
             Layout.fillWidth: true
             Controls.Button {
+                Kirigami.Theme.inherit: true
                 icon.name: video.paused ? "media-playback-start" : "media-playback-pause"
                 onClicked: video.togglePause()
             }
@@ -477,6 +507,7 @@ Kirigami.Page {
             // handle that case properly and these can go back to being
             // ordinary seek controls.
             Controls.Button {
+                Kirigami.Theme.inherit: true
                 text: "10s"
                 icon.name: "media-seek-backward-symbolic"
                 display: Controls.AbstractButton.TextBesideIcon
@@ -485,6 +516,7 @@ Kirigami.Page {
                 Controls.ToolTip.text: "Back 10 seconds (Left arrow: 5s)"
             }
             Controls.Button {
+                Kirigami.Theme.inherit: true
                 text: "30s"
                 icon.name: "media-seek-forward-symbolic"
                 display: Controls.AbstractButton.TextBesideIcon

@@ -166,9 +166,11 @@ AppWindow {
                     log("scrolled to bottom")
                 } else {
                     browse.filtersOpen = true
-                    browse.filterType = "MOVIE"
+                    // Tri-state chips now, not single-value combos: 1 is
+                    // include, 2 is exclude (see BrowsePage.tristate).
+                    browse.formatStates = { "MOVIE": 1 }
+                    browse.countryStates = { "CN": 1 }
                     browse.filterSort = "SCORE_DESC"
-                    browse.filterCountry = "CN"
                     browse.filterMinScore = 70
                     browse.genreStates = { "Action": 1 }
                     browse.tagStates = { "Male Protagonist": 2 }

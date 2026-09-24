@@ -14,22 +14,38 @@ AppWindow {
     // ANIMEPLAYER_TEST_PAUSE lets a screenshot land mid-flow.
     property string pause: testPause
     property var detailPage: null
+    property bool typed: false
 
     // console.warn, not console.log: the message handler in __main__.py only
     // receives what Qt's logging rules let through, and debug-level QML output
     // is filtered out by default -- a log() built on console.log prints
     // nothing at all while warnings from the same file appear fine.
-    function log(msg) { console.warn("[E2E] " + msg) }
+    // Timestamped: the interesting question about this flow is not whether
+    // each step happens but how long the user waits for it.
+    property double t0: 0
+    function log(msg) {
+        if (root.t0 === 0) root.t0 = Date.now()
+        console.warn("[E2E] +" + (Date.now() - root.t0) + "ms " + msg)
+    }
 
     Connections {
         target: backend
-        function onSearchFinished(results) {
+        // browseFinished, not searchFinished: BrowsePage runs every lookup --
+        // keyword included -- through the filter path now, and a driver still
+        // listening on the old signal sat waiting forever.
+        function onBrowseFinished(payload) {
+            // The page loads its default catalog on construction, so ignore
+            // everything until our own query has actually been typed --
+            // otherwise the driver opens whatever happened to be top of the
+            // default listing.
+            if (!root.typed) return
+            let results = payload.results
             root.log("search -> " + results.length + " results; first=" +
                      (results.length ? results[0].title + " (" + results[0].slug_id + ")" : "NONE"))
             if (!results.length) return
             searchDone.restart()
         }
-        function onSearchFailed(message) { root.log("SEARCH FAILED: " + message) }
+        function onBrowseFailed(message) { root.log("SEARCH FAILED: " + message) }
         function onEpisodesFinished(episodes) {
             root.log("episodes -> " + episodes.length)
             if (episodes.length) episodesDone.restart()
@@ -55,6 +71,12 @@ AppWindow {
         onTriggered: {
             let page = root.pageStack.currentItem
             root.log("typing into BrowsePage")
+            // The page opens on a ranked preset (Top Airing), and presets are
+            // real filters now -- searching a finished show underneath one
+            // correctly returns nothing. Clear them first, which is what a
+            // user typing a title means.
+            page.clearFilters()
+            root.typed = true
             page.setQuery(root.query)
             page.load(1)
         }

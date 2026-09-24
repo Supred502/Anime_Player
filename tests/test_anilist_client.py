@@ -541,3 +541,107 @@ def test_watch_order_keeps_a_movie_that_is_part_of_the_story() -> None:
     # shape the one-shot rule targets -- so it is trimmed from the *ends*
     # only, and here it sits between two kept entries.
     assert [e.title for e in order] == ["Season 1", "The Movie", "Season 2"]
+
+
+# -- Rate limiting, caching and 429 handling --------------------------------
+#
+# AniList serves a 429 once the app goes over its per-minute budget, and the
+# user hit one just by moving between Home and Browse a few times. These cover
+# the three halves of the fix: don't ask twice for the same thing, wait when
+# told to, and say something useful when waiting doesn't help.
+
+
+@respx.mock
+def test_identical_reads_are_served_from_cache() -> None:
+    route = respx.post(client_module.API_URL).mock(
+        return_value=httpx.Response(200, json={"data": {"GenreCollection": ["Action"]}})
+    )
+    with httpx.Client() as http:
+        client = AniListClient(http)
+        assert client.get_genre_collection() == ["Action"]
+        assert client.get_genre_collection() == ["Action"]
+
+    # Navigating away and back must not cost a second request.
+    assert route.call_count == 1
+
+
+@respx.mock
+def test_a_different_token_does_not_share_a_cache_entry() -> None:
+    """One user's list must never be answered out of another's cached read."""
+    responses = [
+        httpx.Response(200, json={"data": {"Viewer": {"id": 1, "name": "first"}}}),
+        httpx.Response(200, json={"data": {"Viewer": {"id": 2, "name": "second"}}}),
+    ]
+    respx.post(client_module.API_URL).mock(side_effect=responses)
+    with httpx.Client() as http:
+        assert AniListClient(http, token="a").get_viewer().name == "first"
+        assert AniListClient(http, token="b").get_viewer().name == "second"
+
+
+@pytest.fixture
+def fake_clock(monkeypatch):
+    """A clock the limiter's waiting can be measured against.
+
+    Both monotonic and sleep have to be faked together. Stubbing sleep alone
+    leaves real time standing still while the limiter re-checks whether its
+    back-off has elapsed, so it spins on a wall that never comes down -- the
+    suite took two minutes on real 429 back-offs before this existed.
+    """
+    now = [1000.0]
+    monkeypatch.setattr(client_module.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(client_module.time, "sleep", lambda s: now.__setitem__(0, now[0] + s))
+    return now
+
+
+@respx.mock
+def test_a_429_is_retried_after_the_servers_own_delay(fake_clock) -> None:
+    started = fake_clock[0]
+    respx.post(client_module.API_URL).mock(
+        side_effect=[
+            httpx.Response(429, headers={"Retry-After": "2"}),
+            httpx.Response(200, json={"data": {"GenreCollection": ["Action"]}}),
+        ]
+    )
+    with httpx.Client() as http:
+        assert AniListClient(http).get_genre_collection() == ["Action"]
+
+    # Waited rather than failed, and waited as long as it was told to rather
+    # than for a hardcoded guess of our own.
+    assert fake_clock[0] - started >= 2
+
+
+@respx.mock
+def test_a_persistent_429_explains_itself(fake_clock) -> None:
+    respx.post(client_module.API_URL).mock(return_value=httpx.Response(429))
+    with httpx.Client() as http:
+        with pytest.raises(AniListError) as excinfo:
+            AniListClient(http).get_genre_collection()
+
+    # The user should be told to wait, not shown a bare HTTP status.
+    assert "rate-limiting" in str(excinfo.value)
+
+
+@respx.mock
+def test_a_write_is_never_cached_and_drops_what_was(fake_clock) -> None:
+    route = respx.post(client_module.API_URL).mock(
+        return_value=httpx.Response(200, json={"data": {"GenreCollection": ["Action"]}})
+    )
+    with httpx.Client() as http:
+        client = AniListClient(http, token="t")
+        client.get_genre_collection()
+        client.set_list_status(1, "PLANNING")
+        # The read after a write must reach the server: the whole point of the
+        # write was to change what the read answers.
+        client.get_genre_collection()
+
+    assert route.call_count == 3
+
+
+def test_the_limiter_blocks_once_the_window_is_full(fake_clock) -> None:
+    now = fake_clock
+    limiter = client_module._RateLimiter(limit=3, window=60.0)
+    for _ in range(3):
+        limiter.acquire()
+    # The fourth has to wait for the first to age out of the window.
+    limiter.acquire()
+    assert now[0] >= 1060.0

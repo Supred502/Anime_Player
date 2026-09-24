@@ -1,31 +1,42 @@
 // Paints the page it sits in with the app's accent colour.
 //
-// Only the accent -- backgrounds and text are left to the desktop's own
-// colour scheme. That is a deliberate retreat. Four ways of imposing a full
-// palette were tried in this app and measured live; none of them worked:
+// Where the accent has to be applied is not obvious, and getting it wrong is
+// silent -- the colour is set, nothing reports an error, and the app keeps
+// drawing Breeze blue. Two things about Kirigami's theme make it so, both
+// measured live by walking the item chain and printing inherit/highlightColor
+// at every step:
 //
-//   * Kirigami.Theme set on the ApplicationWindow: a Window is not an Item,
-//     so the attached property propagates to nothing. Pages went on reporting
-//     the platform's own #202326 / #3daee9.
-//   * The same assigned imperatively to pageStack: same result.
-//   * Kirigami.Theme set per page: recolours the labels but *not* the
-//     surfaces behind them, because a page and the scroll view inside it use
-//     different Kirigami colour sets and an override lands on one of them.
-//     The light scheme came out as dark text on a dark background.
-//   * Replacing the page's background item: the scroll view paints over it.
-//   * QPalette on the QGuiApplication, and a generated KColorScheme file
-//     pointed at by KDE_COLOR_SCHEME_PATH: neither reached anything.
+//   * Kirigami.Page sets Kirigami.Theme.inherit = false on itself. So a page
+//     ignores everything set above it -- on the window, on its content item,
+//     on the page stack. The accent has to be set ON THE PAGE, and then it
+//     does reach the whole page (its flickable and every child measured red).
+//   * The window's header is a child of the window's root item, a sibling of
+//     the entire page stack. Nothing set on a page can reach it, so the
+//     window paints its own chrome (see AppWindow.qml).
 //
-// The accent roles do apply cleanly, and the accent is the colour that
-// actually reads as "this is an AniList app". It is also how AniList itself
-// splits things: the site picks a background scheme and a profile colour
-// independently.
+// A declared child of a ScrollablePage is reparented into the scrolling
+// content, so `parent` here is neither of those things -- which is exactly
+// how the accent came to be applied to an inner column and nothing else.
+// pageOf() walks up to the real page instead.
+//
+// Only the accent is set. Backgrounds and text are left to the desktop's own
+// colour scheme. That is a deliberate retreat: imposing a full palette was
+// tried five ways here and none worked (a page and its scroll view use
+// different Kirigami colour sets, so an override lands on one of them and a
+// light scheme comes out as dark text on a dark background; replacing the
+// page background gets painted over; QPalette and a generated KColorScheme
+// pointed at by KDE_COLOR_SCHEME_PATH reached nothing at all). It is also how
+// AniList itself splits it: a background scheme, and a profile colour on top.
 import QtQuick
 import QtQuick.Controls as Controls
 import org.kde.kirigami as Kirigami
 
 Item {
     id: theming
+
+    // Extra items to paint besides the page this sits in. AppWindow uses
+    // this for its own chrome, which no page can reach.
+    property var targets: []
 
     // Guarded and remembered: Qt clears context properties during teardown
     // while bindings are still live, so a bare `backend.theme` re-evaluates
@@ -36,8 +47,9 @@ Item {
 
     onAppThemeChanged: {
         if (backend) theming.lastTheme = appTheme
-        if (parent) theming.applyTo(parent)
+        theming.apply()
     }
+    onTargetsChanged: theming.apply()
 
     // Zero-sized and invisible: a carrier for the attached property, not
     // something to look at.
@@ -46,7 +58,7 @@ Item {
     height: 0
 
     Component.onCompleted: {
-        if (parent) theming.applyTo(parent)
+        theming.apply()
         // Deferred: ScrollablePage builds its flickable after its children
         // are constructed, so it is still null right here.
         attachHint.restart()
@@ -55,24 +67,38 @@ Item {
     Timer {
         id: attachHint
         interval: 0
-        onTriggered: theming.attachScrollHint()
+        onTriggered: {
+            // The page is only wired into the PageRow a tick after this item
+            // is built, and until then it can still report the platform's
+            // theme -- so re-apply here as well as at construction.
+            theming.apply()
+            theming.attachScrollHint()
+        }
     }
 
     ScrollHint { id: scrollHint }
 
-    // The page, found by walking up from this item: a child declared in a
-    // ScrollablePage is parented into the scrolling content, not the page, so
-    // `parent` here is the thing that scrolls rather than the thing to pin an
-    // indicator to.
+    // The page this lives in, found by walking up. Identified by
+    // globalToolBarStyle, which every Kirigami.Page has and nothing between
+    // here and it does -- `flickable` would miss PlayerPage, which is a plain
+    // Page with no scroll view.
     function pageOf(item) {
         let node = item
-        while (node && !node.hasOwnProperty("flickable")) node = node.parent
+        while (node && !node.hasOwnProperty("globalToolBarStyle")) node = node.parent
         return node
+    }
+
+    function apply() {
+        let page = theming.pageOf(theming)
+        if (page) theming.applyTo(page)
+        for (let i = 0; i < theming.targets.length; i++) {
+            if (theming.targets[i]) theming.applyTo(theming.targets[i])
+        }
     }
 
     function attachScrollHint() {
         let page = theming.pageOf(theming)
-        if (!page || !page.flickable) return
+        if (!page || !page.hasOwnProperty("flickable") || !page.flickable) return
         scrollHint.parent = page
         scrollHint.flickable = page.flickable
         scrollHint.anchors.right = page.right
@@ -82,12 +108,14 @@ Item {
     }
 
     function applyTo(item) {
-        // Deliberately NOT setting Kirigami.Theme.inherit = false first.
+        // Deliberately NOT setting Kirigami.Theme.inherit = false here.
         // Doing that makes the theme stop deriving *any* role from the
         // platform, and Kirigami then answers every unset role with the
         // custom colour it does have -- measured live, setting only the
         // accent left textColor reporting the accent too, which rendered the
-        // whole app in one colour.
+        // whole app in one colour. (A page arrives with inherit already
+        // false, set by Kirigami itself, and that case is fine: textColor
+        // still measures as the platform's #fcfcfc afterwards.)
         item.Kirigami.Theme.highlightColor = theming.accent
         item.Kirigami.Theme.focusColor = theming.accent
         item.Kirigami.Theme.hoverColor = Qt.rgba(

@@ -49,6 +49,52 @@ Kirigami.ScrollablePage {
     // with "Cannot override FINAL property".
     readonly property real bodyWidth: width - Kirigami.Units.largeSpacing * 2
 
+    // The episode grid is left-aligned with a panel beside it, rather than
+    // centred in the whole width. Centring a 10-wide grid in a wide window
+    // left a column of empty page down both sides and nothing to read.
+    readonly property int sidePanelWidth: Kirigami.Units.gridUnit * 15
+    readonly property bool showSidePanel: page.bodyWidth > Kirigami.Units.gridUnit * 42
+    readonly property real episodeAreaWidth: page.bodyWidth
+        - (page.showSidePanel ? page.sidePanelWidth + Kirigami.Units.largeSpacing * 2 : 0)
+
+    // Everything watched already. Worth its own name because "the episode
+    // after the last one you saw" is episode 13 of a 12-episode show, which
+    // is what the panel offered to play before this existed.
+    readonly property bool allWatched: episodesModel.count > 0
+        && page.anilistProgress >= episodesModel.count
+
+    // Where the user would land on pressing play: the episode they stopped
+    // partway through if there is one, otherwise the one after AniList's
+    // progress, otherwise the beginning -- which is also where a finished
+    // show sends them, since starting over is the only thing left.
+    readonly property real resumeEpisode: {
+        if (page.localProgress) return page.localProgress.episode_number
+        if (page.anilistProgress > 0 && !page.allWatched) return page.anilistProgress + 1
+        return page.firstEpisodeNumber()
+    }
+
+    // Best available count of what's been seen. AniList is authoritative when
+    // the show is on the user's list; otherwise local playback is all there
+    // is, and reaching episode N means N-1 are behind you.
+    readonly property int watchedCount: Math.max(
+        page.anilistProgress,
+        page.localProgress ? Math.max(0, Math.round(page.localProgress.episode_number) - 1) : 0)
+
+    // Set from the database once this show has been matched to AniList, and
+    // written straight back when toggled -- see backend.isAnilistIgnored.
+    property bool ignoreAnilist: false
+    onAnilistIdChanged: {
+        if (page.anilistId !== 0) page.ignoreAnilist = backend.isAnilistIgnored(page.anilistId)
+    }
+
+    function episodeTitleFor(number) {
+        for (let i = 0; i < episodesModel.count; i++) {
+            let ep = episodesModel.get(i)
+            if (ep.number === number) return ep.title || ""
+        }
+        return ""
+    }
+
     // Longer than this and the count is pinned to ten a row: a long-runner
     // is read by counting, and 1-10 / 11-20 is how people do that.
     readonly property int longRunnerEpisodes: 100
@@ -458,6 +504,12 @@ Kirigami.ScrollablePage {
         }
 
         Controls.BusyIndicator {
+            // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
+            // controls, which stops the app's accent reaching them -- measured
+            // live: a page themed red still drew Breeze-blue Sub/Dub buttons.
+            // Turning inheritance back on is what makes one accent value reach
+            // every control in the app. See AppTheming.qml.
+            Kirigami.Theme.inherit: true
             running: page.loading
             visible: page.loading
             Layout.alignment: Qt.AlignHCenter
@@ -549,84 +601,215 @@ Kirigami.ScrollablePage {
         // fullest last row wins. Long-runners are pinned to 10, which is the
         // number people actually count in and keeps a 100-episode page a
         // neat 10x10.
-        GridLayout {
-            id: episodeGrid
-            Layout.alignment: Qt.AlignHCenter
+        RowLayout {
+            Layout.fillWidth: true
             Layout.leftMargin: Kirigami.Units.largeSpacing
             Layout.rightMargin: Kirigami.Units.largeSpacing
             Layout.bottomMargin: Kirigami.Units.largeSpacing
+            spacing: Kirigami.Units.largeSpacing * 2
 
-            readonly property int shownCount: pageEpisodesModel.count
-            readonly property int idealColumns: page.rowLengthFor(shownCount)
-            // Never more columns than fit: on a narrow window the chosen
-            // count would otherwise push the grid off the right edge.
-            columns: Math.max(1, Math.min(idealColumns,
-                                          Math.floor(page.bodyWidth / minCellSize)))
-            readonly property int minCellSize: 44
-            readonly property int maxCellSize: 72
-            readonly property real cellSize: Math.min(
-                maxCellSize,
-                (page.bodyWidth - (columns - 1) * columnSpacing) / columns)
-            rowSpacing: Kirigami.Units.smallSpacing
-            columnSpacing: Kirigami.Units.smallSpacing
+            GridLayout {
+                id: episodeGrid
+                Layout.alignment: Qt.AlignTop | Qt.AlignLeft
 
-            Repeater {
-                model: pageEpisodesModel
-                delegate: Rectangle {
-                    id: episodeCell
-                    required property var model
-                    readonly property bool watched: page.anilistProgress > 0 && model.number <= page.anilistProgress
-                    // !!, because `page.localProgress && ...` evaluates to
-                    // null (not false) when there is no saved progress, and
-                    // QML refuses to assign null to a bool.
-                    readonly property bool resumeHere: !!page.localProgress
-                        && page.localProgress.episode_number === model.number
+                readonly property int shownCount: pageEpisodesModel.count
+                readonly property int idealColumns: page.rowLengthFor(shownCount)
+                // Never more columns than fit: on a narrow window the chosen
+                // count would otherwise push the grid off the right edge.
+                columns: Math.max(1, Math.min(idealColumns,
+                                              Math.floor(page.episodeAreaWidth / minCellSize)))
+                readonly property int minCellSize: 44
+                readonly property int maxCellSize: 72
+                readonly property real cellSize: Math.min(
+                    maxCellSize,
+                    (page.episodeAreaWidth - (columns - 1) * columnSpacing) / columns)
+                rowSpacing: Kirigami.Units.smallSpacing
+                columnSpacing: Kirigami.Units.smallSpacing
 
-                    Layout.preferredWidth: episodeGrid.cellSize
-                    Layout.preferredHeight: episodeGrid.cellSize
-                    // maximumWidth as well as preferred: a GridLayout hands
-                    // any width left over to its columns, so preferred alone
-                    // still stretched the cells into wide rectangles.
-                    Layout.maximumWidth: episodeGrid.cellSize
-                    Layout.maximumHeight: episodeGrid.cellSize
-                    radius: Kirigami.Units.smallSpacing
-                    color: cellHover.hovered ? Kirigami.Theme.highlightColor
-                         : watched ? Qt.rgba(Kirigami.Theme.highlightColor.r,
-                                             Kirigami.Theme.highlightColor.g,
-                                             Kirigami.Theme.highlightColor.b, 0.55)
-                         : Kirigami.Theme.alternateBackgroundColor
-                    Behavior on color { ColorAnimation { duration: 100 } }
-                    // Filler keeps its orange outline; the episode you'd
-                    // resume on gets the accent one, so it's findable in a
-                    // grid of a thousand.
-                    border.color: model.filler ? Kirigami.Theme.neutralTextColor
-                                               : Kirigami.Theme.highlightColor
-                    border.width: model.filler ? 2 : (resumeHere ? 2 : 0)
-                    scale: cellHover.hovered ? 1.08 : 1
-                    Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
-                    // Lift the hovered cell above its neighbours, or the
-                    // scaled edges slide under the next cells along.
-                    z: cellHover.hovered ? 1 : 0
+                Repeater {
+                    model: pageEpisodesModel
+                    delegate: Rectangle {
+                        id: episodeCell
+                        required property var model
+                        readonly property bool watched: page.anilistProgress > 0 && model.number <= page.anilistProgress
+                        // !!, because `page.localProgress && ...` evaluates to
+                        // null (not false) when there is no saved progress, and
+                        // QML refuses to assign null to a bool.
+                        readonly property bool resumeHere: !!page.localProgress
+                            && page.localProgress.episode_number === model.number
+
+                        Layout.preferredWidth: episodeGrid.cellSize
+                        Layout.preferredHeight: episodeGrid.cellSize
+                        // maximumWidth as well as preferred: a GridLayout hands
+                        // any width left over to its columns, so preferred alone
+                        // still stretched the cells into wide rectangles.
+                        Layout.maximumWidth: episodeGrid.cellSize
+                        Layout.maximumHeight: episodeGrid.cellSize
+                        radius: Kirigami.Units.smallSpacing
+                        color: cellHover.hovered ? Kirigami.Theme.highlightColor
+                             : watched ? Qt.rgba(Kirigami.Theme.highlightColor.r,
+                                                 Kirigami.Theme.highlightColor.g,
+                                                 Kirigami.Theme.highlightColor.b, 0.55)
+                             : Kirigami.Theme.alternateBackgroundColor
+                        Behavior on color { ColorAnimation { duration: 100 } }
+                        // Filler keeps its orange outline; the episode you'd
+                        // resume on gets the accent one, so it's findable in a
+                        // grid of a thousand.
+                        border.color: model.filler ? Kirigami.Theme.neutralTextColor
+                                                   : Kirigami.Theme.highlightColor
+                        border.width: model.filler ? 2 : (resumeHere ? 2 : 0)
+                        scale: cellHover.hovered ? 1.08 : 1
+                        Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
+                        // Lift the hovered cell above its neighbours, or the
+                        // scaled edges slide under the next cells along.
+                        z: cellHover.hovered ? 1 : 0
+
+                        Controls.Label {
+                            anchors.centerIn: parent
+                            text: model.number
+                            font.bold: true
+                            // Scaled to the cell rather than left at the default
+                            // body size, which read as tiny inside a 70px box.
+                            font.pixelSize: Math.max(
+                                Kirigami.Theme.defaultFont.pixelSize,
+                                Math.round(episodeGrid.cellSize * 0.34))
+                            color: (episodeCell.watched || cellHover.hovered)
+                                ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+                        }
+
+                        HoverHandler { id: cellHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: page.requestEpisode(model.number) }
+
+                        Controls.ToolTip.visible: cellHover.hovered && model.title !== ""
+                        Controls.ToolTip.text: model.title
+                        Controls.ToolTip.delay: 400
+                    }
+                }
+            }
+
+            // Soaks up whatever is left over so the grid stays pinned left
+            // and the panel stays pinned right, at every window width.
+            Item { Layout.fillWidth: true; Layout.preferredHeight: 1 }
+
+            // The panel beside the grid. What belongs next to a wall of
+            // numbers is the answer to "which one do I press" -- so: where
+            // you are, what's next, and the one per-show setting worth having
+            // to hand.
+            Rectangle {
+                Layout.preferredWidth: page.sidePanelWidth
+                Layout.alignment: Qt.AlignTop
+                Layout.preferredHeight: sidePanel.implicitHeight + Kirigami.Units.largeSpacing * 2
+                visible: page.showSidePanel && episodesModel.count > 0
+                radius: Kirigami.Units.mediumSpacing
+                color: Kirigami.Theme.alternateBackgroundColor
+
+                ColumnLayout {
+                    id: sidePanel
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.margins: Kirigami.Units.largeSpacing
+                    spacing: Kirigami.Units.smallSpacing
 
                     Controls.Label {
-                        anchors.centerIn: parent
-                        text: model.number
+                        text: page.allWatched ? "Watch again"
+                            : page.watchedCount > 0 ? "Up next" : "Start watching"
                         font.bold: true
-                        // Scaled to the cell rather than left at the default
-                        // body size, which read as tiny inside a 70px box.
-                        font.pixelSize: Math.max(
-                            Kirigami.Theme.defaultFont.pixelSize,
-                            Math.round(episodeGrid.cellSize * 0.34))
-                        color: (episodeCell.watched || cellHover.hovered)
-                            ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+                        opacity: 0.6
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     }
 
-                    HoverHandler { id: cellHover; cursorShape: Qt.PointingHandCursor }
-                    TapHandler { onTapped: page.requestEpisode(model.number) }
+                    Kirigami.Heading {
+                        level: 3
+                        text: page.resumeEpisode > 0 ? "Episode " + page.resumeEpisode : "--"
+                    }
 
-                    Controls.ToolTip.visible: cellHover.hovered && model.title !== ""
-                    Controls.ToolTip.text: model.title
-                    Controls.ToolTip.delay: 400
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        text: page.episodeTitleFor(page.resumeEpisode)
+                        visible: text !== ""
+                        wrapMode: Text.WordWrap
+                        maximumLineCount: 2
+                        elide: Text.ElideRight
+                        opacity: 0.75
+                    }
+
+                    AppButton {
+                        Layout.fillWidth: true
+                        Layout.topMargin: Kirigami.Units.smallSpacing
+                        accented: true
+                        icon.name: "media-playback-start-symbolic"
+                        text: page.allWatched ? "Play" : page.watchedCount > 0 ? "Continue" : "Play"
+                        enabled: page.resumeEpisode > 0
+                        onClicked: page.requestEpisode(page.resumeEpisode)
+                    }
+
+                    Kirigami.Separator {
+                        Layout.fillWidth: true
+                        Layout.topMargin: Kirigami.Units.largeSpacing
+                        Layout.bottomMargin: Kirigami.Units.smallSpacing
+                    }
+
+                    Controls.Label {
+                        text: "Progress"
+                        font.bold: true
+                        opacity: 0.6
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 6
+                        radius: 3
+                        color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
+                                       Kirigami.Theme.textColor.b, 0.15)
+
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.bottom: parent.bottom
+                            width: parent.width * Math.min(1, episodesModel.count > 0
+                                ? page.watchedCount / episodesModel.count : 0)
+                            radius: parent.radius
+                            color: Kirigami.Theme.highlightColor
+                            Behavior on width { NumberAnimation { duration: 150 } }
+                        }
+                    }
+
+                    Controls.Label {
+                        text: page.watchedCount + " of " + episodesModel.count + " watched"
+                        opacity: 0.7
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+
+                    Kirigami.Separator {
+                        Layout.fillWidth: true
+                        Layout.topMargin: Kirigami.Units.largeSpacing
+                        Layout.bottomMargin: Kirigami.Units.smallSpacing
+                        visible: page.anilistId !== 0
+                    }
+
+                    Controls.CheckBox {
+                        Kirigami.Theme.inherit: true
+                        Layout.fillWidth: true
+                        visible: page.anilistId !== 0
+                        text: "Don't sync to AniList"
+                        checked: page.ignoreAnilist
+                        onToggled: {
+                            page.ignoreAnilist = checked
+                            backend.setAnilistIgnored(page.anilistId, checked)
+                        }
+                    }
+
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        visible: page.anilistId !== 0
+                        text: "Watching this won't touch your AniList progress. "
+                            + "The buttons above still work."
+                        wrapMode: Text.WordWrap
+                        opacity: 0.6
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
                 }
             }
         }
@@ -834,6 +1017,7 @@ Kirigami.ScrollablePage {
                             // reliably spoiler-free, and there is no flag on
                             // the rest to filter by.
                             Controls.ToolButton {
+                                Kirigami.Theme.inherit: true
                                 text: "Read full review"
                                 icon.name: "link-symbolic"
                                 onClicked: Qt.openUrlExternally(modelData.url)

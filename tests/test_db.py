@@ -182,3 +182,19 @@ def test_set_anilist_status_keeps_the_rest_of_a_mirrored_row(tmp_path: Path) -> 
     assert entry.progress == 4
     assert entry.titles == ("Shown", "Alt")
     db.close()
+
+
+def test_ignore_anilist_defaults_to_off_and_round_trips(tmp_path: Path) -> None:
+    db = Database(tmp_path / "t.db")
+
+    # An anime nobody has opted out of must never read as opted out -- this
+    # flag gates whether watching pushes progress to the user's real profile.
+    assert db.get_ignore_anilist(101) is False
+
+    db.set_ignore_anilist(101, True)
+    assert db.get_ignore_anilist(101) is True
+    # Per anime, not global.
+    assert db.get_ignore_anilist(102) is False
+
+    db.set_ignore_anilist(101, False)
+    assert db.get_ignore_anilist(101) is False
