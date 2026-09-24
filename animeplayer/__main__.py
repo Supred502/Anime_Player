@@ -13,6 +13,7 @@ from PySide6.QtQuickControls2 import QQuickStyle
 
 from animeplayer.player.mpv_video_item import MpvVideoItem
 from animeplayer.ui.backend import Backend
+from animeplayer.ui.window_chrome import WindowChrome
 
 QML_DIR = Path(__file__).parent / "ui" / "qml"
 ASSETS_DIR = Path(__file__).parent / "ui" / "assets"
@@ -100,6 +101,11 @@ def main() -> int:
     engine = QQmlApplicationEngine()
     backend = Backend()
     engine.rootContext().setContextProperty("backend", backend)
+    # Kept alive by this reference: a context property is not owned by the
+    # engine, and a WindowChrome that went out of scope here would be
+    # collected while QML still held a pointer to it.
+    window_chrome = WindowChrome()
+    engine.rootContext().setContextProperty("windowChrome", window_chrome)
     app.aboutToQuit.connect(backend.shutdown)
 
     # ANIMEPLAYER_TEST_QML swaps in a scripted driver that walks the real

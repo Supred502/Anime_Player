@@ -33,7 +33,6 @@ Kirigami.ScrollablePage {
     property var spotlight: []
     property var genres: []
     property var continueWatching: []
-    property var watching: []
     property var planning: []
 
     // key -> card array, and key -> "loading"/"ready"/"failed". Reassigned
@@ -107,6 +106,15 @@ Kirigami.ScrollablePage {
         )
     }
 
+    // A merged Continue Watching row holds two kinds of entry: ones played on
+    // this machine, which carry a source slug and open straight away, and
+    // ones AniList says are in progress, which have to be matched to the
+    // source first.
+    function openContinueEntry(entry) {
+        if (entry.slug_id) page.openSourceEntry(entry)
+        else backend.openAnilistAnime(entry.anilist_id, entry.title)
+    }
+
     function openCatalog(key, label) {
         applicationWindow().goBrowse({ startCategory: key, startLabel: label })
     }
@@ -119,7 +127,6 @@ Kirigami.ScrollablePage {
             page.genres = list.filter((name) => name !== "Hentai")
         }
         function onContinueWatchingChanged(entries) { page.continueWatching = entries }
-        function onAnilistWatchingChanged(entries) { page.watching = entries }
         function onAnilistPlanningChanged(entries) { page.planning = entries }
         function onHomeSpotlightReady(entries) { page.spotlight = entries }
         function onHomeRowReady(key, cards) {
@@ -219,21 +226,9 @@ Kirigami.ScrollablePage {
                         // otherwise divide by zero.
                         watchedFraction: modelData.duration_seconds > 0
                             ? modelData.position_seconds / modelData.duration_seconds : 0
-                        onClicked: page.openSourceEntry(page.continueWatching[index])
+                        onClicked: page.openContinueEntry(page.continueWatching[index])
                     }
                 }
-            }
-
-            PosterRow {
-                Layout.fillWidth: true
-                heading: "Watching"
-                model: page.watching
-                // "Episode 0" was what an unstarted entry used to read as,
-                // which says the opposite of what it means.
-                subtitleFor: (entry) => entry.progress > 0 ? "Episode " + entry.progress + " watched"
-                                                           : "Not started yet"
-                onCardClicked: (index) => backend.openAnilistAnime(
-                    page.watching[index].anilist_id, page.watching[index].title)
             }
 
             // Breaks up the run of shelves, and turns the filters people
@@ -332,6 +327,8 @@ Kirigami.ScrollablePage {
             PosterRow {
                 Layout.fillWidth: true
                 heading: "Planning to Watch"
+                showSeeAll: true
+                onSeeAllClicked: applicationWindow().goBrowse({ startListStatus: "PLANNING" })
                 model: page.planning
                 // Every entry in this row has progress 0 by definition, so the
                 // old subtitle was a column of bare "0"s.

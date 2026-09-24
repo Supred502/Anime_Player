@@ -16,7 +16,7 @@ from animeplayer.ui.backend import Backend
 
 def _summary(**overrides) -> MediaSummary:
     defaults = dict(
-        id=1, id_mal=None, title="Show", titles=("Show",), cover_url=None, banner_url=None,
+        id=1, id_mal=None, title="Show", titles=("Show",), cover_url=None, banner_url=None, country="JP",
         average_score=None, popularity=0, genres=(), format="TV", episodes=None,
         description=None,
     )

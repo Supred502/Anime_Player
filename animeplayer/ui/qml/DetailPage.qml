@@ -33,6 +33,14 @@ Kirigami.ScrollablePage {
     // most once per visit to this page rather than on every episode click.
     property bool warningAcknowledged: false
 
+    // The user's own AniList status for this anime ("" when it isn't on their
+    // list). Seeded from anilistCurrentStatus and then kept in step with what
+    // the buttons on this page do, so the label matches the press without
+    // waiting for a sync.
+    property string listStatus: ""
+    property bool listBusy: false
+    readonly property int anilistId: page.anilistDetails ? (page.anilistDetails.anilist_id || 0) : 0
+
     // The header bleeds to the window edges, so the inset the page would
     // normally apply lives on the content items below it -- and the grids
     // that size their own columns need to know what width that leaves.
@@ -72,6 +80,22 @@ Kirigami.ScrollablePage {
             }
         }
         return best
+    }
+
+    readonly property var statusLabels: ({
+        "CURRENT": "Watching", "PLANNING": "Planning", "COMPLETED": "Completed",
+        "DROPPED": "Dropped", "PAUSED": "Paused", "REPEATING": "Rewatching"
+    })
+
+    function statusLabel(status) { return page.statusLabels[status] || status }
+
+    function togglePlanning() {
+        if (page.anilistId === 0) {
+            showPassiveNotification("Still matching this to AniList -- try again in a moment.")
+            return
+        }
+        page.listBusy = true
+        backend.setListStatus(page.anilistId, page.listStatus === "PLANNING" ? "" : "PLANNING")
     }
 
     function hasFillerEpisodes() {
@@ -128,8 +152,20 @@ Kirigami.ScrollablePage {
             page.anilistLabel = label
             page.anilistProgress = progress
         }
+        function onListStatusChanged(anilistId, status) {
+            if (anilistId !== page.anilistId) return
+            page.listBusy = false
+            page.listStatus = status
+            page.anilistLabel = status === "" ? "" : page.statusLabel(status)
+            if (status === "") page.anilistProgress = 0
+        }
+        function onListStatusFailed(message) {
+            page.listBusy = false
+            showPassiveNotification(message)
+        }
         function onAnilistMediaDetails(details) {
             page.anilistDetails = details
+            page.listStatus = backend.listStatusOf(details.anilist_id || 0)
         }
         function onAnimeExtrasReady(extras) {
             // The backend only emits for the anime still open, but this page
@@ -383,6 +419,21 @@ Kirigami.ScrollablePage {
                             icon.name: "media-playback-start-symbolic"
                             accented: true
                             onClicked: page.requestEpisode(page.localProgress ? page.localProgress.episode_number : 1)
+                        }
+
+                        AppButton {
+                            text: page.listBusy ? "Saving..."
+                                : page.listStatus === "PLANNING" ? "In Planning"
+                                : "Plan to Watch"
+                            icon.name: page.listStatus === "PLANNING"
+                                ? "checkmark-symbolic" : "list-add-symbolic"
+                            enabled: !page.listBusy
+                            checked: page.listStatus === "PLANNING"
+                            // Only offered once there is an AniList match to
+                            // act on -- a button that always fails is worse
+                            // than no button.
+                            visible: page.anilistId !== 0
+                            onClicked: page.togglePlanning()
                         }
 
                         // A two-way switch rather than a label and two radio

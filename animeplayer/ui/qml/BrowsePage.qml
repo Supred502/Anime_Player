@@ -26,13 +26,17 @@ Kirigami.ScrollablePage {
     // Set by the caller when arriving from a home row's "See all".
     property string startCategory: "top-airing"
     property string startLabel: ""
+    // Set by Home's "Planning to Watch" row.
+    property string startListStatus: ""
     // Set by Home's "Recommend Me".
     property bool startWithRecommendations: false
     // Set by Home's genre strip.
     property string startGenre: ""
 
-    property string category: startCategory
-    property string categoryLabel: startLabel
+    // The last preset clicked, purely so the picker can say what it was. The
+    // preset itself only *sets* filters -- the controls stay the truth, so a
+    // preset and a filter can never disagree about what is being asked for.
+    property string presetLabel: startLabel
     property var results: []
     property int resultPage: 1
     property bool hasMore: false
@@ -42,12 +46,10 @@ Kirigami.ScrollablePage {
     property bool filtersOpen: false
     property bool showingRecommendations: false
 
-    // Single-choice filters.
-    property string filterType: ""
-    property string filterAiring: ""
+    // Single-choice filters. Season, year and sort are single by nature --
+    // there is no "not autumn" worth having, and an order is an order.
     property string filterSeason: ""
     property string filterYear: ""
-    property string filterCountry: ""
     property string filterSort: ""
     property int filterMinScore: 0
 
@@ -56,23 +58,26 @@ Kirigami.ScrollablePage {
     property var genreStates: ({})
     property var tagStates: ({})
     property var listStates: ({})
+    // Format, airing status and origin are tri-state too: "any format except
+    // Music" and "not Chinese" are the way people actually think about these.
+    property var formatStates: ({})
+    property var airingStates: ({})
+    property var countryStates: ({})
     property var genres: []
     property var allTags: []
     property var shownTags: []
 
     readonly property int filterCount:
         Object.keys(genreStates).length + Object.keys(tagStates).length
-        + Object.keys(listStates).length
-        + (filterType !== "" ? 1 : 0) + (filterAiring !== "" ? 1 : 0)
+        + Object.keys(listStates).length + Object.keys(formatStates).length
+        + Object.keys(airingStates).length + Object.keys(countryStates).length
         + (filterSeason !== "" ? 1 : 0) + (filterYear !== "" ? 1 : 0)
-        + (filterCountry !== "" ? 1 : 0) + (filterSort !== "" ? 1 : 0)
-        + (filterMinScore > 0 ? 1 : 0)
+        + (filterSort !== "" ? 1 : 0) + (filterMinScore > 0 ? 1 : 0)
 
     readonly property bool filtered: filterCount > 0
 
     title: showingRecommendations ? "Recommended for you"
-         : filtered ? "Filtered"
-         : (categoryLabel || "Browse")
+         : (presetLabel || "Browse")
 
     actions: [
         Kirigami.Action {
@@ -100,14 +105,6 @@ Kirigami.ScrollablePage {
     Component.onCompleted: {
         backend.fetchAnilistGenres()
         backend.fetchAnilistTags()
-        if (categoryLabel === "") {
-            // Arrived without a label (e.g. from the header); find the
-            // catalog's own name rather than showing its url slug.
-            let all = backend.catalogs()
-            for (let i = 0; i < all.length; i++) {
-                if (all[i].key === page.category) page.categoryLabel = all[i].label
-            }
-        }
         if (page.startWithRecommendations) {
             page.loadRecommendations()
         } else {
@@ -115,7 +112,11 @@ Kirigami.ScrollablePage {
                 page.genreStates = { [page.startGenre]: 1 }
                 page.filtersOpen = true
             }
-            page.load(1)
+            if (page.startListStatus !== "") {
+                page.listStates = { [page.startListStatus]: 1 }
+                page.filtersOpen = true
+            }
+            page.applyPreset(page.startCategory)
         }
     }
 
@@ -188,10 +189,15 @@ Kirigami.ScrollablePage {
             excludeTags: page.pick(page.tagStates, 2),
             statusInclude: page.pick(page.listStates, 1),
             statusExclude: page.pick(page.listStates, 2),
-            formats: page.filterType !== "" ? [page.filterType] : [],
-            excludeFormats: [],
-            airingStatus: page.filterAiring !== "" ? [page.filterAiring] : [],
-            country: page.filterCountry,
+            formats: page.pick(page.formatStates, 1),
+            excludeFormats: page.pick(page.formatStates, 2),
+            airingStatus: page.pick(page.airingStates, 1),
+            excludeAiringStatus: page.pick(page.airingStates, 2),
+            // AniList takes one country at a time, so only the first included
+            // one is sent; exclusions are applied to the results (see the
+            // backend). Two required countries at once is not a real request.
+            country: page.pick(page.countryStates, 1)[0] || "",
+            excludeCountries: page.pick(page.countryStates, 2),
             minScore: page.filterMinScore,
             season: page.filterSeason,
             seasonYear: page.filterYear === "" ? 0 : parseInt(page.filterYear),
@@ -207,12 +213,14 @@ Kirigami.ScrollablePage {
         } else {
             page.loadingMore = true
         }
-        if (page.filtered) {
-            backend.searchByFilters(page.filterSpec(), pageNumber)
-        } else if (queryField.text.trim() !== "") {
+        // A bare title search goes to the source: every hit is playable, and
+        // it is one request rather than a search plus a match. Anything with a
+        // filter on it goes to AniList, which is the only side that can
+        // exclude, and knows tags, origin and scores.
+        if (!page.filtered && queryField.text.trim() !== "") {
             backend.search(queryField.text.trim())
         } else {
-            backend.browseCatalog(page.category, pageNumber)
+            backend.searchByFilters(page.filterSpec(), pageNumber)
         }
     }
 
@@ -242,17 +250,35 @@ Kirigami.ScrollablePage {
         backend.loadRecommendations()
     }
 
+    // A preset is a shortcut that fills the controls in, not a separate mode.
+    // Selecting one used to switch the page onto the source's own catalog,
+    // which silently ignored every other filter -- so "Top Airing" plus
+    // "Movies" plus "China" quietly answered only the first of the three.
+    function applyPreset(key) {
+        let all = backend.catalogs()
+        let preset = null
+        for (let i = 0; i < all.length; i++) if (all[i].key === key) preset = all[i]
+        if (preset === null) { page.load(1); return }
+
+        page.presetLabel = preset.label
+        page.filterSort = preset.sort || ""
+        if (preset.airing) page.airingStates = { [preset.airing]: 1 }
+        if (preset.format) page.formatStates = { [preset.format]: 1 }
+        page.load(1)
+    }
+
     function clearFilters() {
-        page.filterType = ""
-        page.filterAiring = ""
         page.filterSeason = ""
         page.filterYear = ""
-        page.filterCountry = ""
         page.filterSort = ""
         page.filterMinScore = 0
         page.genreStates = ({})
         page.tagStates = ({})
         page.listStates = ({})
+        page.formatStates = ({})
+        page.airingStates = ({})
+        page.countryStates = ({})
+        page.presetLabel = ""
         page.showingRecommendations = false
         queryField.text = ""
         page.load(1)
@@ -329,9 +355,8 @@ Kirigami.ScrollablePage {
             // The rankings, as a menu rather than a row of chips: there are
             // fourteen of them and they are mutually exclusive.
             AppButton {
-                text: page.categoryLabel || "Category"
+                text: page.presetLabel || "Quick picks"
                 icon.name: "view-sort-symbolic"
-                enabled: !page.filtered
                 onClicked: catalogMenu.popup()
 
                 Controls.Menu {
@@ -343,11 +368,7 @@ Kirigami.ScrollablePage {
                         delegate: Controls.MenuItem {
                             required property var modelData
                             text: modelData.label
-                            onTriggered: {
-                                page.category = modelData.key
-                                page.categoryLabel = modelData.label
-                                page.load(1)
-                            }
+                            onTriggered: page.applyPreset(modelData.key)
                         }
                     }
                 }
@@ -377,27 +398,6 @@ Kirigami.ScrollablePage {
                 spacing: Kirigami.Units.smallSpacing
 
                 FilterCombo {
-                    options: [["", "Any format"], ["TV", "TV"], ["TV_SHORT", "TV Short"],
-                              ["MOVIE", "Movie"], ["SPECIAL", "Special"], ["OVA", "OVA"],
-                              ["ONA", "ONA"], ["MUSIC", "Music"]]
-                    value: page.filterType
-                    onPicked: (v) => { page.filterType = v; page.reload() }
-                }
-                FilterCombo {
-                    options: [["", "Any status"], ["RELEASING", "Airing"],
-                              ["FINISHED", "Finished"], ["NOT_YET_RELEASED", "Upcoming"]]
-                    value: page.filterAiring
-                    onPicked: (v) => { page.filterAiring = v; page.reload() }
-                }
-                // What "language" was actually asking for: where a show is
-                // made, not whether it is subbed or dubbed.
-                FilterCombo {
-                    options: [["", "Any origin"], ["JP", "Japan"], ["CN", "China"],
-                              ["KR", "Korea"], ["TW", "Taiwan"]]
-                    value: page.filterCountry
-                    onPicked: (v) => { page.filterCountry = v; page.reload() }
-                }
-                FilterCombo {
                     options: [["", "Any season"], ["WINTER", "Winter"], ["SPRING", "Spring"],
                               ["SUMMER", "Summer"], ["FALL", "Fall"]]
                     value: page.filterSeason
@@ -411,7 +411,9 @@ Kirigami.ScrollablePage {
                 FilterCombo {
                     options: [["", "Any order"], ["POPULARITY_DESC", "Most popular"],
                               ["SCORE_DESC", "Highest scored"], ["TRENDING_DESC", "Trending"],
-                              ["START_DATE_DESC", "Newest"], ["TITLE_ROMAJI", "Name A-Z"]]
+                              ["FAVOURITES_DESC", "Most favourited"],
+                              ["START_DATE_DESC", "Newest"], ["END_DATE_DESC", "Recently ended"],
+                              ["UPDATED_AT_DESC", "Recently updated"], ["TITLE_ROMAJI", "Name A-Z"]]
                     value: page.filterSort
                     onPicked: (v) => { page.filterSort = v; page.reload() }
                 }
@@ -462,6 +464,30 @@ Kirigami.ScrollablePage {
                 }
 
                 Item { Layout.fillWidth: true }
+            }
+
+            ChipSection {
+                label: "Format"
+                names: ["TV", "TV Short", "Movie", "Special", "OVA", "ONA", "Music"]
+                keys: ["TV", "TV_SHORT", "MOVIE", "SPECIAL", "OVA", "ONA", "MUSIC"]
+                states: page.formatStates
+                onToggled: (key) => { page.formatStates = page.tristate(page.formatStates, key); page.reload() }
+            }
+
+            ChipSection {
+                label: "Airing"
+                names: ["Airing", "Finished", "Upcoming"]
+                keys: ["RELEASING", "FINISHED", "NOT_YET_RELEASED"]
+                states: page.airingStates
+                onToggled: (key) => { page.airingStates = page.tristate(page.airingStates, key); page.reload() }
+            }
+
+            ChipSection {
+                label: "Origin"
+                names: ["Japan", "China", "Korea", "Taiwan"]
+                keys: ["JP", "CN", "KR", "TW"]
+                states: page.countryStates
+                onToggled: (key) => { page.countryStates = page.tristate(page.countryStates, key); page.reload() }
             }
 
             ChipSection {

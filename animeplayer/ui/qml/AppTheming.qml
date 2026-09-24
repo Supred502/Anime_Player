@@ -21,6 +21,7 @@
 // splits things: the site picks a background scheme and a profile colour
 // independently.
 import QtQuick
+import QtQuick.Controls as Controls
 import org.kde.kirigami as Kirigami
 
 Item {
@@ -44,7 +45,41 @@ Item {
     width: 0
     height: 0
 
-    Component.onCompleted: if (parent) theming.applyTo(parent)
+    Component.onCompleted: {
+        if (parent) theming.applyTo(parent)
+        // Deferred: ScrollablePage builds its flickable after its children
+        // are constructed, so it is still null right here.
+        attachHint.restart()
+    }
+
+    Timer {
+        id: attachHint
+        interval: 0
+        onTriggered: theming.attachScrollHint()
+    }
+
+    ScrollHint { id: scrollHint }
+
+    // The page, found by walking up from this item: a child declared in a
+    // ScrollablePage is parented into the scrolling content, not the page, so
+    // `parent` here is the thing that scrolls rather than the thing to pin an
+    // indicator to.
+    function pageOf(item) {
+        let node = item
+        while (node && !node.hasOwnProperty("flickable")) node = node.parent
+        return node
+    }
+
+    function attachScrollHint() {
+        let page = theming.pageOf(theming)
+        if (!page || !page.flickable) return
+        scrollHint.parent = page
+        scrollHint.flickable = page.flickable
+        scrollHint.anchors.right = page.right
+        scrollHint.anchors.top = page.top
+        scrollHint.anchors.bottom = page.bottom
+        scrollHint.anchors.rightMargin = 2
+    }
 
     function applyTo(item) {
         // Deliberately NOT setting Kirigami.Theme.inherit = false first.

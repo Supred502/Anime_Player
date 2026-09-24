@@ -313,6 +313,36 @@ class Database:
             ).fetchone()
             return self._row_to_anilist_status(row) if row else None
 
+    def set_anilist_status(self, anilist_id: int, status: str) -> None:
+        """Updates the mirrored list after the app itself changed something on
+        AniList, so the UI doesn't have to wait for the next full sync to
+        agree with the button the user just pressed. An empty status means the
+        entry was removed from the list entirely.
+
+        An anime being added for the first time has no mirrored row yet, and
+        the only field this knows is the status -- the rest is filled in on the
+        next sync.
+        """
+        with self._lock:
+            if not status:
+                self._conn.execute(
+                    "DELETE FROM anilist_list WHERE anilist_id = ?", (anilist_id,)
+                )
+                self._conn.commit()
+                return
+            updated = self._conn.execute(
+                "UPDATE anilist_list SET status = ? WHERE anilist_id = ?",
+                (status, anilist_id),
+            ).rowcount
+            if not updated:
+                self._conn.execute(
+                    "INSERT INTO anilist_list "
+                    "(anilist_id, status, progress, score, title, cover_url, genres, "
+                    "popularity, alt_titles) VALUES (?, ?, 0, 0, '', '', '', 0, '')",
+                    (anilist_id, status),
+                )
+            self._conn.commit()
+
     def get_anilist_list(self) -> list[AniListStatus]:
         """The whole mirrored list. Used to badge search/browse results with
         the user's own status without going back to AniList for each one --

@@ -146,3 +146,39 @@ def test_existing_cached_failures_are_dropped_on_open(tmp_path: Path) -> None:
     assert reopened.get_anidb_mapping(163134) is None
     assert reopened._conn.execute("SELECT COUNT(*) FROM anidb_map").fetchone()[0] == 1
     reopened.close()
+
+
+def test_set_anilist_status_adds_moves_and_removes(tmp_path: Path) -> None:
+    """The app changes the list itself now (plan-to-watch), so the mirror has
+    to be able to follow without waiting for a full re-sync."""
+    db = Database(tmp_path / "test.db")
+
+    db.set_anilist_status(123, "PLANNING")
+    added = db.get_anilist_status(123)
+    assert added is not None and added.status == "PLANNING"
+
+    db.set_anilist_status(123, "CURRENT")
+    assert db.get_anilist_status(123).status == "CURRENT"
+
+    db.set_anilist_status(123, "")
+    assert db.get_anilist_status(123) is None
+    db.close()
+
+
+def test_set_anilist_status_keeps_the_rest_of_a_mirrored_row(tmp_path: Path) -> None:
+    """Moving an entry to Planning must not blank the title and artwork the
+    home rows are drawn from."""
+    db = Database(tmp_path / "test.db")
+    db.replace_anilist_list([
+        AniListStatus(anilist_id=7, status="CURRENT", progress=4, score=8.0,
+                      title="Shown", cover_url="cover.jpg", titles=("Shown", "Alt")),
+    ])
+
+    db.set_anilist_status(7, "PLANNING")
+
+    entry = db.get_anilist_status(7)
+    assert entry.status == "PLANNING"
+    assert entry.title == "Shown"
+    assert entry.progress == 4
+    assert entry.titles == ("Shown", "Alt")
+    db.close()

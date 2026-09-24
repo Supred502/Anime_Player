@@ -153,7 +153,6 @@ class Backend(QObject):
     anilistMediaDetails = Signal(dict)  # rating/genres/description/etc. for the loaded anime
     animeRemapped = Signal(dict)  # {slug_id, numeric_id} -- a stale id was re-resolved by title
     fillerEpisodesUpdated = Signal(list)  # episode numbers, from the Jikan fallback (see _maybe_fetch_filler_fallback)
-    anilistWatchingChanged = Signal(list)  # Home page "Watching" row
     anilistPlanningChanged = Signal(list)  # Home page "Planning" row
     anilistAnimeResolved = Signal(dict)  # source result for a Home-page AniList card, ready to push DetailPage
     anilistAnimeResolveFailed = Signal(str)  # title we couldn't find a stream for
@@ -292,214 +291,6 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, done, self.searchFailed.emit))
 
-    # -- Theme -------------------------------------------------------------
-
-    @staticmethod
-    def _theme_from(db: Database) -> dict[str, Any]:
-        accent_name = db.get_setting("theme_accent") or _DEFAULT_ACCENT
-        return {
-            "accent": _THEME_ACCENTS.get(accent_name, _THEME_ACCENTS[_DEFAULT_ACCENT]),
-            "accentName": accent_name,
-        }
-
-    @Property("QVariantMap", notify=themeChanged)
-    def theme(self) -> dict[str, Any]:
-        """The app's accent colour -- see the note above _THEME_ACCENTS for
-        why it is only the accent."""
-        return self._theme_from(self._db)
-
-    @Slot(result=list)
-    def themeAccents(self) -> list[dict[str, str]]:
-        return [{"key": key, "color": value} for key, value in _THEME_ACCENTS.items()]
-
-    @Slot(str)
-    def setThemeAccent(self, accent: str) -> None:
-        if accent in _THEME_ACCENTS:
-            self._db.set_setting("theme_accent", accent)
-            self.themeChanged.emit()
-
-    # -- Home feed / catalog browsing --------------------------------------
-    #
-    # All of this reads the streaming source's own rankings rather than
-    # AniList's. Deliberate: these rows exist to be clicked straight into
-    # playback, and every entry the source ranks is by definition present on
-    # the source, so a click here can never land on "couldn't find a stream"
-    # the way an AniList-sourced card can.
-
-    # The rows the home page stacks, in order, under the hero and the user's
-    # own Continue Watching / Watching rows. Fewer than the source publishes
-    # (see hianime.CATALOGS) -- the rest are reachable through Browse, and a
-    # home page that scrolls forever is just a catalog with extra steps.
-    _HOME_ROWS = ("trending", "top-airing", "most-popular", "recently-updated",
-                  "most-favorite", "latest-completed", "top-upcoming")
-    # Trending is the one row with no catalog page of its own -- it exists
-    # only on the site's home page. So it needs both its own label and a
-    # stand-in catalog for "See all" to open, and refreshHomeFeed fills it
-    # from the home request instead of starting a catalog worker for it.
-    _HOME_ONLY_ROW = "trending"
-    _HOME_ROW_LABELS = {"trending": "Trending"}
-    _HOME_ROW_CATALOG = {"trending": "most-popular"}
-
-    @Slot(result=list)
-    def homeRows(self) -> list[dict[str, str]]:
-        """The home page's row list, so the page doesn't hardcode an order
-        the backend also has to know."""
-        return [
-            {
-                "key": key,
-                "label": self._HOME_ROW_LABELS.get(key) or source.CATALOGS[key],
-                "catalog": self._HOME_ROW_CATALOG.get(key, key),
-            }
-            for key in self._HOME_ROWS
-        ]
-
-    @Slot(result=list)
-    def catalogs(self) -> list[dict[str, str]]:
-        """Every browsable catalog, for the Browse page's category picker."""
-        return [{"key": key, "label": label} for key, label in source.CATALOGS.items()]
-
-    @Slot()
-    def refreshHomeFeed(self) -> None:
-        """Kicks off the hero carousel and every home row at once.
-
-        Each row is an independent worker, so a row whose request fails or
-        hangs costs only that row -- an earlier single-request design meant
-        one slow catalog held the whole page blank.
-        """
-        def highlights() -> tuple[list[source.Spotlight], list[source.SearchResult]]:
-            return source.get_home_highlights(self._http)
-
-        def highlights_done(
-            feed: tuple[list[source.Spotlight], list[source.SearchResult]]
-        ) -> None:
-            spotlight, trending = feed
-            self.homeSpotlightReady.emit([self._spotlight_to_card(s) for s in spotlight])
-            self.homeRowReady.emit(
-                "trending", [self._search_result_to_card(r) for r in trending]
-            )
-
-        def highlights_failed(message: str) -> None:
-            self.homeRowFailed.emit("trending", message)
-
-        self._pool.start(_Worker(highlights, highlights_done, highlights_failed))
-
-        for key in self._HOME_ROWS:
-            if key != self._HOME_ONLY_ROW:
-                self._start_home_row(key)
-
-    def _start_home_row(self, key: str) -> None:
-        # Bound as default arguments rather than closed over: every row shares
-        # this one function, and a plain closure over `key` would have all of
-        # them report under whichever key the loop finished on.
-        def work(category: str = key) -> source.CatalogPage:
-            return source.browse(category, 1, self._http)
-
-        def done(page: source.CatalogPage, row: str = key) -> None:
-            self.homeRowReady.emit(
-                row, [self._search_result_to_card(r) for r in page.results]
-            )
-
-        def failed(message: str, row: str = key) -> None:
-            self.homeRowFailed.emit(row, message)
-
-        self._pool.start(_Worker(work, done, failed))
-
-    @Slot(str, int)
-    def browseCatalog(self, category: str, page: int) -> None:
-        """One page of a named catalog, for the Browse page's infinite scroll."""
-        token = self._begin_browse()
-
-        def work() -> source.CatalogPage:
-            return source.browse(category, max(1, page), self._http)
-
-        def done(result: source.CatalogPage) -> None:
-            self._emit_browse_page(category, result, token)
-
-        self._pool.start(_Worker(work, done, self._browse_failed(token)))
-
-    # Browsing is driven by controls the user can change faster than a
-    # request round trip: flipping three filters fires three overlapping
-    # requests, and whichever the site answers last would otherwise win
-    # regardless of which the user actually asked for last. Each request takes
-    # a token, and only the newest one is allowed to report back.
-    def _begin_browse(self) -> int:
-        self._browse_token += 1
-        return self._browse_token
-
-    def _browse_failed(self, token: int) -> Callable[[str], None]:
-        def failed(message: str) -> None:
-            if token == self._browse_token:
-                self.browseFailed.emit(message)
-
-        return failed
-
-    def _emit_browse_page(self, key: str, result: source.CatalogPage, token: int) -> None:
-        if token != self._browse_token:
-            return
-        self.browseFinished.emit(
-            {
-                "key": key,
-                "results": [self._search_result_to_card(r) for r in result.results],
-                "page": result.page,
-                "hasMore": result.has_more,
-            }
-        )
-        self._match_anilist_statuses(list(result.results))
-
-    # -- AniList-backed genre/tag search --------------------------------------
-    # Deliberately separate from the plain title search above: the streaming source's
-    # catalog and genre list are both much smaller than AniList's (confirmed
-    # live -- a single source-side genre filter returned ~20-30 results where the
-    # same genre on AniList has hundreds), so genre/tag filtering browses
-    # AniList's catalog instead and resolves a playable source match lazily,
-    # only once a specific result is clicked (openAnilistAnime, reused from the
-    # Home page's Watching/Planning cards).
-
-    @Slot()
-    def fetchAnilistGenres(self) -> None:
-        if self._genre_cache is not None:
-            self.anilistGenresLoaded.emit(self._genre_cache)
-            return
-
-        def work() -> list[str]:
-            return self._anilist_public.get_genre_collection()
-
-        def done(genres: list[str]) -> None:
-            self._genre_cache = sorted(genres)
-            self.anilistGenresLoaded.emit(self._genre_cache)
-
-        self._pool.start(_Worker(work, done, lambda _msg: None))
-
-    @Slot()
-    def fetchAnilistTags(self) -> None:
-        if self._tag_cache is not None:
-            self.anilistTagsLoaded.emit(self._tag_cache)
-            return
-
-        def work() -> list[str]:
-            return self._anilist_public.get_tag_collection()
-
-        def done(tags: list[str]) -> None:
-            self._tag_cache = sorted(tags)
-            self.anilistTagsLoaded.emit(self._tag_cache)
-
-        self._pool.start(_Worker(work, done, lambda _msg: None))
-
-    def _affinity_sorted(self, results: list[MediaSummary]) -> list[MediaSummary]:
-        # Same relevance heuristic as the Home page's Planning row: shows
-        # sharing genres with what's actually been finished score higher,
-        # ties fall back to AniList's own popularity. Degrades gracefully
-        # to popularity-only if nothing's marked Completed yet (or the user
-        # isn't logged in) -- completed_genres is just empty then.
-        completed_genres: set[str] = set()
-        for e in self._db.get_anilist_by_status("COMPLETED"):
-            completed_genres.update(e.genres)
-
-        def affinity(m: MediaSummary) -> tuple[int, int]:
-            return (len(completed_genres & set(m.genres)), m.popularity)
-
-        return sorted(results, key=affinity, reverse=True)
-
     # Every card the UI shows carries exactly these keys, whether it came from
     # the streaming source's search or from AniList's catalog. The two used to
     # emit different key sets into the same QML ListModel, and a ListModel
@@ -576,9 +367,258 @@ class Backend(QObject):
             out.append(m)
         return out
 
-    # dict, not a long positional list: this grew from four filters to ten,
-    # and a ten-argument slot means every new filter is an edit in three
-    # places. QML passes the same field names the AniList client takes.
+    # -- AniList catalog ----------------------------------------------------
+    #
+    # Deliberately separate from the plain title search above: filtering
+    # browses AniList's catalog rather than the source's, because only AniList
+    # can exclude as well as include and only it knows tags, country of origin
+    # and scores. A playable source match is resolved lazily, once a specific
+    # result is clicked (openAnilistAnime).
+
+    @Slot()
+    def fetchAnilistGenres(self) -> None:
+        if self._genre_cache is not None:
+            self.anilistGenresLoaded.emit(self._genre_cache)
+            return
+
+        def work() -> list[str]:
+            return self._anilist_public.get_genre_collection()
+
+        def done(genres: list[str]) -> None:
+            self._genre_cache = sorted(genres)
+            self.anilistGenresLoaded.emit(self._genre_cache)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    @Slot()
+    def fetchAnilistTags(self) -> None:
+        if self._tag_cache is not None:
+            self.anilistTagsLoaded.emit(self._tag_cache)
+            return
+
+        def work() -> list[str]:
+            return self._anilist_public.get_tag_collection()
+
+        def done(tags: list[str]) -> None:
+            self._tag_cache = sorted(tags)
+            self.anilistTagsLoaded.emit(self._tag_cache)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    def _affinity_sorted(self, results: list[MediaSummary]) -> list[MediaSummary]:
+        # Same relevance heuristic as the Home page's Planning row: shows
+        # sharing genres with what's actually been finished score higher,
+        # ties fall back to AniList's own popularity. Degrades gracefully
+        # to popularity-only if nothing's marked Completed yet (or the user
+        # isn't logged in) -- completed_genres is just empty then.
+        completed_genres: set[str] = set()
+        for e in self._db.get_anilist_by_status("COMPLETED"):
+            completed_genres.update(e.genres)
+
+        def affinity(m: MediaSummary) -> tuple[int, int]:
+            return (len(completed_genres & set(m.genres)), m.popularity)
+
+        return sorted(results, key=affinity, reverse=True)
+
+    # -- Theme -------------------------------------------------------------
+
+    @staticmethod
+    def _theme_from(db: Database) -> dict[str, Any]:
+        accent_name = db.get_setting("theme_accent") or _DEFAULT_ACCENT
+        return {
+            "accent": _THEME_ACCENTS.get(accent_name, _THEME_ACCENTS[_DEFAULT_ACCENT]),
+            "accentName": accent_name,
+        }
+
+    @Property("QVariantMap", notify=themeChanged)
+    def theme(self) -> dict[str, Any]:
+        """The app's accent colour -- see the note above _THEME_ACCENTS for
+        why it is only the accent."""
+        return self._theme_from(self._db)
+
+    @Slot(result=list)
+    def themeAccents(self) -> list[dict[str, str]]:
+        return [{"key": key, "color": value} for key, value in _THEME_ACCENTS.items()]
+
+    @Slot(str)
+    def setThemeAccent(self, accent: str) -> None:
+        if accent in _THEME_ACCENTS:
+            self._db.set_setting("theme_accent", accent)
+            self.themeChanged.emit()
+
+    # -- My list ------------------------------------------------------------
+
+    listStatusChanged = Signal(int, str)  # (anilist id, new status; "" once removed)
+    listStatusFailed = Signal(str)
+
+    @Slot(int, str)
+    def setListStatus(self, anilist_id: int, status: str) -> None:
+        """Puts an anime on the user's AniList list with `status`, or takes it
+        off entirely when `status` is empty.
+
+        The local mirror is updated straight away rather than waiting for the
+        next full sync, so the button the user just pressed reflects reality
+        without a round trip they'd watch.
+        """
+        client = self._anilist_client
+        if client is None:
+            self.listStatusFailed.emit("Log in to AniList in Settings to use your list.")
+            return
+        if not anilist_id:
+            self.listStatusFailed.emit("This anime isn't matched to AniList yet.")
+            return
+        user_id = self._anilist_user_id
+
+        def work() -> str:
+            if status:
+                client.set_list_status(anilist_id, status)
+            elif user_id is not None:
+                client.remove_from_list(anilist_id, user_id)
+            return status
+
+        def done(new_status: str) -> None:
+            self._db.set_anilist_status(anilist_id, new_status)
+            self._anilist_index = None
+            self.listStatusChanged.emit(anilist_id, new_status)
+            self._emit_anilist_home_lists()
+
+        self._pool.start(_Worker(work, done, self.listStatusFailed.emit))
+
+    @Slot(int, result=str)
+    def listStatusOf(self, anilist_id: int) -> str:
+        entry = self._db.get_anilist_status(anilist_id) if anilist_id else None
+        return entry.status if entry is not None else ""
+
+    # -- Home feed / catalog browsing --------------------------------------
+    #
+    # All of this reads the streaming source's own rankings rather than
+    # AniList's. Deliberate: these rows exist to be clicked straight into
+    # playback, and every entry the source ranks is by definition present on
+    # the source, so a click here can never land on "couldn't find a stream"
+    # the way an AniList-sourced card can.
+
+    # The rows the home page stacks, in order, under the hero and the user's
+    # own Continue Watching / Watching rows. Fewer than the source publishes
+    # (see hianime.CATALOGS) -- the rest are reachable through Browse, and a
+    # home page that scrolls forever is just a catalog with extra steps.
+    _HOME_ROWS = ("trending", "top-airing", "most-popular", "recently-updated",
+                  "most-favorite", "latest-completed", "top-upcoming")
+    # Trending is the one row with no catalog page of its own -- it exists
+    # only on the site's home page. So it needs both its own label and a
+    # stand-in catalog for "See all" to open, and refreshHomeFeed fills it
+    # from the home request instead of starting a catalog worker for it.
+    _HOME_ONLY_ROW = "trending"
+    _HOME_ROW_LABELS = {"trending": "Trending"}
+    # Trending has a preset of its own now, so "See all" lands on the same
+    # ranking the row was built from rather than a stand-in.
+    _HOME_ROW_CATALOG = {"trending": "trending"}
+
+    @Slot(result=list)
+    def homeRows(self) -> list[dict[str, str]]:
+        """The home page's row list, so the page doesn't hardcode an order
+        the backend also has to know."""
+        return [
+            {
+                "key": key,
+                "label": self._HOME_ROW_LABELS.get(key) or source.CATALOGS[key],
+                "catalog": self._HOME_ROW_CATALOG.get(key, key),
+            }
+            for key in self._HOME_ROWS
+        ]
+
+    # The ranked catalogs, expressed as filter values rather than as a
+    # separate endpoint. Picking one used to switch the page over to the
+    # source's own catalog, which silently ignored every other filter -- so
+    # "Top Airing" plus "Movies" plus "China" quietly answered only the first
+    # of the three. As presets they just fill in filters, and everything
+    # composes.
+    _CATALOG_PRESETS: dict[str, dict[str, Any]] = {
+        "trending": {"label": "Trending", "sort": "TRENDING_DESC"},
+        "top-airing": {"label": "Top Airing", "airing": "RELEASING",
+                       "sort": "POPULARITY_DESC"},
+        "most-popular": {"label": "Most Popular", "sort": "POPULARITY_DESC"},
+        "most-favorite": {"label": "Most Favourite", "sort": "FAVOURITES_DESC"},
+        "highest-rated": {"label": "Highest Rated", "sort": "SCORE_DESC"},
+        "latest-completed": {"label": "Latest Completed", "airing": "FINISHED",
+                             "sort": "END_DATE_DESC"},
+        "recently-updated": {"label": "Latest Episodes", "sort": "UPDATED_AT_DESC"},
+        "new-anime": {"label": "Newly Added", "sort": "ID_DESC"},
+        "top-upcoming": {"label": "Top Upcoming", "airing": "NOT_YET_RELEASED",
+                         "sort": "POPULARITY_DESC"},
+        "movie": {"label": "Movies", "format": "MOVIE", "sort": "POPULARITY_DESC"},
+        "tv": {"label": "TV Series", "format": "TV", "sort": "POPULARITY_DESC"},
+        "ova": {"label": "OVAs", "format": "OVA", "sort": "POPULARITY_DESC"},
+        "ona": {"label": "ONAs", "format": "ONA", "sort": "POPULARITY_DESC"},
+        "special": {"label": "Specials", "format": "SPECIAL", "sort": "POPULARITY_DESC"},
+    }
+
+    @Slot(result=list)
+    def catalogs(self) -> list[dict[str, Any]]:
+        """Every preset, for the Browse page's picker."""
+        return [{"key": key, **preset} for key, preset in self._CATALOG_PRESETS.items()]
+
+    @Slot()
+    def refreshHomeFeed(self) -> None:
+        """Kicks off the hero carousel and every home row at once.
+
+        Each row is an independent worker, so a row whose request fails or
+        hangs costs only that row -- an earlier single-request design meant
+        one slow catalog held the whole page blank.
+        """
+        def highlights() -> tuple[list[source.Spotlight], list[source.SearchResult]]:
+            return source.get_home_highlights(self._http)
+
+        def highlights_done(
+            feed: tuple[list[source.Spotlight], list[source.SearchResult]]
+        ) -> None:
+            spotlight, trending = feed
+            self.homeSpotlightReady.emit([self._spotlight_to_card(s) for s in spotlight])
+            self.homeRowReady.emit(
+                "trending", [self._search_result_to_card(r) for r in trending]
+            )
+
+        def highlights_failed(message: str) -> None:
+            self.homeRowFailed.emit("trending", message)
+
+        self._pool.start(_Worker(highlights, highlights_done, highlights_failed))
+
+        for key in self._HOME_ROWS:
+            if key != self._HOME_ONLY_ROW:
+                self._start_home_row(key)
+
+    def _start_home_row(self, key: str) -> None:
+        # Bound as default arguments rather than closed over: every row shares
+        # this one function, and a plain closure over `key` would have all of
+        # them report under whichever key the loop finished on.
+        def work(category: str = key) -> source.CatalogPage:
+            return source.browse(category, 1, self._http)
+
+        def done(page: source.CatalogPage, row: str = key) -> None:
+            self.homeRowReady.emit(
+                row, [self._search_result_to_card(r) for r in page.results]
+            )
+
+        def failed(message: str, row: str = key) -> None:
+            self.homeRowFailed.emit(row, message)
+
+        self._pool.start(_Worker(work, done, failed))
+
+    # Browsing is driven by controls the user can change faster than a
+    # request round trip: flipping three filters fires three overlapping
+    # requests, and whichever the site answers last would otherwise win
+    # regardless of which the user actually asked for last. Each request takes
+    # a token, and only the newest one is allowed to report back.
+    def _begin_browse(self) -> int:
+        self._browse_token += 1
+        return self._browse_token
+
+    def _browse_failed(self, token: int) -> Callable[[str], None]:
+        def failed(message: str) -> None:
+            if token == self._browse_token:
+                self.browseFailed.emit(message)
+
+        return failed
+
     @Slot(dict, int)
     def searchByFilters(self, filters: dict[str, Any], page: int) -> None:
         spec = dict(filters or {})
@@ -603,6 +643,7 @@ class Backend(QObject):
                 season=str(spec.get("season") or "") or None,
                 season_year=int(spec.get("seasonYear") or 0) or None,
                 statuses=as_list("airingStatus") or None,
+                exclude_statuses=as_list("excludeAiringStatus") or None,
                 sort=str(spec.get("sort") or "") or None,
                 page=page,
             )
@@ -618,6 +659,12 @@ class Backend(QObject):
             # than 50 after filtering even though has_more is still true --
             # "Load more" just keeps pulling subsequent catalog pages.
             filtered = self._apply_status_filter(results, status_include, status_exclude)
+            # AniList can filter *to* a country but has no country_not_in, so
+            # excluding one is done on the results. Same page size either way;
+            # this only ever removes rows.
+            excluded_countries = set(as_list("excludeCountries"))
+            if excluded_countries:
+                filtered = [m for m in filtered if m.country not in excluded_countries]
             # Only re-rank by affinity when the user hasn't asked for an order.
             # Sorting their chosen "highest scored first" by genre overlap
             # instead is the kind of helpfulness that reads as a bug.
@@ -1295,21 +1342,55 @@ class Backend(QObject):
         self._emit_continue_watching()
 
     def _emit_continue_watching(self) -> None:
-        entries = self._db.continue_watching()
-        self.continueWatchingChanged.emit(
-            [
+        """One "Continue Watching" row, from two sources that used to be two.
+
+        The page had both a Continue Watching row (this machine's own playback
+        progress) and a Watching row (the AniList list's CURRENT entries).
+        They overlap almost entirely and the difference is invisible from the
+        outside, so they are merged: anything with local progress comes first
+        and in most-recent order, then anything AniList says is in progress
+        that hasn't been played here.
+        """
+        rows: list[dict[str, Any]] = []
+        local_ids: set[int] = set()
+        index = self._anilist_title_index()
+
+        for e in self._db.continue_watching():
+            match = index.match(e.anime_title) if index is not None else None
+            if match is not None:
+                local_ids.add(match.anilist_id)
+            rows.append(
                 {
                     "slug_id": e.anime_slug_id,
                     "numeric_id": e.anime_slug_id.rsplit("-", 1)[-1],
+                    "anilist_id": match.anilist_id if match is not None else 0,
                     "title": e.anime_title,
                     "poster_url": e.poster_url or "",
                     "episode_number": e.episode_number,
                     "position_seconds": e.position_seconds,
                     "duration_seconds": e.duration_seconds,  # lets the card draw a real resume bar
                 }
-                for e in entries
-            ]
-        )
+            )
+
+        for entry in self._db.get_anilist_by_status("CURRENT"):
+            if entry.anilist_id in local_ids:
+                continue
+            rows.append(
+                {
+                    # No source slug: these open by being matched to the
+                    # source on click, the same as any other AniList card.
+                    "slug_id": "",
+                    "numeric_id": "",
+                    "anilist_id": entry.anilist_id,
+                    "title": entry.title,
+                    "poster_url": entry.cover_url or "",
+                    "episode_number": entry.progress,
+                    "position_seconds": 0.0,
+                    "duration_seconds": 0.0,
+                }
+            )
+
+        self.continueWatchingChanged.emit(rows)
 
     # -- AniList: settings ---------------------------------------------------
 
@@ -1456,7 +1537,10 @@ class Backend(QObject):
                 for e in entries
             ]
 
-        self.anilistWatchingChanged.emit(as_dicts(self._db.get_anilist_by_status("CURRENT")))
+        # Watching is folded into Continue Watching now -- see
+        # _emit_continue_watching -- so refreshing the list has to refresh
+        # that row, not a row of its own.
+        self._emit_continue_watching()
 
         # Planning list ordered by relevance instead of alphabetically: shows
         # sharing genres with what's actually been finished score higher, tied
@@ -1713,6 +1797,8 @@ class Backend(QObject):
                         "description": _strip_html(summary.description or ""),
                         "cover_url": summary.cover_url or "",
                         "banner_url": summary.banner_url or "",
+                        # The detail page needs the id to act on the list.
+                        "anilist_id": summary.id,
                     }
                 )
 

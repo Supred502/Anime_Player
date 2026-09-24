@@ -1,13 +1,18 @@
-// The application window, with the app's own navigation bar.
+// The application window: its own titlebar, and its own navigation.
 //
-// The three places you can go are in the bar, not behind a hamburger. A
-// drawer costs a click and a guess to reach three destinations, and this app
-// only has three -- so they are just there, with the current one marked.
+// Frameless, with the window buttons drawn into the same bar as the nav --
+// the way Brave and friends do it. A separate system titlebar above a nav bar
+// is two rows of chrome doing one row's work.
 //
-// It is also why this is a component rather than living in Main.qml: the
-// live E2E drivers (_Test*Real.qml) each open their own window, and a bar
-// only Main.qml had would mean every screenshot taken through a driver
-// showed a different app from the real one.
+// Dragging and resizing are handed to the compositor through WindowChrome
+// (see ui/window_chrome.py). A client cannot position itself on Wayland, so
+// moving the window by assigning x/y from a MouseArea does nothing at all
+// there; startSystemMove is the only thing that works, and it also keeps
+// snapping and tiling behaving like every other window.
+//
+// This is a component rather than part of Main.qml because the live E2E
+// drivers (_Test*Real.qml) each open their own window, and chrome only
+// Main.qml had would mean every screenshot showed a different app.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
@@ -18,11 +23,15 @@ Kirigami.ApplicationWindow {
     title: "Anime Player"
     width: 1280
     height: 800
+    flags: Qt.Window | Qt.FramelessWindowHint
 
     // Which nav entry is lit. Set by the go* functions rather than derived
     // from the page stack, because pushing a detail page on top of Browse
     // should not un-light Browse.
     property string section: "home"
+
+    readonly property bool maximised: root.visibility === Window.Maximized
+                                      || root.visibility === Window.FullScreen
 
     // This app is a linear Home -> Detail -> Player stack, not a
     // master-detail browser, so force single-column navigation. Without this,
@@ -47,10 +56,26 @@ Kirigami.ApplicationWindow {
     function goBrowse(properties) { return root.goTo("browse", "BrowsePage.qml", properties) }
     function goSettings() { return root.goTo("settings", "SettingsPage.qml") }
 
+    function toggleMaximised() {
+        if (root.maximised) root.showNormal()
+        else root.showMaximized()
+    }
+
     header: Rectangle {
         id: navBar
         implicitHeight: navRow.implicitHeight + Kirigami.Units.smallSpacing * 2
         color: Kirigami.Theme.alternateBackgroundColor
+
+        // The whole bar is the drag handle, except where a control sits on
+        // top of it -- the buttons take their own presses first.
+        TapHandler {
+            onDoubleTapped: root.toggleMaximised()
+            gesturePolicy: TapHandler.DragThreshold
+        }
+        DragHandler {
+            target: null
+            onActiveChanged: if (active) windowChrome.startMove(root)
+        }
 
         // A hairline rather than a Kirigami.Separator: this sits directly
         // above the page's own header, and two full-strength rules stacked
@@ -67,25 +92,44 @@ Kirigami.ApplicationWindow {
         RowLayout {
             id: navRow
             anchors.fill: parent
-            anchors.leftMargin: Kirigami.Units.largeSpacing
-            anchors.rightMargin: Kirigami.Units.largeSpacing
+            anchors.leftMargin: Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing
 
-            Image {
-                Layout.preferredWidth: Kirigami.Units.iconSizes.medium
-                Layout.preferredHeight: Kirigami.Units.iconSizes.medium
-                Layout.rightMargin: Kirigami.Units.smallSpacing
-                source: Qt.resolvedUrl("../assets/images/AP.svg")
-                sourceSize.width: Kirigami.Units.iconSizes.medium * 2
-                fillMode: Image.PreserveAspectFit
+            // The logo is the Home button. A separate "Home" entry beside a
+            // logo that does nothing is one more thing to aim at for the same
+            // destination.
+            Controls.AbstractButton {
+                id: logoButton
+                Layout.preferredWidth: Kirigami.Units.iconSizes.large
+                Layout.preferredHeight: Kirigami.Units.iconSizes.large
+                hoverEnabled: true
+                onClicked: root.goHome()
+
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: "Home"
+                Controls.ToolTip.delay: 500
+
+                background: Rectangle {
+                    radius: Kirigami.Units.smallSpacing
+                    color: root.section === "home"
+                        ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                                  Kirigami.Theme.highlightColor.b, 0.2)
+                        : (logoButton.hovered
+                           ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                                     Kirigami.Theme.highlightColor.b, 0.1)
+                           : "transparent")
+                    Behavior on color { ColorAnimation { duration: 100 } }
+                }
+
+                contentItem: Image {
+                    source: Qt.resolvedUrl("../assets/images/AP.svg")
+                    sourceSize.width: Kirigami.Units.iconSizes.large * 2
+                    fillMode: Image.PreserveAspectFit
+                }
+
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
             }
 
-            NavButton {
-                text: "Home"
-                iconName: "go-home-symbolic"
-                current: root.section === "home"
-                onClicked: root.goHome()
-            }
             NavButton {
                 text: "Browse"
                 iconName: "view-list-details-symbolic"
@@ -100,6 +144,67 @@ Kirigami.ApplicationWindow {
                 iconName: "configure-symbolic"
                 current: root.section === "settings"
                 onClicked: root.goSettings()
+            }
+
+            // Window buttons. Close is the only one that gets a colour, so a
+            // mis-aimed click on the row is a minimise rather than a quit.
+            WindowButton {
+                iconName: "window-minimize-symbolic"
+                onClicked: root.showMinimized()
+            }
+            WindowButton {
+                iconName: root.maximised ? "window-restore-symbolic" : "window-maximize-symbolic"
+                onClicked: root.toggleMaximised()
+            }
+            WindowButton {
+                iconName: "window-close-symbolic"
+                danger: true
+                onClicked: root.close()
+            }
+        }
+    }
+
+    // Resize grips. A frameless window has no frame to grab, so these are
+    // thin strips along the edges that ask the compositor to resize.
+    Repeater {
+        model: [
+            { edge: "left",        cursor: Qt.SizeHorCursor },
+            { edge: "right",       cursor: Qt.SizeHorCursor },
+            { edge: "top",         cursor: Qt.SizeVerCursor },
+            { edge: "bottom",      cursor: Qt.SizeVerCursor },
+            { edge: "topleft",     cursor: Qt.SizeFDiagCursor },
+            { edge: "topright",    cursor: Qt.SizeBDiagCursor },
+            { edge: "bottomleft",  cursor: Qt.SizeBDiagCursor },
+            { edge: "bottomright", cursor: Qt.SizeFDiagCursor }
+        ]
+
+        Item {
+            required property var modelData
+            readonly property int thickness: Kirigami.Units.smallSpacing
+            readonly property bool corner: modelData.edge.length > 6
+
+            parent: root.contentItem
+            z: 9999
+            // A maximised window cannot be resized by its edges, and leaving
+            // live grips there steals clicks from whatever is underneath.
+            visible: !root.maximised
+
+            width: corner ? thickness * 2
+                 : (modelData.edge === "left" || modelData.edge === "right"
+                    ? thickness : root.contentItem.width)
+            height: corner ? thickness * 2
+                  : (modelData.edge === "top" || modelData.edge === "bottom"
+                     ? thickness : root.contentItem.height)
+
+            x: modelData.edge.indexOf("left") >= 0 ? 0
+             : modelData.edge.indexOf("right") >= 0 ? root.contentItem.width - width : 0
+            y: modelData.edge.indexOf("top") >= 0 ? 0
+             : modelData.edge.indexOf("bottom") >= 0 ? root.contentItem.height - height : 0
+
+            HoverHandler { cursorShape: modelData.cursor }
+            DragHandler {
+                target: null
+                onActiveChanged: if (active) windowChrome.startResize(root, modelData.edge)
             }
         }
     }
@@ -147,6 +252,32 @@ Kirigami.ApplicationWindow {
                 font.bold: nav.current
                 color: nav.current ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
             }
+        }
+
+        HoverHandler { cursorShape: Qt.PointingHandCursor }
+    }
+
+    component WindowButton: Controls.AbstractButton {
+        id: winButton
+        property string iconName: ""
+        property bool danger: false
+
+        hoverEnabled: true
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 2.2
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 1.8
+
+        background: Rectangle {
+            color: !winButton.hovered ? "transparent"
+                 : winButton.danger ? Kirigami.Theme.negativeTextColor
+                 : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
+                           Kirigami.Theme.textColor.b, 0.15)
+            Behavior on color { ColorAnimation { duration: 100 } }
+        }
+
+        contentItem: Kirigami.Icon {
+            source: winButton.iconName
+            isMask: true
+            color: winButton.danger && winButton.hovered ? "white" : Kirigami.Theme.textColor
         }
 
         HoverHandler { cursorShape: Qt.PointingHandCursor }

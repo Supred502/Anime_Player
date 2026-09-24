@@ -54,6 +54,7 @@ _MEDIA_FIELDS = """
     synonyms
     coverImage { large }
     bannerImage
+    countryOfOrigin
     averageScore
     popularity
     genres
@@ -107,6 +108,7 @@ _FILTER_ARGUMENTS: dict[str, tuple[str, str]] = {
     "season": ("$season: MediaSeason", "season: $season"),
     "seasonYear": ("$seasonYear: Int", "seasonYear: $seasonYear"),
     "statuses": ("$statuses: [MediaStatus]", "status_in: $statuses"),
+    "notStatuses": ("$notStatuses: [MediaStatus]", "status_not_in: $notStatuses"),
     "sort": ("$sort: [MediaSort]", "sort: $sort"),
 }
 
@@ -214,6 +216,21 @@ mutation ($mediaId: Int, $status: MediaListStatus, $progress: Int) {
 """
 
 
+_DELETE_MEDIA_LIST_ENTRY_MUTATION = """
+mutation ($id: Int) {
+  DeleteMediaListEntry(id: $id) { deleted }
+}
+"""
+
+# Deleting needs the *entry* id, not the media id, and the only way to learn
+# it is to ask for the viewer's entry for that media.
+_MEDIA_LIST_ENTRY_ID_QUERY = """
+query ($mediaId: Int, $userId: Int) {
+  MediaList(mediaId: $mediaId, userId: $userId, type: ANIME) { id status }
+}
+"""
+
+
 class AniListError(Exception):
     """A GraphQL request succeeded at the HTTP level but returned errors."""
 
@@ -248,6 +265,9 @@ class MediaSummary:
     # has one for the better-known entries, so anything using it needs a
     # fallback to the cover.
     banner_url: str | None
+    # Two-letter code (JP, CN, KR, TW). AniList can filter *to* one country
+    # but has no country_not_in, so excluding one is done on the results.
+    country: str | None
     average_score: int | None  # 0-100, AniList's own scale
     popularity: int
     genres: tuple[str, ...]
@@ -279,6 +299,7 @@ def _media_summary_of(media: dict) -> MediaSummary:
         titles=_titles_of(media),
         cover_url=(media.get("coverImage") or {}).get("large"),
         banner_url=media.get("bannerImage"),
+        country=media.get("countryOfOrigin"),
         average_score=media.get("averageScore"),
         popularity=media.get("popularity") or 0,
         genres=tuple(media.get("genres") or []),
@@ -366,6 +387,7 @@ class AniListClient:
         season: str | None = None,
         season_year: int | None = None,
         statuses: list[str] | None = None,
+        exclude_statuses: list[str] | None = None,
         sort: str | None = None,
         page: int = 1,
     ) -> tuple[list[MediaSummary], bool]:
@@ -395,6 +417,7 @@ class AniListClient:
             "season": season or None,
             "seasonYear": season_year or None,
             "statuses": statuses or None,
+            "notStatuses": exclude_statuses or None,
             "sort": [sort] if sort else None,
         }
         used = [name for name, value in optional.items() if value]
@@ -570,6 +593,35 @@ class AniListClient:
             _SAVE_MEDIA_LIST_ENTRY_MUTATION,
             {"mediaId": media_id, "status": status, "progress": progress},
         )
+
+    def set_list_status(self, media_id: int, status: str) -> None:
+        """Puts an anime on the viewer's list with the given status, or moves
+        it there. Progress is left alone -- marking something Planning must
+        not reset how far into it the user already got."""
+        self._request(
+            _SAVE_MEDIA_LIST_ENTRY_MUTATION,
+            {"mediaId": media_id, "status": status, "progress": None},
+        )
+
+    def get_list_entry(self, media_id: int, user_id: int) -> tuple[int, str] | None:
+        """(entry id, status) for this viewer's list entry, or None if the
+        anime isn't on their list."""
+        data = self._request(
+            _MEDIA_LIST_ENTRY_ID_QUERY, {"mediaId": media_id, "userId": user_id}
+        )
+        entry = data.get("MediaList")
+        if not entry:
+            return None
+        return entry["id"], entry.get("status") or ""
+
+    def remove_from_list(self, media_id: int, user_id: int) -> bool:
+        """Takes an anime off the viewer's list entirely. Returns whether
+        there was anything to remove."""
+        found = self.get_list_entry(media_id, user_id)
+        if found is None:
+            return False
+        self._request(_DELETE_MEDIA_LIST_ENTRY_MUTATION, {"id": found[0]})
+        return True
 
 
 # -- Detail-page extras ----------------------------------------------------
