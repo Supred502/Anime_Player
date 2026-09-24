@@ -41,6 +41,39 @@ Kirigami.ScrollablePage {
     // with "Cannot override FINAL property".
     readonly property real bodyWidth: width - Kirigami.Units.largeSpacing * 2
 
+    // Longer than this and the count is pinned to ten a row: a long-runner
+    // is read by counting, and 1-10 / 11-20 is how people do that.
+    readonly property int longRunnerEpisodes: 100
+    readonly property int longRunnerColumns: 10
+    // The window of row lengths worth considering. Below eight a row of a
+    // 24-episode show becomes three rows; above fifteen the cells get small
+    // and a row stops being countable at a glance.
+    readonly property int minRowLength: 8
+    readonly property int maxRowLength: 15
+
+    function rowLengthFor(count) {
+        if (count <= 0) return page.longRunnerColumns
+        if (count >= page.longRunnerEpisodes) return page.longRunnerColumns
+        // A short season is one row.
+        if (count <= page.maxRowLength) return count
+
+        let best = page.longRunnerColumns
+        let bestGap = page.maxRowLength  // worse than any real candidate
+        for (let columns = page.minRowLength; columns <= page.maxRowLength; columns++) {
+            // How many cells the last row would be missing.
+            let gap = (columns - (count % columns)) % columns
+            // Ties go to the row closest to twelve, which is the length a
+            // cour actually comes in.
+            let tidier = gap < bestGap
+                || (gap === bestGap && Math.abs(columns - 12) < Math.abs(best - 12))
+            if (tidier) {
+                best = columns
+                bestGap = gap
+            }
+        }
+        return best
+    }
+
     function hasFillerEpisodes() {
         for (let i = 0; i < pageEpisodesModel.count; i++) {
             if (pageEpisodesModel.get(i).filler) return true
@@ -343,12 +376,12 @@ Kirigami.ScrollablePage {
                         Layout.topMargin: Kirigami.Units.smallSpacing
                         spacing: Kirigami.Units.largeSpacing
 
-                        Controls.Button {
+                        AppButton {
                             text: page.localProgress
                                 ? ("Continue — Episode " + page.localProgress.episode_number)
                                 : "Start Watching"
                             icon.name: "media-playback-start-symbolic"
-                            highlighted: true
+                            accented: true
                             onClicked: page.requestEpisode(page.localProgress ? page.localProgress.episode_number : 1)
                         }
 
@@ -359,7 +392,7 @@ Kirigami.ScrollablePage {
                             spacing: 0
                             Repeater {
                                 model: [{ label: "Sub", dub: false }, { label: "Dub", dub: true }]
-                                Controls.Button {
+                                AppButton {
                                     required property var modelData
                                     text: modelData.label
                                     checkable: true
@@ -411,7 +444,7 @@ Kirigami.ScrollablePage {
                     height: width
                     radius: 3
                     color: "transparent"
-                    border.color: "orange"
+                    border.color: Kirigami.Theme.neutralTextColor
                     border.width: 2
                 }
                 Controls.Label {
@@ -430,7 +463,7 @@ Kirigami.ScrollablePage {
             // were bound to. A GridLayout with an explicit, width-derived
             // column count sidesteps that entirely -- same deterministic
             // pattern already used for episodeGrid below and the card grids
-            // in HomePage.qml/SearchPage.qml.
+            // in HomePage.qml/BrowsePage.qml.
             id: pageButtonGrid
             visible: page.pageCount > 1
             Layout.fillWidth: true
@@ -444,7 +477,7 @@ Kirigami.ScrollablePage {
 
             Repeater {
                 model: page.pageCount
-                delegate: Controls.Button {
+                delegate: AppButton {
                     required property int index
                     text: (index * page.pageSize + 1) + "-" + Math.min((index + 1) * page.pageSize, episodesModel.count)
                     checkable: true
@@ -454,24 +487,28 @@ Kirigami.ScrollablePage {
             }
         }
 
-        // A fixed number of episodes per row, centred, rather than as many as
-        // happen to fit the window. Sizing the columns from the width made
-        // every window size lay the same show out differently -- 22 across
-        // here, 17 there -- and none of those numbers means anything, so a
-        // row never lined up with a cour, an arc or anything else.
+        // A row length chosen to come out even, centred, rather than as many
+        // episodes as happen to fit the window. Sizing columns from the width
+        // laid the same show out differently at every window size, and none
+        // of those numbers meant anything.
         //
-        // Ten for long-runners (so a row is a round number to count in) and
-        // twelve otherwise, which divides the cour lengths a season actually
-        // comes in: 12, 24, 48.
+        // What "even" means: a length that divides the episode count, so the
+        // last row is full -- 13 episodes go 13 across, 20 go 10 and 10, 24 go
+        // 12 and 12. Where nothing divides it (25, say) the one leaving the
+        // fullest last row wins. Long-runners are pinned to 10, which is the
+        // number people actually count in and keeps a 100-episode page a
+        // neat 10x10.
         GridLayout {
             id: episodeGrid
             Layout.alignment: Qt.AlignHCenter
             Layout.leftMargin: Kirigami.Units.largeSpacing
             Layout.rightMargin: Kirigami.Units.largeSpacing
             Layout.bottomMargin: Kirigami.Units.largeSpacing
-            readonly property int idealColumns: episodesModel.count >= 100 ? 10 : 12
-            // Never more columns than fit: on a narrow window the fixed count
-            // would otherwise push the grid off the right edge.
+
+            readonly property int shownCount: pageEpisodesModel.count
+            readonly property int idealColumns: page.rowLengthFor(shownCount)
+            // Never more columns than fit: on a narrow window the chosen
+            // count would otherwise push the grid off the right edge.
             columns: Math.max(1, Math.min(idealColumns,
                                           Math.floor(page.bodyWidth / minCellSize)))
             readonly property int minCellSize: 44
@@ -511,7 +548,8 @@ Kirigami.ScrollablePage {
                     // Filler keeps its orange outline; the episode you'd
                     // resume on gets the accent one, so it's findable in a
                     // grid of a thousand.
-                    border.color: model.filler ? "orange" : Kirigami.Theme.highlightColor
+                    border.color: model.filler ? Kirigami.Theme.neutralTextColor
+                                               : Kirigami.Theme.highlightColor
                     border.width: model.filler ? 2 : (resumeHere ? 2 : 0)
                     scale: cellHover.hovered ? 1.08 : 1
                     Behavior on scale { NumberAnimation { duration: 100; easing.type: Easing.OutCubic } }
@@ -523,6 +561,11 @@ Kirigami.ScrollablePage {
                         anchors.centerIn: parent
                         text: model.number
                         font.bold: true
+                        // Scaled to the cell rather than left at the default
+                        // body size, which read as tiny inside a 70px box.
+                        font.pixelSize: Math.max(
+                            Kirigami.Theme.defaultFont.pixelSize,
+                            Math.round(episodeGrid.cellSize * 0.34))
                         color: (episodeCell.watched || cellHover.hovered)
                             ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
                     }

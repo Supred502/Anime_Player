@@ -31,6 +31,7 @@ Kirigami.ScrollablePage {
     property bool surprising: false
 
     property var spotlight: []
+    property var genres: []
     property var continueWatching: []
     property var watching: []
     property var planning: []
@@ -62,21 +63,13 @@ Kirigami.ScrollablePage {
             text: "Recommend Me"
             icon.name: "games-highscores-symbolic"
             tooltip: "Shows picked from what you've already watched"
-            onTriggered: {
-                let search = applicationWindow().pageStack.replace(Qt.resolvedUrl("SearchPage.qml"))
-                search.loadRecommendations()
-            }
-        },
-        Kirigami.Action {
-            text: "Browse"
-            icon.name: "view-list-details-symbolic"
-            tooltip: "Every catalog, with filters"
-            onTriggered: applicationWindow().pageStack.replace(Qt.resolvedUrl("BrowsePage.qml"))
+            onTriggered: applicationWindow().goBrowse({ startWithRecommendations: true })
         }
     ]
 
     Component.onCompleted: {
         page.sourceRows = backend.homeRows()
+        backend.fetchAnilistGenres()
         backend.refreshContinueWatching()
         backend.refreshAnilistHomeLists()
         for (let i = 0; i < page.sourceRows.length; i++) page.setRowState(page.sourceRows[i].key, "loading")
@@ -115,13 +108,16 @@ Kirigami.ScrollablePage {
     }
 
     function openCatalog(key, label) {
-        applicationWindow().pageStack.push(
-            Qt.resolvedUrl("BrowsePage.qml"), { startCategory: key, startLabel: label }
-        )
+        applicationWindow().goBrowse({ startCategory: key, startLabel: label })
     }
 
     Connections {
         target: backend
+        function onAnilistGenresLoaded(list) {
+            // AniList has nineteen genres, so they all fit -- minus the adult
+            // one, which is not a mood anyone wants offered on a home page.
+            page.genres = list.filter((name) => name !== "Hentai")
+        }
         function onContinueWatchingChanged(entries) { page.continueWatching = entries }
         function onAnilistWatchingChanged(entries) { page.watching = entries }
         function onAnilistPlanningChanged(entries) { page.planning = entries }
@@ -172,16 +168,60 @@ Kirigami.ScrollablePage {
             Layout.bottomMargin: Kirigami.Units.largeSpacing
             spacing: Kirigami.Units.gridUnit * 1.5
 
-            PosterRow {
+            // Wide cards rather than another poster shelf: this is the row
+            // people come to the page for, and eight identical shelves made
+            // it impossible to find at a glance.
+            ColumnLayout {
                 Layout.fillWidth: true
-                heading: "Continue Watching"
-                model: page.continueWatching
-                subtitleFor: (entry) => "Episode " + entry.episode_number
-                // The poster's resume bar needs a fraction, and an entry whose
-                // duration was never recorded would otherwise divide by zero.
-                fractionFor: (entry) => entry.duration_seconds > 0
-                    ? entry.position_seconds / entry.duration_seconds : 0
-                onCardClicked: (index) => page.openSourceEntry(page.continueWatching[index])
+                spacing: Kirigami.Units.smallSpacing
+                visible: page.continueWatching.length > 0
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Kirigami.Units.smallSpacing
+                    Rectangle {
+                        Layout.preferredWidth: 4
+                        Layout.preferredHeight: resumeHeading.implicitHeight * 0.8
+                        radius: 2
+                        color: Kirigami.Theme.highlightColor
+                    }
+                    Kirigami.Heading {
+                        id: resumeHeading
+                        level: 3
+                        text: "Continue Watching"
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+
+                ListView {
+                    id: resumeRow
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Kirigami.Units.gridUnit * 7
+                    orientation: ListView.Horizontal
+                    spacing: Kirigami.Units.largeSpacing
+                    clip: true
+                    reuseItems: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: page.continueWatching
+
+                    delegate: ResumeCard {
+                        required property var modelData
+                        required property int index
+
+                        width: Math.min(Kirigami.Units.gridUnit * 22,
+                                        Math.max(Kirigami.Units.gridUnit * 15,
+                                                 page.availableWidth / 2.4))
+                        height: resumeRow.height - Kirigami.Units.smallSpacing
+                        posterUrl: modelData.poster_url || ""
+                        title: modelData.title
+                        subtitle: "Episode " + modelData.episode_number
+                        // An entry whose duration was never recorded would
+                        // otherwise divide by zero.
+                        watchedFraction: modelData.duration_seconds > 0
+                            ? modelData.position_seconds / modelData.duration_seconds : 0
+                        onClicked: page.openSourceEntry(page.continueWatching[index])
+                    }
+                }
             }
 
             PosterRow {
@@ -196,6 +236,70 @@ Kirigami.ScrollablePage {
                     page.watching[index].anilist_id, page.watching[index].title)
             }
 
+            // Breaks up the run of shelves, and turns the filters people
+            // actually use into one click instead of five.
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                spacing: Kirigami.Units.smallSpacing
+                visible: page.genres.length > 0
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Kirigami.Units.smallSpacing
+                    Rectangle {
+                        Layout.preferredWidth: 4
+                        Layout.preferredHeight: genreHeading.implicitHeight * 0.8
+                        radius: 2
+                        color: Kirigami.Theme.highlightColor
+                    }
+                    Kirigami.Heading {
+                        id: genreHeading
+                        level: 3
+                        text: "In the mood for"
+                    }
+                    Item { Layout.fillWidth: true }
+                }
+
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: Kirigami.Units.smallSpacing
+
+                    Repeater {
+                        model: page.genres
+
+                        Controls.Button {
+                            id: genreChip
+                            required property var modelData
+                            text: modelData
+                            hoverEnabled: true
+                            leftPadding: Kirigami.Units.largeSpacing
+                            rightPadding: Kirigami.Units.largeSpacing
+
+                            background: Rectangle {
+                                radius: height / 2
+                                color: genreChip.hovered
+                                    ? Qt.rgba(Kirigami.Theme.highlightColor.r,
+                                              Kirigami.Theme.highlightColor.g,
+                                              Kirigami.Theme.highlightColor.b, 0.2)
+                                    : Kirigami.Theme.alternateBackgroundColor
+                                border.width: 1
+                                border.color: genreChip.hovered ? Kirigami.Theme.highlightColor
+                                                                : "transparent"
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                            }
+                            contentItem: Controls.Label {
+                                text: genreChip.text
+                                color: Kirigami.Theme.textColor
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+
+                            onClicked: applicationWindow().goBrowse({ startGenre: modelData })
+                        }
+                    }
+                }
+            }
+
             Repeater {
                 model: page.sourceRows
 
@@ -205,6 +309,10 @@ Kirigami.ScrollablePage {
                     Layout.fillWidth: true
                     heading: modelData.label
                     model: page.rowData[modelData.key] || []
+                    // The first shelf is the headline one, so it gets more
+                    // room; the rest are deliberately smaller.
+                    cardWidth: modelData.key === "trending" ? Kirigami.Units.gridUnit * 11
+                                                            : Kirigami.Units.gridUnit * 9
                     loading: page.rowState[modelData.key] === "loading"
                     // Trending and Top Airing are rankings, and the number is
                     // the whole point of them; Latest Completed is a list that

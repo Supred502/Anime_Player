@@ -47,13 +47,13 @@ Item {
     Component.onCompleted: if (parent) theming.applyTo(parent)
 
     function applyTo(item) {
-        // inherit must go false first, or an inheriting Theme copies its
-        // parent's values straight back over these.
-        item.Kirigami.Theme.inherit = false
+        // Deliberately NOT setting Kirigami.Theme.inherit = false first.
+        // Doing that makes the theme stop deriving *any* role from the
+        // platform, and Kirigami then answers every unset role with the
+        // custom colour it does have -- measured live, setting only the
+        // accent left textColor reporting the accent too, which rendered the
+        // whole app in one colour.
         item.Kirigami.Theme.highlightColor = theming.accent
-        item.Kirigami.Theme.activeTextColor = theming.accent
-        item.Kirigami.Theme.linkColor = theming.accent
-        item.Kirigami.Theme.visitedLinkColor = theming.accent
         item.Kirigami.Theme.focusColor = theming.accent
         item.Kirigami.Theme.hoverColor = Qt.rgba(
             theming.accent.r, theming.accent.g, theming.accent.b, 0.25)

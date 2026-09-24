@@ -461,3 +461,83 @@ def test_get_watch_order_ignores_side_stories() -> None:
             order = AniListClient(http).get_watch_order(1)
 
     assert [e.title for e in order] == ["Main", "Main 2"]
+
+
+def _chain_media_full(media_id: int, romaji: str, fmt: str, episodes: int,
+                      edges: list[tuple[str, int]]) -> dict:
+    return {
+        "id": media_id,
+        "title": {"romaji": romaji, "english": None},
+        "format": fmt,
+        "episodes": episodes,
+        "startDate": {"year": 2020},
+        "status": "FINISHED",
+        "coverImage": {"large": "cover.jpg"},
+        "relations": {
+            "edges": [
+                {"relationType": kind, "node": {"id": other}} for kind, other in edges
+            ]
+        },
+    }
+
+
+def _chain_responder(chain: dict[int, dict]):
+    def respond(request: httpx.Request) -> httpx.Response:
+        ids = json.loads(request.content)["variables"]["ids"]
+        return httpx.Response(
+            200,
+            json={"data": {"Page": {"media": [chain[i] for i in ids if i in chain]}}},
+        )
+
+    return respond
+
+
+def test_watch_order_drops_an_ova_prequel() -> None:
+    """AniList files plenty of side content as a PREQUEL. "Attack on Titan:
+    No Regrets" is an OVA, and it turned up as step 1 of Attack on Titan's
+    watch order."""
+    chain = {
+        1: _chain_media_full(1, "Main", "TV", 25, [("PREQUEL", 9), ("SEQUEL", 2)]),
+        2: _chain_media_full(2, "Main 2", "TV", 12, [("PREQUEL", 1)]),
+        9: _chain_media_full(9, "Side OVA", "OVA", 2, [("SEQUEL", 1)]),
+    }
+    with respx.mock:
+        respx.post(client_module.API_URL).mock(side_effect=_chain_responder(chain))
+        with httpx.Client() as http:
+            order = AniListClient(http).get_watch_order(1)
+
+    assert [e.title for e in order] == ["Main", "Main 2"]
+
+
+def test_watch_order_drops_a_one_shot_in_another_format() -> None:
+    """The other shape it takes: One Piece's chain began with a
+    single-episode ONA prequel to an 1100-episode TV series."""
+    chain = {
+        1: _chain_media_full(1, "Long Runner", "TV", 1100, [("PREQUEL", 9)]),
+        9: _chain_media_full(9, "One Shot", "ONA", 1, [("SEQUEL", 1)]),
+    }
+    with respx.mock:
+        respx.post(client_module.API_URL).mock(side_effect=_chain_responder(chain))
+        with httpx.Client() as http:
+            order = AniListClient(http).get_watch_order(1)
+
+    assert [e.title for e in order] == ["Long Runner"]
+
+
+def test_watch_order_keeps_a_movie_that_is_part_of_the_story() -> None:
+    """The rule must not swallow real entries: a full-length film between two
+    seasons is part of the order, not an aside."""
+    chain = {
+        1: _chain_media_full(1, "Season 1", "TV", 12, [("SEQUEL", 2)]),
+        2: _chain_media_full(2, "The Movie", "MOVIE", 1, [("PREQUEL", 1), ("SEQUEL", 3)]),
+        3: _chain_media_full(3, "Season 2", "TV", 12, [("PREQUEL", 2)]),
+    }
+    with respx.mock:
+        respx.post(client_module.API_URL).mock(side_effect=_chain_responder(chain))
+        with httpx.Client() as http:
+            order = AniListClient(http).get_watch_order(3)
+
+    # The film is a one-episode MOVIE next to a TV show, which is exactly the
+    # shape the one-shot rule targets -- so it is trimmed from the *ends*
+    # only, and here it sits between two kept entries.
+    assert [e.title for e in order] == ["Season 1", "The Movie", "Season 2"]

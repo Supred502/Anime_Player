@@ -1,13 +1,18 @@
-// Browse the streaming source's catalog: pick a ranking (Top Airing, Latest
-// Completed, ...) or build a filter, and scroll.
+// The one page for finding something to watch: ranked catalogs, a title
+// search, filters, and recommendations.
 //
-// Filters here hit the source's own /filter endpoint rather than AniList's
-// catalog, unlike SearchPage's genre/tag filters. The difference matters:
-// everything this page lists is by definition present on the source, so a
-// click always opens something playable, where an AniList-filtered result
-// still has to be matched to the source and can come back "couldn't find a
-// stream". AniList-side filtering stays on SearchPage for the things this
-// endpoint knows nothing about -- tags, and the user's own list status.
+// It used to be two pages. Search filtered AniList's catalog (genres, tags,
+// include/exclude) and Browse filtered the streaming source's (fast, and
+// everything it lists is definitely playable). Keeping both meant the same
+// question had two answers depending on which page you were on, so they are
+// one page with two engines behind it:
+//
+//   * no filters  -> the source's own ranked catalogs (Top Airing, Most
+//                    Popular, ...), and a keyword search against the source,
+//                    where every hit is playable and it is one request.
+//   * any filter  -> AniList's catalog, because only it can exclude as well
+//                    as include, and only it knows tags, country of origin
+//                    and scores. A result is matched to the source on click.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
@@ -16,15 +21,17 @@ import org.kde.kirigami as Kirigami
 Kirigami.ScrollablePage {
     id: page
 
-    // Paints this page in the app's colour scheme -- see AppTheming.qml
-    // for why this is per-page rather than set once on the window.
     AppTheming {}
 
     // Set by the caller when arriving from a home row's "See all".
     property string startCategory: "top-airing"
     property string startLabel: ""
+    // Set by Home's "Recommend Me".
+    property bool startWithRecommendations: false
+    // Set by Home's genre strip.
+    property string startGenre: ""
 
-    property string category: startCategory   // "" once any filter is set
+    property string category: startCategory
     property string categoryLabel: startLabel
     property var results: []
     property int resultPage: 1
@@ -33,63 +40,100 @@ Kirigami.ScrollablePage {
     property bool loadingMore: false
     property string errorMessage: ""
     property bool filtersOpen: false
+    property bool showingRecommendations: false
 
-    // Filter state. Names match the source's own query parameters, so
-    // filterSpec() is a straight copy rather than a translation table.
+    // Single-choice filters.
     property string filterType: ""
-    property string filterStatus: ""
+    property string filterAiring: ""
     property string filterSeason: ""
-    property string filterLanguage: ""
+    property string filterYear: ""
+    property string filterCountry: ""
     property string filterSort: ""
-    property var filterGenres: []
+    property int filterMinScore: 0
+
+    // name -> 1 (include) or 2 (exclude). Plain objects, reassigned rather
+    // than mutated: QML only notifies on assignment for `var` properties.
+    property var genreStates: ({})
+    property var tagStates: ({})
+    property var listStates: ({})
     property var genres: []
+    property var allTags: []
+    property var shownTags: []
 
-    readonly property bool filtered:
-        filterType !== "" || filterStatus !== "" || filterSeason !== ""
-        || filterLanguage !== "" || filterSort !== "" || filterGenres.length > 0
-        || queryField.text.trim() !== ""
+    readonly property int filterCount:
+        Object.keys(genreStates).length + Object.keys(tagStates).length
+        + Object.keys(listStates).length
+        + (filterType !== "" ? 1 : 0) + (filterAiring !== "" ? 1 : 0)
+        + (filterSeason !== "" ? 1 : 0) + (filterYear !== "" ? 1 : 0)
+        + (filterCountry !== "" ? 1 : 0) + (filterSort !== "" ? 1 : 0)
+        + (filterMinScore > 0 ? 1 : 0)
 
-    title: filtered ? "Browse" : (categoryLabel || "Browse")
+    readonly property bool filtered: filterCount > 0
+
+    title: showingRecommendations ? "Recommended for you"
+         : filtered ? "Filtered"
+         : (categoryLabel || "Browse")
 
     actions: [
         Kirigami.Action {
-            text: page.filtersOpen ? "Hide filters" : "Filters"
+            text: page.filtersOpen ? "Hide filters"
+                                   : (page.filterCount > 0 ? "Filters (" + page.filterCount + ")"
+                                                           : "Filters")
             icon.name: "view-filter-symbolic"
-            checkable: true
-            checked: page.filtersOpen
             onTriggered: page.filtersOpen = !page.filtersOpen
+        },
+        Kirigami.Action {
+            text: "Recommend"
+            icon.name: "games-highscores-symbolic"
+            tooltip: "Shows picked from what you've already watched"
+            onTriggered: page.loadRecommendations()
         },
         Kirigami.Action {
             text: "Clear"
             icon.name: "edit-clear-all-symbolic"
-            enabled: page.filtered
+            enabled: page.filtered || page.showingRecommendations
+                     || queryField.text.trim() !== ""
             onTriggered: page.clearFilters()
         }
     ]
 
     Component.onCompleted: {
-        backend.fetchSourceGenres()
+        backend.fetchAnilistGenres()
+        backend.fetchAnilistTags()
         if (categoryLabel === "") {
-            // Arrived without a label (e.g. from the drawer); find the
+            // Arrived without a label (e.g. from the header); find the
             // catalog's own name rather than showing its url slug.
             let all = backend.catalogs()
             for (let i = 0; i < all.length; i++) {
                 if (all[i].key === page.category) page.categoryLabel = all[i].label
             }
         }
-        page.load(1)
+        if (page.startWithRecommendations) {
+            page.loadRecommendations()
+        } else {
+            if (page.startGenre !== "") {
+                page.genreStates = { [page.startGenre]: 1 }
+                page.filtersOpen = true
+            }
+            page.load(1)
+        }
     }
 
     Connections {
         target: backend
-        function onSourceGenresLoaded(list) { page.genres = list }
+        function onAnilistGenresLoaded(list) { page.genres = list }
+        function onAnilistTagsLoaded(list) {
+            page.allTags = list
+            page.applyTagFilterText(tagField.text)
+        }
         function onBrowseFinished(payload) {
             page.loading = false
             page.loadingMore = false
             page.errorMessage = ""
             page.resultPage = payload.page
             page.hasMore = payload.hasMore
-            // Concatenate rather than append into a model: these are plain
+            page.showingRecommendations = payload.key === "recommendations"
+            // Concatenated rather than appended into a model: these are plain
             // arrays, for the same reason the home rows are (see HomePage).
             page.results = payload.page <= 1 ? payload.results
                                              : page.results.concat(payload.results)
@@ -99,17 +143,59 @@ Kirigami.ScrollablePage {
             page.loadingMore = false
             page.errorMessage = message
         }
+        function onRecommendationsFailed(message) {
+            page.loading = false
+            page.results = []
+            page.errorMessage = message
+        }
+        function onSearchFinished(list) {
+            page.loading = false
+            page.errorMessage = ""
+            page.hasMore = false
+            page.results = list
+        }
+        function onSearchFailed(message) {
+            page.loading = false
+            page.errorMessage = message
+        }
+        function onAnilistAnimeResolved(result) { page.openEntry(result) }
+        function onAnilistAnimeResolveFailed(title) {
+            showPassiveNotification("Couldn't find a stream for \"" + title + "\"")
+        }
+        function onAnilistAnimeResolveErrored(message) {
+            showPassiveNotification("Couldn't reach the streaming source: " + message)
+        }
+    }
+
+    function tristate(states, name) {
+        let next = ((states[name] || 0) + 1) % 3
+        let updated = Object.assign({}, states)
+        if (next === 0) delete updated[name]
+        else updated[name] = next
+        return updated
+    }
+
+    function pick(states, wanted) {
+        return Object.keys(states).filter((name) => states[name] === wanted)
     }
 
     function filterSpec() {
         return {
             keyword: queryField.text.trim(),
-            type: page.filterType,
-            status: page.filterStatus,
+            genres: page.pick(page.genreStates, 1),
+            excludeGenres: page.pick(page.genreStates, 2),
+            tags: page.pick(page.tagStates, 1),
+            excludeTags: page.pick(page.tagStates, 2),
+            statusInclude: page.pick(page.listStates, 1),
+            statusExclude: page.pick(page.listStates, 2),
+            formats: page.filterType !== "" ? [page.filterType] : [],
+            excludeFormats: [],
+            airingStatus: page.filterAiring !== "" ? [page.filterAiring] : [],
+            country: page.filterCountry,
+            minScore: page.filterMinScore,
             season: page.filterSeason,
-            language: page.filterLanguage,
-            sort: page.filterSort,
-            genres: page.filterGenres
+            seasonYear: page.filterYear === "" ? 0 : parseInt(page.filterYear),
+            sort: page.filterSort
         }
     }
 
@@ -117,22 +203,23 @@ Kirigami.ScrollablePage {
         if (pageNumber <= 1) {
             page.loading = true
             page.results = []
+            page.showingRecommendations = false
         } else {
             page.loadingMore = true
         }
-        // A filter and a ranking are two different endpoints, and the moment
-        // any filter is set the ranking stops applying -- so setting one
-        // switches the page over rather than trying to combine them.
-        if (page.filtered) backend.browseWithFilters(page.filterSpec(), pageNumber)
-        else backend.browseCatalog(page.category, pageNumber)
+        if (page.filtered) {
+            backend.searchByFilters(page.filterSpec(), pageNumber)
+        } else if (queryField.text.trim() !== "") {
+            backend.search(queryField.text.trim())
+        } else {
+            backend.browseCatalog(page.category, pageNumber)
+        }
     }
 
     // Every filter control calls this rather than load(1) directly. Changing
     // three filters in a row is three clicks in about as many hundred
     // milliseconds, and firing a request per click means three page loads of
-    // which only the last matters -- against a site that takes a moment to
-    // answer. The backend drops stale answers too (see _begin_browse), but not
-    // sending them at all is what actually makes this feel quick.
+    // which only the last matters.
     function reload() { reloadDebounce.restart() }
 
     Timer {
@@ -146,24 +233,81 @@ Kirigami.ScrollablePage {
         page.load(page.resultPage + 1)
     }
 
-    function clearFilters() {
-        page.filterType = ""
-        page.filterStatus = ""
-        page.filterSeason = ""
-        page.filterLanguage = ""
-        page.filterSort = ""
-        page.filterGenres = []
-        queryField.text = ""
-        page.reload()
+    function loadRecommendations() {
+        page.loading = true
+        page.results = []
+        page.errorMessage = ""
+        page.hasMore = false
+        page.showingRecommendations = true
+        backend.loadRecommendations()
     }
 
-    function toggleGenre(slug) {
-        // Reassigned, not spliced in place -- see HomePage's note on `var`
-        // property notification.
-        let next = page.filterGenres.filter((g) => g !== slug)
-        if (next.length === page.filterGenres.length) next.push(slug)
-        page.filterGenres = next
-        page.reload()
+    function clearFilters() {
+        page.filterType = ""
+        page.filterAiring = ""
+        page.filterSeason = ""
+        page.filterYear = ""
+        page.filterCountry = ""
+        page.filterSort = ""
+        page.filterMinScore = 0
+        page.genreStates = ({})
+        page.tagStates = ({})
+        page.listStates = ({})
+        page.showingRecommendations = false
+        queryField.text = ""
+        page.load(1)
+    }
+
+    function applyTagFilterText(text) {
+        let needle = (text || "").toLowerCase()
+        let shown = []
+        for (let i = 0; i < page.allTags.length && shown.length < 60; i++) {
+            if (needle === "" || page.allTags[i].toLowerCase().includes(needle)) {
+                shown.push(page.allTags[i])
+            }
+        }
+        // Selected tags stay visible even when they fall outside the list --
+        // otherwise retyping the search silently hides a filter still applied.
+        for (let name in page.tagStates) {
+            if (shown.indexOf(name) < 0) shown.push(name)
+        }
+        page.shownTags = shown
+    }
+
+    function openEntry(entry) {
+        applicationWindow().pageStack.push(
+            Qt.resolvedUrl("DetailPage.qml"),
+            {
+                anime: {
+                    slug_id: entry.slug_id,
+                    numeric_id: entry.numeric_id,
+                    title: entry.title,
+                    poster_url: entry.poster_url || "",
+                    kind: entry.kind || "",
+                    rating: entry.rating || ""
+                }
+            }
+        )
+    }
+
+    // The query lives in the header's text field; this keeps that an
+    // implementation detail of the page rather than something callers reach
+    // into (the live E2E driver types through it).
+    function setQuery(text) { queryField.text = text }
+
+    function openResult(index) {
+        let entry = page.results[index]
+        // An AniList-sourced result carries no source slug, so it has to be
+        // matched to the source first; a source result opens straight away.
+        if (!entry.slug_id) backend.openAnilistAnime(entry.anilist_id, entry.title)
+        else page.openEntry(entry)
+    }
+
+    readonly property var yearOptions: {
+        let years = [["", "Any year"]]
+        let newest = new Date().getFullYear() + 1
+        for (let y = newest; y >= 1960; y--) years.push([String(y), String(y)])
+        return years
     }
 
     header: ColumnLayout {
@@ -178,14 +322,14 @@ Kirigami.ScrollablePage {
             Controls.TextField {
                 id: queryField
                 Layout.fillWidth: true
-                placeholderText: "Filter by title..."
-                onAccepted: page.reload()
+                placeholderText: "Search anime..."
+                onAccepted: page.load(1)
             }
 
             // The rankings, as a menu rather than a row of chips: there are
             // fourteen of them and they are mutually exclusive.
-            Controls.ToolButton {
-                text: page.filtered ? "Filtered" : (page.categoryLabel || "Category")
+            AppButton {
+                text: page.categoryLabel || "Category"
                 icon.name: "view-sort-symbolic"
                 enabled: !page.filtered
                 onClicked: catalogMenu.popup()
@@ -202,7 +346,7 @@ Kirigami.ScrollablePage {
                             onTriggered: {
                                 page.category = modelData.key
                                 page.categoryLabel = modelData.label
-                                page.reload()
+                                page.load(1)
                             }
                         }
                     }
@@ -211,7 +355,7 @@ Kirigami.ScrollablePage {
         }
 
         // The filter drawer. Collapsed by default: the point of this page is
-        // the grid, and six always-visible dropdowns push it below the fold.
+        // the grid, and the whole panel would otherwise push it below the fold.
         ColumnLayout {
             Layout.fillWidth: true
             Layout.leftMargin: Kirigami.Units.smallSpacing
@@ -220,87 +364,151 @@ Kirigami.ScrollablePage {
             spacing: Kirigami.Units.smallSpacing
             visible: page.filtersOpen
 
+            Controls.Label {
+                Layout.fillWidth: true
+                text: "Click a chip once to require it, twice to exclude it, three times to clear it."
+                opacity: 0.7
+                wrapMode: Text.WordWrap
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
+
             Flow {
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing
 
                 FilterCombo {
-                    label: "Type"
-                    options: [["", "Any type"], ["tv", "TV"], ["movie", "Movie"], ["ova", "OVA"],
-                              ["ona", "ONA"], ["special", "Special"], ["music", "Music"]]
+                    options: [["", "Any format"], ["TV", "TV"], ["TV_SHORT", "TV Short"],
+                              ["MOVIE", "Movie"], ["SPECIAL", "Special"], ["OVA", "OVA"],
+                              ["ONA", "ONA"], ["MUSIC", "Music"]]
                     value: page.filterType
                     onPicked: (v) => { page.filterType = v; page.reload() }
                 }
                 FilterCombo {
-                    label: "Status"
-                    options: [["", "Any status"], ["releasing", "Airing"],
-                              ["completed", "Finished"], ["not_yet_aired", "Upcoming"]]
-                    value: page.filterStatus
-                    onPicked: (v) => { page.filterStatus = v; page.reload() }
+                    options: [["", "Any status"], ["RELEASING", "Airing"],
+                              ["FINISHED", "Finished"], ["NOT_YET_RELEASED", "Upcoming"]]
+                    value: page.filterAiring
+                    onPicked: (v) => { page.filterAiring = v; page.reload() }
+                }
+                // What "language" was actually asking for: where a show is
+                // made, not whether it is subbed or dubbed.
+                FilterCombo {
+                    options: [["", "Any origin"], ["JP", "Japan"], ["CN", "China"],
+                              ["KR", "Korea"], ["TW", "Taiwan"]]
+                    value: page.filterCountry
+                    onPicked: (v) => { page.filterCountry = v; page.reload() }
                 }
                 FilterCombo {
-                    label: "Season"
-                    options: [["", "Any season"], ["winter", "Winter"], ["spring", "Spring"],
-                              ["summer", "Summer"], ["fall", "Fall"]]
+                    options: [["", "Any season"], ["WINTER", "Winter"], ["SPRING", "Spring"],
+                              ["SUMMER", "Summer"], ["FALL", "Fall"]]
                     value: page.filterSeason
                     onPicked: (v) => { page.filterSeason = v; page.reload() }
                 }
                 FilterCombo {
-                    label: "Language"
-                    options: [["", "Any language"], ["sub", "Subbed"], ["dub", "Dubbed"]]
-                    value: page.filterLanguage
-                    onPicked: (v) => { page.filterLanguage = v; page.reload() }
+                    options: page.yearOptions
+                    value: page.filterYear
+                    onPicked: (v) => { page.filterYear = v; page.reload() }
                 }
                 FilterCombo {
-                    label: "Sort"
-                    options: [["", "Default order"], ["most_viewed", "Most watched"],
-                              ["most_followed", "Most followed"], ["trending", "Trending"],
-                              ["avg_score", "Score"], ["release_date", "Newest"],
-                              ["updated_date", "Recently updated"], ["title_az", "Name A-Z"]]
+                    options: [["", "Any order"], ["POPULARITY_DESC", "Most popular"],
+                              ["SCORE_DESC", "Highest scored"], ["TRENDING_DESC", "Trending"],
+                              ["START_DATE_DESC", "Newest"], ["TITLE_ROMAJI", "Name A-Z"]]
                     value: page.filterSort
                     onPicked: (v) => { page.filterSort = v; page.reload() }
                 }
             }
 
-            // Genres are a long tail: a handful get used constantly and the
-            // other eighty are noise until searched for, so the list is capped
-            // and grows on demand.
-            Flow {
+            // The star rating, as stars rather than a dropdown of numbers --
+            // it is the one filter people think of in stars.
+            RowLayout {
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing
 
+                Controls.Label {
+                    text: "Minimum rating"
+                    opacity: 0.7
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                }
+
                 Repeater {
-                    model: page.genresShown
-                    GenreChip {
-                        required property var modelData
-                        text: modelData.name
-                        selected: page.filterGenres.indexOf(modelData.slug) >= 0
-                        onClicked: page.toggleGenre(modelData.slug)
+                    model: 10
+                    Kirigami.Icon {
+                        required property int index
+                        readonly property int score: (index + 1) * 10
+                        readonly property bool lit: page.filterMinScore >= score
+                        source: lit ? "star-shape-symbolic" : "star-shape-outline-symbolic"
+                        isMask: true
+                        color: lit ? Kirigami.Theme.neutralTextColor
+                                   : Kirigami.Theme.disabledTextColor
+                        implicitWidth: Kirigami.Units.iconSizes.small
+                        implicitHeight: implicitWidth
+
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        TapHandler {
+                            // Clicking the star already set clears the filter,
+                            // so there is a way back to "any rating" without a
+                            // separate reset control.
+                            onTapped: {
+                                page.filterMinScore = page.filterMinScore === score ? 0 : score
+                                page.reload()
+                            }
+                        }
                     }
                 }
 
-                Controls.ToolButton {
-                    readonly property bool expanded: page.genreLimit >= page.genres.length
-                    visible: page.genres.length > page.collapsedGenreCount
-                    text: expanded ? "Show fewer"
-                                   : "+" + (page.genres.length - page.genreLimit) + " more"
-                    icon.name: expanded ? "go-up-symbolic" : "go-down-symbolic"
-                    onClicked: page.genreLimit = expanded ? page.collapsedGenreCount
-                                                          : page.genres.length
+                Controls.Label {
+                    text: page.filterMinScore > 0 ? page.filterMinScore + "%+" : "any"
+                    opacity: 0.7
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                 }
+
+                Item { Layout.fillWidth: true }
+            }
+
+            ChipSection {
+                label: "My list"
+                names: ["Watching", "Planning", "Completed", "Dropped", "Paused",
+                        "Rewatching", "Not in my list"]
+                keys: ["CURRENT", "PLANNING", "COMPLETED", "DROPPED", "PAUSED",
+                       "REPEATING", "NOT_IN_LIST"]
+                states: page.listStates
+                onToggled: (key) => { page.listStates = page.tristate(page.listStates, key); page.reload() }
+            }
+
+            ChipSection {
+                label: "Genres"
+                names: page.genres
+                keys: page.genres
+                states: page.genreStates
+                onToggled: (key) => { page.genreStates = page.tristate(page.genreStates, key); page.reload() }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+                Controls.Label {
+                    text: "Tags"
+                    opacity: 0.7
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                }
+                Controls.TextField {
+                    id: tagField
+                    Layout.fillWidth: true
+                    placeholderText: "Find a tag, e.g. \"Time Skip\" or \"Isekai\"..."
+                    onTextChanged: page.applyTagFilterText(text)
+                }
+            }
+
+            ChipSection {
+                names: page.shownTags
+                keys: page.shownTags
+                states: page.tagStates
+                collapsible: true
+                onToggled: (key) => { page.tagStates = page.tristate(page.tagStates, key); page.reload() }
             }
         }
 
         Kirigami.Separator { Layout.fillWidth: true }
     }
-
-    readonly property int collapsedGenreCount: 18
-    property int genreLimit: collapsedGenreCount
-    // Selected genres stay visible even when they fall outside the cap --
-    // otherwise collapsing the list silently hides a filter that is still
-    // being applied.
-    readonly property var genresShown: genres.filter(
-        (g, i) => i < genreLimit || filterGenres.indexOf(g.slug) >= 0)
 
     GridView {
         id: grid
@@ -331,23 +539,14 @@ Kirigami.ScrollablePage {
                 anchors.margins: Kirigami.Units.smallSpacing
                 posterUrl: modelData.poster_url
                 title: modelData.title
-                subtitle: [modelData.kind, modelData.duration]
-                    .filter((part) => !!part).join(" · ")
+                // A recommendation says why it's here; anything else describes
+                // itself.
+                subtitle: modelData.reason !== "" ? modelData.reason
+                    : [modelData.kind, modelData.duration].filter((part) => !!part).join(" · ")
+                scoreText: modelData.rating
                 cornerText: modelData.dub_count > 0 ? "SUB · DUB"
                           : (modelData.sub_count > 0 ? "SUB" : "")
-                onClicked: applicationWindow().pageStack.push(
-                    Qt.resolvedUrl("DetailPage.qml"),
-                    {
-                        anime: {
-                            slug_id: modelData.slug_id,
-                            numeric_id: modelData.numeric_id,
-                            title: modelData.title,
-                            poster_url: modelData.poster_url,
-                            kind: modelData.kind,
-                            rating: modelData.rating
-                        }
-                    }
-                )
+                onClicked: page.openResult(index)
             }
         }
 
@@ -375,19 +574,19 @@ Kirigami.ScrollablePage {
             anchors.centerIn: parent
             width: parent.width - Kirigami.Units.gridUnit * 4
             visible: !page.loading && grid.count === 0
-            text: page.errorMessage !== "" ? "Couldn't load this" : "Nothing matches"
+            text: page.errorMessage !== "" ? "Nothing to show" : "Nothing matches"
             explanation: page.errorMessage !== "" ? page.errorMessage
                 : "Try clearing a filter or two."
-            icon.name: page.errorMessage !== "" ? "network-disconnect-symbolic" : "view-filter-symbolic"
+            icon.name: page.errorMessage !== "" ? "network-disconnect-symbolic"
+                                                : "view-filter-symbolic"
         }
     }
 
-    // A dropdown that shows its own name while unset ("Any type") and the
+    // A dropdown that shows its own name while unset ("Any format") and the
     // chosen value once set, so a collapsed filter bar still says what is
     // being filtered on.
     component FilterCombo: Controls.ComboBox {
         id: combo
-        property string label: ""
         property var options: []
         property string value: ""
         signal picked(string value)
@@ -402,23 +601,108 @@ Kirigami.ScrollablePage {
         onActivated: (index) => combo.picked(combo.options[index][0])
     }
 
-    component GenreChip: Controls.Button {
+    // A labelled run of tri-state chips, optionally capped until expanded.
+    // AniList's nineteen genres all fit; its tags run to several hundred.
+    component ChipSection: ColumnLayout {
+        id: section
+        property string label: ""
+        property var names: []
+        property var keys: []
+        property var states: ({})
+        property bool collapsible: false
+        property int limit: 20
+        signal toggled(string key)
+
+        readonly property bool expanded: !collapsible || limit >= names.length
+        // A selected chip stays visible past the cap: collapsing the list must
+        // not hide a filter that is still being applied.
+        readonly property var visibleIndexes: {
+            let out = []
+            for (let i = 0; i < names.length; i++) {
+                if (i < limit || states[keys[i]] !== undefined) out.push(i)
+            }
+            return out
+        }
+
+        Layout.fillWidth: true
+        spacing: Kirigami.Units.smallSpacing
+        visible: names.length > 0
+
+        Controls.Label {
+            text: section.label
+            visible: section.label !== ""
+            opacity: 0.7
+            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+        }
+
+        Flow {
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.smallSpacing
+
+            Repeater {
+                model: section.visibleIndexes
+                TriStateChip {
+                    required property var modelData
+                    text: section.names[modelData]
+                    state3: section.states[section.keys[modelData]] || 0
+                    onClicked: section.toggled(section.keys[modelData])
+                }
+            }
+
+            Controls.ToolButton {
+                visible: section.collapsible && section.names.length > 20
+                text: section.expanded ? "Show fewer"
+                                       : "+" + (section.names.length - section.limit) + " more"
+                icon.name: section.expanded ? "go-up-symbolic" : "go-down-symbolic"
+                onClicked: section.limit = section.expanded ? 20 : section.names.length
+            }
+        }
+    }
+
+    // Neutral -> include (green, tick) -> exclude (red, cross) -> neutral.
+    // A plain CheckBox only has two states, so this is a small custom button.
+    component TriStateChip: Controls.Button {
         id: chip
-        property bool selected: false
+        property int state3: 0
+
+        readonly property color tint: state3 === 1 ? Kirigami.Theme.positiveTextColor
+                                    : state3 === 2 ? Kirigami.Theme.negativeTextColor
+                                    : Kirigami.Theme.textColor
+
+        hoverEnabled: true
+        leftPadding: Kirigami.Units.smallSpacing * 2
+        rightPadding: Kirigami.Units.smallSpacing * 2
+
         background: Rectangle {
             radius: height / 2
             border.width: 1
-            border.color: chip.selected ? Kirigami.Theme.highlightColor
-                                        : Kirigami.Theme.disabledTextColor
-            color: chip.selected
-                ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
-                          Kirigami.Theme.highlightColor.b, 0.2)
-                : "transparent"
+            border.color: chip.state3 === 0
+                ? (chip.hovered ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor)
+                : chip.tint
+            color: chip.state3 === 0
+                ? (chip.hovered
+                   ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                             Kirigami.Theme.highlightColor.b, 0.12)
+                   : "transparent")
+                : Qt.rgba(chip.tint.r, chip.tint.g, chip.tint.b, 0.18)
         }
-        contentItem: Controls.Label {
-            text: chip.text
-            color: chip.selected ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
-            horizontalAlignment: Text.AlignHCenter
+
+        contentItem: Row {
+            spacing: Kirigami.Units.smallSpacing
+            Kirigami.Icon {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: chip.state3 !== 0
+                source: chip.state3 === 1 ? "dialog-ok-apply-symbolic" : "dialog-cancel-symbolic"
+                implicitWidth: Kirigami.Units.iconSizes.small
+                implicitHeight: Kirigami.Units.iconSizes.small
+                isMask: true
+                color: chip.tint
+            }
+            Controls.Label {
+                anchors.verticalCenter: parent.verticalCenter
+                text: chip.text
+                color: chip.tint
+            }
         }
     }
 }

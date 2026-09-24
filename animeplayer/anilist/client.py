@@ -12,6 +12,7 @@ Redirect URL set to exactly https://anilist.co/api/v2/oauth/pin.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
@@ -94,17 +95,30 @@ query ($id: Int!) {{
 # works fine for the [String]-typed genre/tag variables. Passing [] instead of
 # null avoids the 500 but silently matches zero results instead of "no
 # filter" -- the argument has to be left out of the query text entirely.
-def _build_filter_search_query(has_formats: bool, has_not_formats: bool) -> str:
-    format_vars = []
-    format_args = []
-    if has_formats:
-        format_vars.append("$formats: [MediaFormat]")
-        format_args.append("format_in: $formats")
-    if has_not_formats:
-        format_vars.append("$notFormats: [MediaFormat]")
-        format_args.append("format_not_in: $notFormats")
-    extra_vars = ("\n  " + ", ".join(format_vars) + ",") if format_vars else ""
-    extra_args = (" " + ", ".join(format_args) + ",") if format_args else ""
+# Every optional filter, as (GraphQL variable declaration, media argument).
+# They are assembled into the query text only when actually used -- see the
+# comment above for why an unused enum-typed variable cannot simply be passed
+# as null.
+_FILTER_ARGUMENTS: dict[str, tuple[str, str]] = {
+    "formats": ("$formats: [MediaFormat]", "format_in: $formats"),
+    "notFormats": ("$notFormats: [MediaFormat]", "format_not_in: $notFormats"),
+    "country": ("$country: CountryCode", "countryOfOrigin: $country"),
+    "minScore": ("$minScore: Int", "averageScore_greater: $minScore"),
+    "season": ("$season: MediaSeason", "season: $season"),
+    "seasonYear": ("$seasonYear: Int", "seasonYear: $seasonYear"),
+    "statuses": ("$statuses: [MediaStatus]", "status_in: $statuses"),
+    "sort": ("$sort: [MediaSort]", "sort: $sort"),
+}
+
+
+def _build_filter_search_query(used: list[str]) -> str:
+    declarations = [_FILTER_ARGUMENTS[name][0] for name in used]
+    arguments = [_FILTER_ARGUMENTS[name][1] for name in used]
+    extra_vars = ("\n  " + ", ".join(declarations) + ",") if declarations else ""
+    extra_args = (" " + ", ".join(arguments) + ",") if arguments else ""
+    # sort is in the optional set, so a query that doesn't ask for one still
+    # needs a default -- popularity, which is what "browse this genre" means.
+    default_sort = "" if "sort" in used else " sort: POPULARITY_DESC,"
     return f"""
 query (
   $search: String, $genres: [String], $notGenres: [String], $tags: [String], $notTags: [String],{extra_vars}
@@ -115,7 +129,7 @@ query (
     media(
       search: $search, genre_in: $genres, genre_not_in: $notGenres,
       tag_in: $tags, tag_not_in: $notTags,{extra_args}
-      type: ANIME, sort: POPULARITY_DESC
+      type: ANIME,{default_sort} isAdult: false
     ) {{
       {_MEDIA_FIELDS}
     }}
@@ -347,17 +361,25 @@ class AniListClient:
         exclude_tags: list[str] | None = None,
         formats: list[str] | None = None,
         exclude_formats: list[str] | None = None,
+        country: str | None = None,
+        min_score: int | None = None,
+        season: str | None = None,
+        season_year: int | None = None,
+        statuses: list[str] | None = None,
+        sort: str | None = None,
         page: int = 1,
     ) -> tuple[list[MediaSummary], bool]:
-        """Browses AniList's own catalog by genre/tag/format (optionally
-        combined with a title search too), sorted by popularity. This is what
-        genre/tag filtering in the app's search uses instead of the source --
-        the source's catalog and genre list are both far smaller. Returns
-        (results, has_next_page) -- results used to be silently capped at one
-        page of 50 with no way to see more. formats/exclude_formats use
-        AniList's own MediaFormat enum values: TV, TV_SHORT, MOVIE, SPECIAL,
-        OVA, ONA, MUSIC."""
-        variables = {
+        """Browses AniList's own catalog, optionally combined with a title
+        search. This is what the app's filtering uses rather than the source's
+        own filter endpoint: AniList can exclude as well as include, knows
+        tags and country of origin, and has a far larger catalog. Returns
+        (results, has_next_page).
+
+        formats/exclude_formats use AniList's MediaFormat enum (TV, TV_SHORT,
+        MOVIE, SPECIAL, OVA, ONA, MUSIC); country is a two-letter code (JP,
+        CN, KR, TW); season is a MediaSeason (WINTER, SPRING, SUMMER, FALL).
+        """
+        variables: dict[str, Any] = {
             "search": search or None,
             "genres": genres or None,
             "notGenres": exclude_genres or None,
@@ -365,15 +387,19 @@ class AniListClient:
             "notTags": exclude_tags or None,
             "page": page,
         }
-        # See _build_filter_search_query's docstring comment: formats/
-        # notFormats must be left out of the query (and variables) entirely
-        # when unset, not passed as null, or AniList's server 500s.
-        if formats:
-            variables["formats"] = formats
-        if exclude_formats:
-            variables["notFormats"] = exclude_formats
-        query = _build_filter_search_query(bool(formats), bool(exclude_formats))
-        data = self._request(query, variables)
+        optional = {
+            "formats": formats or None,
+            "notFormats": exclude_formats or None,
+            "country": country or None,
+            "minScore": min_score or None,
+            "season": season or None,
+            "seasonYear": season_year or None,
+            "statuses": statuses or None,
+            "sort": [sort] if sort else None,
+        }
+        used = [name for name, value in optional.items() if value]
+        variables.update({name: optional[name] for name in used})
+        data = self._request(_build_filter_search_query(used), variables)
         page_data = data["Page"]
         results = [_media_summary_of(m) for m in page_data["media"]]
         has_next = bool((page_data.get("pageInfo") or {}).get("hasNextPage"))
@@ -516,26 +542,28 @@ class AniListClient:
             seen.add(start_id)
             start_id = next(prev for prev, nxt in next_of.items() if nxt == start_id)
 
-        order: list[ChainEntry] = []
+        chain: list[dict] = []
         current: int | None = start_id
         visited: set[int] = set()
         while current is not None and current not in visited:
             visited.add(current)
             media = nodes.get(current)
             if media is not None:
-                order.append(
-                    ChainEntry(
-                        id=media["id"],
-                        title=_primary_title(media),
-                        format=media.get("format"),
-                        episodes=media.get("episodes"),
-                        year=(media.get("startDate") or {}).get("year"),
-                        status=media.get("status"),
-                        cover_url=(media.get("coverImage") or {}).get("large"),
-                    )
-                )
+                chain.append(media)
             current = next_of.get(current)
-        return order
+
+        return [
+            ChainEntry(
+                id=media["id"],
+                title=_primary_title(media),
+                format=media.get("format"),
+                episodes=media.get("episodes"),
+                year=(media.get("startDate") or {}).get("year"),
+                status=media.get("status"),
+                cover_url=(media.get("coverImage") or {}).get("large"),
+            )
+            for media in _main_line(chain, media_id)
+        ]
 
     def save_progress(self, media_id: int, status: str, progress: int) -> None:
         self._request(
@@ -601,6 +629,17 @@ query ($id: Int!) {
 # chain is how a recap or an OVA ends up presented as "season 2".
 _STORY_RELATIONS = ("PREQUEL", "SEQUEL")
 
+# Formats that are side content whatever AniList calls the edge. An OVA or a
+# special is extra viewing, not a step in the story, and AniList files plenty
+# of them as PREQUEL -- "Attack on Titan: No Regrets" is an OVA that turned up
+# as step 1 of Attack on Titan's watch order.
+_SIDE_FORMATS = frozenset({"OVA", "SPECIAL", "MUSIC"})
+# A one-or-two-episode entry in a different format from the show itself is the
+# other shape this takes: One Piece's chain began with "MONSTERS: Ippaku
+# Sanjou Hiryuu Jigoku", a single-episode ONA prequel to an 1100-episode TV
+# series.
+_SHORT_ASIDE_EPISODES = 2
+
 _CHAIN_QUERY = """
 query ($ids: [Int]) {
   Page(perPage: 50) {
@@ -647,6 +686,44 @@ class MediaExtras:
     relations: tuple[Relation, ...]
     recommendations: tuple[MediaSummary, ...]
     reviews: tuple[Review, ...]
+
+
+def _is_side_content(media: dict, anchor: dict) -> bool:
+    """Whether a chain entry is extra viewing rather than a step in the story."""
+    media_format = media.get("format")
+    if media_format in _SIDE_FORMATS:
+        return True
+    episodes = media.get("episodes") or 0
+    return (
+        media_format != anchor.get("format")
+        and 0 < episodes <= _SHORT_ASIDE_EPISODES
+    )
+
+
+def _main_line(chain: list[dict], anchor_id: int) -> list[dict]:
+    """Trims side content off the ends of a franchise chain.
+
+    Only off the *ends*, and only while it keeps finding it. An OVA prequel
+    or a one-shot sits before the first real season, so dropping it is what
+    makes "Attack on Titan: No Regrets" stop being step 1 of Attack on Titan.
+    A film *between* two seasons is a different thing -- it is a step in the
+    story that happens to be a single-episode MOVIE, so trimming inwards from
+    the ends leaves it alone where a filter would have thrown it out and cut
+    the chain in half.
+
+    The entry being viewed is never dropped: opening a side story directly
+    should still show it in context, not an order it isn't part of.
+    """
+    anchor = next((m for m in chain if m["id"] == anchor_id), None)
+    if anchor is None:
+        return chain
+
+    first, last = 0, len(chain) - 1
+    while first < last and chain[first]["id"] != anchor_id and _is_side_content(chain[first], anchor):
+        first += 1
+    while last > first and chain[last]["id"] != anchor_id and _is_side_content(chain[last], anchor):
+        last -= 1
+    return chain[first : last + 1]
 
 
 @dataclass(frozen=True, slots=True)

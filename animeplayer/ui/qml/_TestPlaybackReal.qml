@@ -1,5 +1,5 @@
 // Live end-to-end driver: walks the REAL pages through the REAL navigation
-// path (Search -> Detail -> Player) against the live source, the way a user
+// path (Browse -> Detail -> Player) against the live source, the way a user
 // would. Not a unit test -- the lifecycle bugs in this app only show up on
 // the actual pageStack push path. Run with:
 //   ANIMEPLAYER_TEST_QML=_TestPlaybackReal.qml python -m animeplayer
@@ -8,7 +8,7 @@ import org.kde.kirigami as Kirigami
 
 AppWindow {
     id: root
-    pageStack.initialPage: Qt.resolvedUrl("SearchPage.qml")
+    pageStack.initialPage: Qt.resolvedUrl("BrowsePage.qml")
 
     property string query: "Dorohedoro"
     // ANIMEPLAYER_TEST_PAUSE lets a screenshot land mid-flow.
@@ -49,14 +49,14 @@ AppWindow {
     }
 
     // Kick off the search through the real page's own field, not by calling
-    // backend.search() directly, so the search page's own wiring is covered.
+    // backend.search() directly, so the browse page's own wiring is covered.
     Timer {
         running: true; interval: 1500
         onTriggered: {
             let page = root.pageStack.currentItem
-            root.log("typing into SearchPage")
+            root.log("typing into BrowsePage")
             page.setQuery(root.query)
-            page.doSearch()
+            page.load(1)
         }
     }
 

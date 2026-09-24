@@ -249,6 +249,8 @@ def search(query: str, client: httpx.Client) -> list[SearchResult]:
 # /genre/<x>) are deliberately absent -- this site spells them
 # /latest-completed, /new-anime and /genres/<x>.
 
+GENRE_PATH_PREFIX = "genres/"
+
 # Ordered: this is also the order the home page stacks its rows in.
 CATALOGS: dict[str, str] = {
     "top-airing": "Top Airing",
@@ -266,28 +268,6 @@ CATALOGS: dict[str, str] = {
     "ona": "ONAs",
     "special": "Specials",
 }
-
-FILTER_URL = f"{BASE_URL}/filter"
-GENRE_PATH_PREFIX = "genres/"
-
-# The filter form's own option lists, as (value, label) pairs, lifted from
-# /filter. Hardcoded rather than scraped on every launch: they are a fixed
-# part of the site's UI, and a filter bar that can't draw itself until a
-# network round trip lands is worse than one that is occasionally a value
-# out of date. get_genres() *is* fetched, since that list is long and does
-# grow.
-FILTER_TYPES = (("tv", "TV"), ("movie", "Movie"), ("ova", "OVA"),
-                ("ona", "ONA"), ("special", "Special"), ("music", "Music"))
-FILTER_STATUSES = (("completed", "Finished"), ("releasing", "Airing"),
-                   ("not_yet_aired", "Upcoming"))
-FILTER_SEASONS = (("spring", "Spring"), ("summer", "Summer"),
-                  ("fall", "Fall"), ("winter", "Winter"))
-FILTER_LANGUAGES = (("sub", "Sub"), ("dub", "Dub"))
-FILTER_SORTS = (("", "Default"), ("most_viewed", "Most Watched"),
-                ("most_followed", "Most Followed"), ("trending", "Trending"),
-                ("avg_score", "Score"), ("release_date", "Newest"),
-                ("updated_date", "Recently Updated"), ("added_date", "Recently Added"),
-                ("title_az", "Name A-Z"))
 
 _SPOTLIGHT_SPLIT_RE = re.compile(r'<div class="deslide-item">')
 _SPOTLIGHT_RANK_RE = re.compile(r'<div class="desi-sub-text">\s*#(\d+)')
@@ -308,7 +288,6 @@ _TRENDING_ITEM_RE = re.compile(
 # nothing about whether more exist.
 _NEXT_PAGE_MARKER = 'title="Next"'
 
-_GENRE_ITEM_RE = re.compile(r'f-genre-item" data-id="([^"]+)">([^<]+)<')
 # The genre half of a catalog path is the only part not drawn from a fixed
 # list, and it is pasted straight into a URL -- so it is checked against the
 # shape a genre slug actually has rather than merely for its prefix.
@@ -372,54 +351,6 @@ def browse(category: str, page: int, client: httpx.Client) -> CatalogPage:
     if not _is_catalog_path(category):
         raise SourceError(f"Unknown catalog: {category}")
     return _catalog_page(f"{BASE_URL}/{category}", page, client)
-
-
-def filter_browse(
-    client: httpx.Client,
-    page: int = 1,
-    keyword: str = "",
-    type_: str = "",
-    status: str = "",
-    season: str = "",
-    language: str = "",
-    sort: str = "",
-    genres: tuple[str, ...] = (),
-) -> CatalogPage:
-    """The site's own /filter endpoint.
-
-    Preferred over filtering AniList for anything the user is about to
-    *watch*: every result here is by definition present on the source, so a
-    click can't land on "couldn't find a stream". AniList-side filtering
-    stays for tags and for the user's own list status, neither of which this
-    endpoint knows anything about.
-    """
-    params: list[tuple[str, str]] = [
-        (name, value)
-        for name, value in (
-            ("keyword", _search_keyword(keyword) if keyword else ""),
-            ("type", type_),
-            ("status", status),
-            ("season", season),
-            ("language", language),
-            ("sort", sort),
-        )
-        if value
-    ]
-    params.extend(("genre[]", g) for g in genres)
-    return _catalog_page(FILTER_URL, page, client, params=params)
-
-
-def get_genres(client: httpx.Client) -> list[tuple[str, str]]:
-    """Every genre the filter form offers, as (slug, label)."""
-    resp = _get(FILTER_URL, client)
-    seen: set[str] = set()
-    genres: list[tuple[str, str]] = []
-    for slug, label in _GENRE_ITEM_RE.findall(_flatten(resp.text)):
-        if slug in seen:
-            continue
-        seen.add(slug)
-        genres.append((slug, html.unescape(label).strip()))
-    return genres
 
 
 def _parse_spotlight(markup: str) -> list[Spotlight]:

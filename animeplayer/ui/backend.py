@@ -160,7 +160,6 @@ class Backend(QObject):
     anilistAnimeResolveErrored = Signal(str)  # the lookup itself failed (site down, no network, ...)
     anilistGenresLoaded = Signal(list)
     anilistTagsLoaded = Signal(list)
-    filterSearchFinished = Signal(dict)  # {results, page, hasMore} -- AniList-sourced results
     recommendationsFailed = Signal(str)  # recommendations couldn't be built (e.g. not logged in yet)
     # Surprise Me couldn't land on anything. Its own signal because the text is
     # a finished sentence for the user, where anilistAnimeResolveErrored's is a
@@ -180,7 +179,6 @@ class Backend(QObject):
     homeRowFailed = Signal(str, str)   # (row key, message)
     browseFinished = Signal(dict)      # {key, results, page, hasMore} -- a catalog/filter page
     browseFailed = Signal(str)
-    sourceGenresLoaded = Signal(list)  # [{slug, name}] from the source's filter form
     themeChanged = Signal()
     # Everything the detail page shows beside the episode list: the franchise's
     # watch order, related entries, community recommendations and reviews.
@@ -211,7 +209,6 @@ class Backend(QObject):
         self._anilist_public = AniListClient(self._http)
         self._genre_cache: list[str] | None = None
         self._tag_cache: list[str] | None = None
-        self._source_genre_cache: list[dict[str, str]] | None = None
         self._browse_token = 0
         # Rebuilt lazily; dropped whenever the mirrored list is replaced.
         self._anilist_index: "matcher.TitleIndex[AniListStatus] | None" = None
@@ -420,45 +417,11 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, done, self._browse_failed(token)))
 
-    # dict, not "QVariant": a plain JS object arrives through a QVariant slot
-    # as an opaque QJSValue that isn't iterable on the Python side (confirmed
-    # live -- "'PySide6.QtQml.QJSValue' object is not iterable"). Declaring
-    # the parameter as a dict makes Qt convert it to a QVariantMap first.
-    @Slot(dict, int)
-    def browseWithFilters(self, filters: dict[str, Any], page: int) -> None:
-        """One page of the source's /filter endpoint.
-
-        `filters` comes straight from QML as a plain object of the same field
-        names the endpoint uses, so adding a filter control needs no change
-        here.
-        """
-        spec = dict(filters or {})
-        genres = tuple(spec.get("genres") or ())
-        token = self._begin_browse()
-
-        def work() -> source.CatalogPage:
-            return source.filter_browse(
-                self._http,
-                page=max(1, page),
-                keyword=str(spec.get("keyword") or ""),
-                type_=str(spec.get("type") or ""),
-                status=str(spec.get("status") or ""),
-                season=str(spec.get("season") or ""),
-                language=str(spec.get("language") or ""),
-                sort=str(spec.get("sort") or ""),
-                genres=genres,
-            )
-
-        def done(result: source.CatalogPage) -> None:
-            self._emit_browse_page("filter", result, token)
-
-        self._pool.start(_Worker(work, done, self._browse_failed(token)))
-
-    # Browsing is driven by controls the user can change faster than a request
-    # round trip: flipping three filters fires three overlapping requests, and
-    # whichever the site answers last would otherwise win regardless of which
-    # the user actually asked for last. Each request takes a token, and only
-    # the newest one is allowed to report back.
+    # Browsing is driven by controls the user can change faster than a
+    # request round trip: flipping three filters fires three overlapping
+    # requests, and whichever the site answers last would otherwise win
+    # regardless of which the user actually asked for last. Each request takes
+    # a token, and only the newest one is allowed to report back.
     def _begin_browse(self) -> int:
         self._browse_token += 1
         return self._browse_token
@@ -482,21 +445,6 @@ class Backend(QObject):
             }
         )
         self._match_anilist_statuses(list(result.results))
-
-    @Slot()
-    def fetchSourceGenres(self) -> None:
-        if self._source_genre_cache is not None:
-            self.sourceGenresLoaded.emit(self._source_genre_cache)
-            return
-
-        def work() -> list[tuple[str, str]]:
-            return source.get_genres(self._http)
-
-        def done(genres: list[tuple[str, str]]) -> None:
-            self._source_genre_cache = [{"slug": slug, "name": name} for slug, name in genres]
-            self.sourceGenresLoaded.emit(self._source_genre_cache)
-
-        self._pool.start(_Worker(work, done, lambda _msg: None))
 
     # -- AniList-backed genre/tag search --------------------------------------
     # Deliberately separate from the plain title search above: the streaming source's
@@ -628,29 +576,40 @@ class Backend(QObject):
             out.append(m)
         return out
 
-    @Slot(str, list, list, list, list, list, list, list, list, int)
-    def searchByFilters(
-        self,
-        query: str,
-        genres: list,
-        exclude_genres: list,
-        tags: list,
-        exclude_tags: list,
-        status_include: list,
-        status_exclude: list,
-        formats: list,
-        exclude_formats: list,
-        page: int,
-    ) -> None:
+    # dict, not a long positional list: this grew from four filters to ten,
+    # and a ten-argument slot means every new filter is an edit in three
+    # places. QML passes the same field names the AniList client takes.
+    @Slot(dict, int)
+    def searchByFilters(self, filters: dict[str, Any], page: int) -> None:
+        spec = dict(filters or {})
+
+        def as_list(name: str) -> list[str]:
+            return [str(v) for v in (spec.get(name) or [])]
+
+        status_include, status_exclude = as_list("statusInclude"), as_list("statusExclude")
+        token = self._begin_browse()
+
         def work() -> tuple[list[MediaSummary], bool]:
             return self._anilist_public.search_by_filters(
-                query, genres, tags,
-                exclude_genres=exclude_genres, exclude_tags=exclude_tags,
-                formats=formats, exclude_formats=exclude_formats,
+                str(spec.get("keyword") or ""),
+                as_list("genres"),
+                as_list("tags"),
+                exclude_genres=as_list("excludeGenres"),
+                exclude_tags=as_list("excludeTags"),
+                formats=as_list("formats"),
+                exclude_formats=as_list("excludeFormats"),
+                country=str(spec.get("country") or "") or None,
+                min_score=int(spec.get("minScore") or 0) or None,
+                season=str(spec.get("season") or "") or None,
+                season_year=int(spec.get("seasonYear") or 0) or None,
+                statuses=as_list("airingStatus") or None,
+                sort=str(spec.get("sort") or "") or None,
                 page=page,
             )
 
         def done(result: tuple[list[MediaSummary], bool]) -> None:
+            if token != self._browse_token:
+                return
             results, has_more = result
             # Status (Watching/Planning/Completed/... or "not in my list") isn't
             # part of AniList's public catalog filters -- it's this user's own
@@ -659,17 +618,21 @@ class Backend(QObject):
             # than 50 after filtering even though has_more is still true --
             # "Load more" just keeps pulling subsequent catalog pages.
             filtered = self._apply_status_filter(results, status_include, status_exclude)
-            ranked = self._affinity_sorted(filtered)
+            # Only re-rank by affinity when the user hasn't asked for an order.
+            # Sorting their chosen "highest scored first" by genre overlap
+            # instead is the kind of helpfulness that reads as a bug.
+            ranked = filtered if spec.get("sort") else self._affinity_sorted(filtered)
             self._remember_titles(ranked)
-            self.filterSearchFinished.emit(
+            self.browseFinished.emit(
                 {
+                    "key": "anilist",
                     "results": [self._media_summary_to_card(m) for m in ranked],
                     "page": page,
                     "hasMore": has_more,
                 }
             )
 
-        self._pool.start(_Worker(work, done, self.searchFailed.emit))
+        self._pool.start(_Worker(work, done, self._browse_failed(token)))
 
     # How many of the user's own shows to ask AniList about. One request per
     # 50, so this is the knob trading "how much of your taste is considered"
@@ -753,8 +716,9 @@ class Backend(QObject):
                 return
             ranked = sorted(best.values(), key=lambda row: row[0], reverse=True)
             self._remember_titles([m for _w, m, _r in ranked])
-            self.filterSearchFinished.emit(
+            self.browseFinished.emit(
                 {
+                    "key": "recommendations",
                     "results": [self._media_summary_to_card(m, reason) for _w, m, reason in ranked],
                     "page": 1,
                     "hasMore": False,

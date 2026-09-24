@@ -162,7 +162,9 @@ Item {
                     anchors.margins: Kirigami.Units.smallSpacing
                     text: "★ " + card.textOf(card.scoreText)
                     background: Qt.rgba(0, 0, 0, 0.7)
-                    foreground: "#ffd166"
+                    // Themed, not a fixed amber: every colour in the app
+                    // should move when the accent does.
+                    foreground: Kirigami.Theme.neutralTextColor
                 }
 
                 Pill {
@@ -275,8 +277,11 @@ Item {
             maximumLineCount: 2
             elide: Text.ElideRight
             verticalAlignment: Text.AlignTop
-            color: card.hovered ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
-            Behavior on color { ColorAnimation { duration: 120 } }
+            // Not tinted on hover. The poster already lifts, dims and shows
+            // a play button; colouring the title too meant a grid of hovered
+            // cards read as a wall of accent, which is most of what "the
+            // accent is in way too many places" was about.
+            color: Kirigami.Theme.textColor
 
             FontMetrics { id: fontMetrics; font: titleLabel.font }
         }

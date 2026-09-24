@@ -37,6 +37,10 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
+        // A shelf used under someone else's heading (the detail page does
+        // this) passes no heading of its own, and this row would otherwise
+        // still draw its accent bar -- a stray tick floating above the row.
+        visible: row.heading !== "" || row.showSeeAll
 
         // An accent bar beside the heading. Purely decorative, but with seven
         // shelves stacked up it is what makes a heading read as the start of

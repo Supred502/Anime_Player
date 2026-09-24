@@ -227,11 +227,11 @@ Item {
             elide: Text.ElideRight
         }
 
-        Controls.Button {
+        AppButton {
             Layout.topMargin: Kirigami.Units.smallSpacing
             text: "Watch Now"
             icon.name: "media-playback-start-symbolic"
-            highlighted: true
+            accented: true
             onClicked: hero.watchClicked(hero.index)
         }
     }

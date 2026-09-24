@@ -112,8 +112,10 @@ AppWindow {
                     // card click opens it.
                     root.pageStack.push(Qt.resolvedUrl("DetailPage.qml"), {
                         anime: {
-                            slug_id: testMode === "detail2" ? "one-piece-1" : "attack-on-titan-season-2-98",
-                            numeric_id: testMode === "detail2" ? "1" : "98",
+                            slug_id: testMode === "detail2"
+                                ? "rezero-starting-life-in-another-world-season-2-858"
+                                : "attack-on-titan-season-2-98",
+                            numeric_id: testMode === "detail2" ? "858" : "98",
                             title: "Attack on Titan Season 2", poster_url: "https://cdn.noitatnemucod.net/thumbnail/300x400/100/bcd84731a3eda4f4a306250769675065.jpg", kind: "TV", rating: ""
                         }
                     })
@@ -126,6 +128,8 @@ AppWindow {
                 let detail = root.pageStack.get(root.pageStack.depth - 1)
                 if (root.step === 2) {
                     log("loading=" + detail.loading + " pages=" + detail.pageCount
+                        + " rowLength=" + detail.rowLengthFor(13) + "/" + detail.rowLengthFor(20)
+                        + "/" + detail.rowLengthFor(23) + "/" + detail.rowLengthFor(24)
                         + " banner=" + (detail.bannerUrl !== "")
                         + " facts=" + JSON.stringify(detail.headerFacts().map((f) => f.text)))
                     return
@@ -162,16 +166,20 @@ AppWindow {
                     log("scrolled to bottom")
                 } else {
                     browse.filtersOpen = true
-                    browse.filterType = "movie"
-                    browse.filterSort = "avg_score"
-                    browse.toggleGenre("romance")
-                    log("applied filters: movie / score / romance")
+                    browse.filterType = "MOVIE"
+                    browse.filterSort = "SCORE_DESC"
+                    browse.filterCountry = "CN"
+                    browse.filterMinScore = 70
+                    browse.genreStates = { "Action": 1 }
+                    browse.tagStates = { "Male Protagonist": 2 }
+                    browse.reload()
+                    log("applied filters: movie / score / China / >=70 / +Action / -Male Protagonist")
                 }
                 return
             }
             if (root.step === 3) {
                 log("after " + (root.mode === "browse" ? "scroll" : "filter")
-                    + ": " + browse.results.length + " results, filtered=" + browse.filtered
+                    + ": " + browse.results.length + " results, filters=" + browse.filterCount
                     + (browse.results.length > 0 ? ", first=" + browse.results[0].title : "")
                     + (browse.errorMessage !== "" ? " ERROR=" + browse.errorMessage : ""))
             }
