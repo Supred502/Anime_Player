@@ -394,13 +394,13 @@ Kirigami.ScrollablePage {
                 posterUrl: model.poster_url
                 title: model.title
                 // A recommendation says why it's being recommended; anything
-                // else falls back to describing itself. (The source's own
-                // cards carry no score, so that line is the format plus its
-                // runtime rather than an always-empty "· ★".)
+                // else falls back to describing itself. The score is not in
+                // here -- the card draws it as a pill on the poster instead,
+                // which is where every other grid in the app puts it too.
                 subtitle: model.reason !== ""
                     ? model.reason
-                    : [model.kind, model.duration, model.rating ? "\u2605 " + model.rating : ""]
-                        .filter((part) => !!part).join(" · ")
+                    : [model.kind, model.duration].filter((part) => !!part).join(" · ")
+                scoreText: model.rating
                 badgeText: model.anilistLabel !== ""
                     ? model.anilistLabel + (model.anilistProgress > 0 ? " " + model.anilistProgress : "")
                     : ""

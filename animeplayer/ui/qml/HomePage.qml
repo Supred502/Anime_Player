@@ -1,3 +1,12 @@
+// The home page: a featured hero, then the user's own in-progress rows, then
+// the streaming source's own rankings as horizontal shelves.
+//
+// Every row here is a plain JS array rather than a ListModel. A ListModel
+// fixes its role set from the first row appended, and these rows are fed by
+// three different producers (the local watch history, AniList, the source's
+// catalog) -- the mismatch is exactly what used to render the literal word
+// "undefined" across the app. An array of the objects the backend already
+// emits has no roles to get out of step.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
@@ -6,11 +15,33 @@ import org.kde.kirigami as Kirigami
 Kirigami.ScrollablePage {
     id: page
     title: "Home"
+    // The hero runs edge to edge; the padding that would normally inset it
+    // is applied per-row instead (see contentColumn).
+    topPadding: 0
+    leftPadding: 0
+    rightPadding: 0
 
     // True between asking for a random pick and the answer arriving. That
-    // round trip involves an AniList page plus a source lookup, so without
+    // round trip involves a catalog page plus a source lookup, so without
     // this the button looks like it did nothing for a couple of seconds.
     property bool surprising: false
+
+    property var spotlight: []
+    property var continueWatching: []
+    property var watching: []
+    property var planning: []
+
+    // key -> card array, and key -> "loading"/"ready"/"failed". Reassigned
+    // rather than mutated in place: QML only notifies on assignment for
+    // `var` properties, and mutating these left the shelves blank.
+    property var rowData: ({})
+    property var rowState: ({})
+
+    // Assigned once rather than left as a live binding on backend.homeRows():
+    // the row list never changes, and a binding that reads `backend` gets
+    // re-evaluated during teardown after the context property is gone, which
+    // printed an intermittent "Cannot call method 'homeRows' of null" on quit.
+    property var sourceRows: []
 
     actions: [
         Kirigami.Action {
@@ -31,19 +62,39 @@ Kirigami.ScrollablePage {
                 let search = applicationWindow().pageStack.replace(Qt.resolvedUrl("SearchPage.qml"))
                 search.loadRecommendations()
             }
+        },
+        Kirigami.Action {
+            text: "Browse"
+            icon.name: "view-list-details-symbolic"
+            tooltip: "Every catalog, with filters"
+            onTriggered: applicationWindow().pageStack.replace(Qt.resolvedUrl("BrowsePage.qml"))
         }
     ]
 
-    ListModel { id: continueModel }
-    ListModel { id: watchingModel }
-    ListModel { id: planningModel }
-
     Component.onCompleted: {
+        page.sourceRows = backend.homeRows()
         backend.refreshContinueWatching()
         backend.refreshAnilistHomeLists()
+        for (let i = 0; i < page.sourceRows.length; i++) page.setRowState(page.sourceRows[i].key, "loading")
+        backend.refreshHomeFeed()
     }
 
-    function openAnime(entry) {
+    function setRowState(key, state) {
+        let next = Object.assign({}, page.rowState)
+        next[key] = state
+        page.rowState = next
+    }
+
+    function setRowData(key, cards) {
+        let next = Object.assign({}, page.rowData)
+        next[key] = cards
+        page.rowData = next
+    }
+
+    // Everything the source itself served (hero, shelves) already carries a
+    // slug, so it opens straight onto DetailPage with no lookup at all --
+    // unlike an AniList card, which has to be matched to the source first.
+    function openSourceEntry(entry) {
         applicationWindow().pageStack.push(
             Qt.resolvedUrl("DetailPage.qml"),
             {
@@ -59,23 +110,28 @@ Kirigami.ScrollablePage {
         )
     }
 
+    function openCatalog(key, label) {
+        applicationWindow().pageStack.push(
+            Qt.resolvedUrl("BrowsePage.qml"), { startCategory: key, startLabel: label }
+        )
+    }
+
     Connections {
         target: backend
-        function onContinueWatchingChanged(entries) {
-            continueModel.clear()
-            for (let i = 0; i < entries.length; i++) continueModel.append(entries[i])
+        function onContinueWatchingChanged(entries) { page.continueWatching = entries }
+        function onAnilistWatchingChanged(entries) { page.watching = entries }
+        function onAnilistPlanningChanged(entries) { page.planning = entries }
+        function onHomeSpotlightReady(entries) { page.spotlight = entries }
+        function onHomeRowReady(key, cards) {
+            page.setRowData(key, cards)
+            page.setRowState(key, "ready")
         }
-        function onAnilistWatchingChanged(entries) {
-            watchingModel.clear()
-            for (let i = 0; i < entries.length; i++) watchingModel.append(entries[i])
-        }
-        function onAnilistPlanningChanged(entries) {
-            planningModel.clear()
-            for (let i = 0; i < entries.length; i++) planningModel.append(entries[i])
+        function onHomeRowFailed(key, message) {
+            page.setRowState(key, "failed")
         }
         function onAnilistAnimeResolved(result) {
             page.surprising = false
-            page.openAnime(result)
+            page.openSourceEntry(result)
         }
         function onAnilistAnimeResolveFailed(title) {
             page.surprising = false
@@ -91,123 +147,86 @@ Kirigami.ScrollablePage {
         }
     }
 
-    // Shared card-grid section. A plain manual layout rather than
-    // Kirigami.Card -- Card's banner+contentItem composition doesn't respect
-    // explicit sizing in this Kirigami version (see SearchPage.qml).
-    component Section: ColumnLayout {
-        id: root
-        property alias model: repeater.model
-        property string heading
-        signal cardClicked(int index)
-        // Filled in per row -- each row describes a different kind of entry,
-        // so the card text comes from the section rather than from one
-        // hardcoded model role.
-        property var subtitleFor: (entry) => ""
-        property var fractionFor: (entry) => 0
-
-        visible: repeater.count > 0
-        spacing: Kirigami.Units.smallSpacing
-
-        Kirigami.Heading {
-            level: 2
-            text: root.heading
-        }
-
-        GridLayout {
-            id: sectionGrid
-            Layout.fillWidth: true
-            readonly property int idealCellWidth: Kirigami.Units.gridUnit * 11
-            // page.availableWidth, not page.width: the page is wider than the
-            // area its content actually gets (padding plus the scrollbar), and
-            // measuring the page itself pushed the last column of every row
-            // off the right edge. Not this layout's own width either -- that
-            // is derived from these cells, so reading it here would be
-            // circular, and the grid settled at one column per row.
-            columns: Math.max(1, Math.floor(page.availableWidth / idealCellWidth))
-            readonly property real cellWidth: (page.availableWidth - (columns - 1) * columnSpacing) / columns
-            rowSpacing: Kirigami.Units.largeSpacing
-            columnSpacing: Kirigami.Units.largeSpacing
-
-            Repeater {
-                id: repeater
-                delegate: AnimeCard {
-                    required property int index
-                    required property var model
-
-                    Layout.preferredWidth: sectionGrid.cellWidth
-                    // Measured from the column width, not from this card's own
-                    // width -- see AnimeCard's note on heightForWidth.
-                    Layout.preferredHeight: heightForWidth(sectionGrid.cellWidth)
-                    posterUrl: model.poster_url || ""
-                    title: model.title
-                    subtitle: root.subtitleFor(model)
-                    watchedFraction: root.fractionFor(model)
-                    onClicked: root.cardClicked(index)
-                }
-            }
-        }
-    }
-
     ColumnLayout {
         id: contentColumn
         width: page.availableWidth
-        spacing: Kirigami.Units.largeSpacing * 2
+        spacing: Kirigami.Units.gridUnit
 
-        Section {
-            // Set here rather than inside the Section declaration: an inline
-            // component's own Layout.fillWidth doesn't reach its instances,
-            // which left every row sized to the width of its heading text.
+        SpotlightBanner {
             Layout.fillWidth: true
-            heading: "Continue Watching"
-            model: continueModel
-            subtitleFor: (entry) => "Episode " + entry.episode_number
-            // The poster's resume bar needs a fraction, and an entry whose
-            // duration was never recorded would otherwise divide by zero.
-            fractionFor: (entry) => entry.duration_seconds > 0
-                ? entry.position_seconds / entry.duration_seconds : 0
-            onCardClicked: (index) => page.openAnime(continueModel.get(index))
+            model: page.spotlight
+            onWatchClicked: (index) => page.openSourceEntry(page.spotlight[index])
         }
 
-        Section {
-            // Set here rather than inside the Section declaration: an inline
-            // component's own Layout.fillWidth doesn't reach its instances,
-            // which left every row sized to the width of its heading text.
+        // One inset applied to everything below the hero, rather than page
+        // padding: the hero is meant to bleed to the window edges and the
+        // shelves are not.
+        ColumnLayout {
             Layout.fillWidth: true
-            heading: "Watching"
-            model: watchingModel
-            // "Episode 0" was what an unstarted entry used to read as, which
-            // says the opposite of what it means.
-            subtitleFor: (entry) => entry.progress > 0 ? "Episode " + entry.progress + " watched"
-                                                       : "Not started yet"
-            onCardClicked: (index) => {
-                let entry = watchingModel.get(index)
-                backend.openAnilistAnime(entry.anilist_id, entry.title)
+            Layout.leftMargin: Kirigami.Units.largeSpacing
+            Layout.rightMargin: Kirigami.Units.largeSpacing
+            Layout.bottomMargin: Kirigami.Units.largeSpacing
+            spacing: Kirigami.Units.gridUnit * 1.5
+
+            PosterRow {
+                Layout.fillWidth: true
+                heading: "Continue Watching"
+                model: page.continueWatching
+                subtitleFor: (entry) => "Episode " + entry.episode_number
+                // The poster's resume bar needs a fraction, and an entry whose
+                // duration was never recorded would otherwise divide by zero.
+                fractionFor: (entry) => entry.duration_seconds > 0
+                    ? entry.position_seconds / entry.duration_seconds : 0
+                onCardClicked: (index) => page.openSourceEntry(page.continueWatching[index])
             }
-        }
 
-        Section {
-            // Set here rather than inside the Section declaration: an inline
-            // component's own Layout.fillWidth doesn't reach its instances,
-            // which left every row sized to the width of its heading text.
-            Layout.fillWidth: true
-            heading: "Planning to Watch"
-            model: planningModel
-            // Every entry in this row has progress 0 by definition, so the
-            // old subtitle was a column of bare "0"s.
-            subtitleFor: (entry) => "On your plan-to-watch list"
-            onCardClicked: (index) => {
-                let entry = planningModel.get(index)
-                backend.openAnilistAnime(entry.anilist_id, entry.title)
+            PosterRow {
+                Layout.fillWidth: true
+                heading: "Watching"
+                model: page.watching
+                // "Episode 0" was what an unstarted entry used to read as,
+                // which says the opposite of what it means.
+                subtitleFor: (entry) => entry.progress > 0 ? "Episode " + entry.progress + " watched"
+                                                           : "Not started yet"
+                onCardClicked: (index) => backend.openAnilistAnime(
+                    page.watching[index].anilist_id, page.watching[index].title)
             }
-        }
 
-        Kirigami.PlaceholderMessage {
-            Layout.fillWidth: true
-            Layout.topMargin: Kirigami.Units.gridUnit * 4
-            visible: continueModel.count === 0 && watchingModel.count === 0 && planningModel.count === 0
-            text: "Nothing here yet"
-            explanation: "Search for an anime, or log in to AniList in Settings to sync your lists"
-            icon.name: "video-television"
+            Repeater {
+                model: page.sourceRows
+
+                PosterRow {
+                    required property var modelData
+
+                    Layout.fillWidth: true
+                    heading: modelData.label
+                    model: page.rowData[modelData.key] || []
+                    loading: page.rowState[modelData.key] === "loading"
+                    // Trending and Top Airing are rankings, and the number is
+                    // the whole point of them; Latest Completed is a list that
+                    // happens to be in date order, where numbering it would
+                    // claim an order it doesn't have.
+                    ranked: modelData.key === "trending" || modelData.key === "top-airing"
+                    showSeeAll: true
+                    emptyHint: page.rowState[modelData.key] === "failed"
+                        ? "Couldn't load this row." : ""
+                    subtitleFor: (entry) => [entry.kind, entry.duration]
+                        .filter((part) => !!part).join(" · ")
+                    onCardClicked: (index) => page.openSourceEntry(page.rowData[modelData.key][index])
+                    onSeeAllClicked: page.openCatalog(modelData.catalog, modelData.label)
+                }
+            }
+
+            PosterRow {
+                Layout.fillWidth: true
+                heading: "Planning to Watch"
+                model: page.planning
+                // Every entry in this row has progress 0 by definition, so the
+                // old subtitle was a column of bare "0"s.
+                subtitleFor: (entry) => "On your plan-to-watch list"
+                onCardClicked: (index) => backend.openAnilistAnime(
+                    page.planning[index].anilist_id, page.planning[index].title)
+            }
         }
     }
 }

@@ -42,6 +42,11 @@ Kirigami.ApplicationWindow {
                 onTriggered: root.pageStack.replace(Qt.resolvedUrl("HomePage.qml"))
             },
             Kirigami.Action {
+                text: "Browse"
+                icon.name: "view-list-details-symbolic"
+                onTriggered: root.pageStack.replace(Qt.resolvedUrl("BrowsePage.qml"))
+            },
+            Kirigami.Action {
                 text: "Search"
                 icon.name: "edit-find-symbolic"
                 onTriggered: root.pageStack.replace(Qt.resolvedUrl("SearchPage.qml"))

@@ -142,6 +142,17 @@ class Backend(QObject):
     nextEpisodeLoading = Signal(int, float)  # (episode_id, episode_number) -- fired before streamReady on auto-next
     noNextEpisode = Signal()  # auto-next requested but the current episode is the last one known
 
+    # Home feed, straight from the streaming source's own rankings. One
+    # signal per row rather than one for the whole page: each row is its own
+    # request, so emitting them separately lets the page draw immediately and
+    # fill in as they land instead of staying blank until the slowest one does.
+    homeSpotlightReady = Signal(list)  # [{slug_id, title, banner_url, description, ...}]
+    homeRowReady = Signal(str, list)   # (row key, cards)
+    homeRowFailed = Signal(str, str)   # (row key, message)
+    browseFinished = Signal(dict)      # {key, results, page, hasMore} -- a catalog/filter page
+    browseFailed = Signal(str)
+    sourceGenresLoaded = Signal(list)  # [{slug, name}] from the source's filter form
+
     remoteServerFailed = Signal(str)  # the phone remote couldn't start; the app itself is fine
     remoteCommand = Signal(str, "QVariant")  # (cmd, args) from the phone remote -- see remote/server.py
 
@@ -165,6 +176,7 @@ class Backend(QObject):
         self._anilist_public = AniListClient(self._http)
         self._genre_cache: list[str] | None = None
         self._tag_cache: list[str] | None = None
+        self._source_genre_cache: list[dict[str, str]] | None = None
         # AniList id -> every name AniList knows for it. Finding a show on the
         # streaming source needs all of them, not just the one on the card
         # (see anilist/matcher.py), but a card only carries its display title.
@@ -244,6 +256,163 @@ class Backend(QObject):
                 self._match_anilist_statuses(results)
 
         self._pool.start(_Worker(work, done, self.searchFailed.emit))
+
+    # -- Home feed / catalog browsing --------------------------------------
+    #
+    # All of this reads the streaming source's own rankings rather than
+    # AniList's. Deliberate: these rows exist to be clicked straight into
+    # playback, and every entry the source ranks is by definition present on
+    # the source, so a click here can never land on "couldn't find a stream"
+    # the way an AniList-sourced card can.
+
+    # The rows the home page stacks, in order, under the hero and the user's
+    # own Continue Watching / Watching rows. Fewer than the source publishes
+    # (see hianime.CATALOGS) -- the rest are reachable through Browse, and a
+    # home page that scrolls forever is just a catalog with extra steps.
+    _HOME_ROWS = ("trending", "top-airing", "most-popular", "recently-updated",
+                  "most-favorite", "latest-completed", "top-upcoming")
+    # Trending is the one row with no catalog page of its own -- it exists
+    # only on the site's home page. So it needs both its own label and a
+    # stand-in catalog for "See all" to open, and refreshHomeFeed fills it
+    # from the home request instead of starting a catalog worker for it.
+    _HOME_ONLY_ROW = "trending"
+    _HOME_ROW_LABELS = {"trending": "Trending"}
+    _HOME_ROW_CATALOG = {"trending": "most-popular"}
+
+    @Slot(result=list)
+    def homeRows(self) -> list[dict[str, str]]:
+        """The home page's row list, so the page doesn't hardcode an order
+        the backend also has to know."""
+        return [
+            {
+                "key": key,
+                "label": self._HOME_ROW_LABELS.get(key) or source.CATALOGS[key],
+                "catalog": self._HOME_ROW_CATALOG.get(key, key),
+            }
+            for key in self._HOME_ROWS
+        ]
+
+    @Slot(result=list)
+    def catalogs(self) -> list[dict[str, str]]:
+        """Every browsable catalog, for the Browse page's category picker."""
+        return [{"key": key, "label": label} for key, label in source.CATALOGS.items()]
+
+    @Slot()
+    def refreshHomeFeed(self) -> None:
+        """Kicks off the hero carousel and every home row at once.
+
+        Each row is an independent worker, so a row whose request fails or
+        hangs costs only that row -- an earlier single-request design meant
+        one slow catalog held the whole page blank.
+        """
+        def highlights() -> tuple[list[source.Spotlight], list[source.SearchResult]]:
+            return source.get_home_highlights(self._http)
+
+        def highlights_done(
+            feed: tuple[list[source.Spotlight], list[source.SearchResult]]
+        ) -> None:
+            spotlight, trending = feed
+            self.homeSpotlightReady.emit([self._spotlight_to_card(s) for s in spotlight])
+            self.homeRowReady.emit(
+                "trending", [self._search_result_to_card(r) for r in trending]
+            )
+
+        def highlights_failed(message: str) -> None:
+            self.homeRowFailed.emit("trending", message)
+
+        self._pool.start(_Worker(highlights, highlights_done, highlights_failed))
+
+        for key in self._HOME_ROWS:
+            if key != self._HOME_ONLY_ROW:
+                self._start_home_row(key)
+
+    def _start_home_row(self, key: str) -> None:
+        # Bound as default arguments rather than closed over: every row shares
+        # this one function, and a plain closure over `key` would have all of
+        # them report under whichever key the loop finished on.
+        def work(category: str = key) -> source.CatalogPage:
+            return source.browse(category, 1, self._http)
+
+        def done(page: source.CatalogPage, row: str = key) -> None:
+            self.homeRowReady.emit(
+                row, [self._search_result_to_card(r) for r in page.results]
+            )
+
+        def failed(message: str, row: str = key) -> None:
+            self.homeRowFailed.emit(row, message)
+
+        self._pool.start(_Worker(work, done, failed))
+
+    @Slot(str, int)
+    def browseCatalog(self, category: str, page: int) -> None:
+        """One page of a named catalog, for the Browse page's infinite scroll."""
+        def work() -> source.CatalogPage:
+            return source.browse(category, max(1, page), self._http)
+
+        def done(result: source.CatalogPage) -> None:
+            self._emit_browse_page(category, result)
+
+        self._pool.start(_Worker(work, done, self.browseFailed.emit))
+
+    # dict, not "QVariant": a plain JS object arrives through a QVariant slot
+    # as an opaque QJSValue that isn't iterable on the Python side (confirmed
+    # live -- "'PySide6.QtQml.QJSValue' object is not iterable"). Declaring
+    # the parameter as a dict makes Qt convert it to a QVariantMap first.
+    @Slot(dict, int)
+    def browseWithFilters(self, filters: dict[str, Any], page: int) -> None:
+        """One page of the source's /filter endpoint.
+
+        `filters` comes straight from QML as a plain object of the same field
+        names the endpoint uses, so adding a filter control needs no change
+        here.
+        """
+        spec = dict(filters or {})
+        genres = tuple(spec.get("genres") or ())
+
+        def work() -> source.CatalogPage:
+            return source.filter_browse(
+                self._http,
+                page=max(1, page),
+                keyword=str(spec.get("keyword") or ""),
+                type_=str(spec.get("type") or ""),
+                status=str(spec.get("status") or ""),
+                season=str(spec.get("season") or ""),
+                language=str(spec.get("language") or ""),
+                sort=str(spec.get("sort") or ""),
+                genres=genres,
+            )
+
+        def done(result: source.CatalogPage) -> None:
+            self._emit_browse_page("filter", result)
+
+        self._pool.start(_Worker(work, done, self.browseFailed.emit))
+
+    def _emit_browse_page(self, key: str, result: source.CatalogPage) -> None:
+        self.browseFinished.emit(
+            {
+                "key": key,
+                "results": [self._search_result_to_card(r) for r in result.results],
+                "page": result.page,
+                "hasMore": result.has_more,
+            }
+        )
+        if self._anilist_client is not None:
+            self._match_anilist_statuses(list(result.results))
+
+    @Slot()
+    def fetchSourceGenres(self) -> None:
+        if self._source_genre_cache is not None:
+            self.sourceGenresLoaded.emit(self._source_genre_cache)
+            return
+
+        def work() -> list[tuple[str, str]]:
+            return source.get_genres(self._http)
+
+        def done(genres: list[tuple[str, str]]) -> None:
+            self._source_genre_cache = [{"slug": slug, "name": name} for slug, name in genres]
+            self.sourceGenresLoaded.emit(self._source_genre_cache)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
 
     # -- AniList-backed genre/tag search --------------------------------------
     # Deliberately separate from the plain title search above: the streaming source's
@@ -332,6 +501,26 @@ class Backend(QObject):
     @classmethod
     def _search_result_to_card(cls, r: source.SearchResult) -> dict[str, Any]:
         return cls._card(**asdict(r))
+
+    @staticmethod
+    def _spotlight_to_card(s: source.Spotlight) -> dict[str, Any]:
+        # Not run through _card(): a hero is a different shape from a poster
+        # card (wide banner, synopsis) and feeds its own model, so forcing it
+        # into the card field set would only add nine empty keys.
+        return {
+            "slug_id": s.slug_id,
+            "numeric_id": s.numeric_id,
+            "title": s.title,
+            "japanese_title": s.japanese_title,
+            "banner_url": s.banner_url,
+            "description": s.description,
+            "kind": s.kind,
+            "duration": s.duration,
+            "released": s.released,
+            "sub_count": s.sub_count,
+            "dub_count": s.dub_count,
+            "rank": s.rank,
+        }
 
     _NOT_IN_LIST = "NOT_IN_LIST"  # synthetic status for the "not in my list" filter chip
 
@@ -605,8 +794,10 @@ class Backend(QObject):
                 self._current_anime["has_filler_data"] = any(e.filler for e in episodes)
                 self._current_anime["episodes"] = episodes
                 self._maybe_fetch_filler_fallback(new_slug_id)
-            if self._anilist_client is not None:
-                self._resolve_current_anime_status(new_slug_id, title)
+            # Unconditional: what this fills in is public AniList data (see
+            # _resolve_current_anime_status), and gating it on being logged in
+            # meant a logged-out detail page showed a title and nothing else.
+            self._resolve_current_anime_status(new_slug_id, title)
 
         self._pool.start(_Worker(work, done, self.episodesFailed.emit))
 
@@ -1315,12 +1506,15 @@ class Backend(QObject):
         self._pool.start(_Worker(work, done, lambda _msg: None))
 
     def _resolve_current_anime_status(self, slug_id: str, title: str) -> None:
-        client = self._anilist_client
-        if client is None:
-            return
-
+        # The unauthenticated client, deliberately. Everything this feeds --
+        # the score, genres, synopsis and key art on the detail page, plus the
+        # MAL id the filler and skip-time lookups need -- is public AniList
+        # data. This used to return early when nobody was logged in, which
+        # left a logged-out user staring at a bare title and a grid of episode
+        # numbers. Only the user's *own* list status needs the login, and that
+        # comes from the local mirror of their list below.
         def work() -> tuple[MediaSummary | None, AniListStatus | None]:
-            summary = matcher.resolve_media_summary(title, client, self._db)
+            summary = matcher.resolve_media_summary(title, self._anilist_public, self._db)
             status = self._db.get_anilist_status(summary.id) if summary is not None else None
             return summary, status
 
@@ -1349,6 +1543,7 @@ class Backend(QObject):
                         "episodes": summary.episodes or 0,
                         "description": _strip_html(summary.description or ""),
                         "cover_url": summary.cover_url or "",
+                        "banner_url": summary.banner_url or "",
                     }
                 )
 

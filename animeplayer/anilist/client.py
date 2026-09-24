@@ -52,6 +52,7 @@ _MEDIA_FIELDS = """
     title { romaji english }
     synonyms
     coverImage { large }
+    bannerImage
     averageScore
     popularity
     genres
@@ -229,6 +230,10 @@ class MediaSummary:
     title: str  # primary display title (english, falling back to romaji)
     titles: tuple[str, ...]  # romaji, english, synonyms -- used for title matching
     cover_url: str | None
+    # Wide key art, for the detail page's header. Often null -- AniList only
+    # has one for the better-known entries, so anything using it needs a
+    # fallback to the cover.
+    banner_url: str | None
     average_score: int | None  # 0-100, AniList's own scale
     popularity: int
     genres: tuple[str, ...]
@@ -259,6 +264,7 @@ def _media_summary_of(media: dict) -> MediaSummary:
         title=_primary_title(media),
         titles=_titles_of(media),
         cover_url=(media.get("coverImage") or {}).get("large"),
+        banner_url=media.get("bannerImage"),
         average_score=media.get("averageScore"),
         popularity=media.get("popularity") or 0,
         genres=tuple(media.get("genres") or []),

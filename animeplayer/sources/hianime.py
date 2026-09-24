@@ -72,8 +72,11 @@ _CARD_NAME_RE = re.compile(
 _CARD_POSTER_RE = re.compile(r'<img\s+src="([^"]+)"\s+class="film-poster-img"')
 _CARD_KIND_RE = re.compile(r'<span class="fdi-item">([^<]*)</span>')
 _CARD_DURATION_RE = re.compile(r'<span class="fdi-item fdi-duration">([^<]*)</span>')
-_CARD_SUB_COUNT_RE = re.compile(r'tick-item tick-sub">.*?(\d+)</div>')
-_CARD_DUB_COUNT_RE = re.compile(r'tick-item tick-dub">.*?(\d+)</div>')
+# The trailing \s* matters: the poster cards close these straight after the
+# number, but the spotlight hero renders the same markup with a space before
+# </div>, so a pattern tuned to the cards silently read every hero as sub=0.
+_CARD_SUB_COUNT_RE = re.compile(r'tick-item tick-sub">.*?(\d+)\s*</div>')
+_CARD_DUB_COUNT_RE = re.compile(r'tick-item tick-dub">.*?(\d+)\s*</div>')
 _TRAILING_ID_RE = re.compile(r"-(\d+)$")
 
 # hianime's search does not tokenise punctuation: searching its *own* title
@@ -195,14 +198,16 @@ def _search_keyword(query: str) -> str:
     return _QUERY_WS_RE.sub(" ", _QUERY_PUNCT_RE.sub(" ", query)).strip()
 
 
-def search(query: str, client: httpx.Client) -> list[SearchResult]:
-    """Search hianime.at for anime matching `query`."""
-    resp = _get(SEARCH_URL, client, params={"keyword": _search_keyword(query)})
-    page = resp.text.split(_SIDEBAR_MARKER)[0]
+def _parse_cards(markup: str) -> list[SearchResult]:
+    """Parses the site's standard poster-card grid (``flw-item``).
 
+    The same markup backs search results, every catalog page (most-popular,
+    top-airing, ...) and the filter endpoint, so all of them come through
+    here rather than each growing its own copy of these regexes.
+    """
     results: list[SearchResult] = []
     seen: set[str] = set()
-    for block in _CARD_SPLIT_RE.split(page)[1:]:
+    for block in _CARD_SPLIT_RE.split(markup)[1:]:
         flat = _flatten(block)
         name_match = _CARD_NAME_RE.search(flat)
         if not name_match:
@@ -226,6 +231,271 @@ def search(query: str, client: httpx.Client) -> list[SearchResult]:
             )
         )
     return results
+
+
+def search(query: str, client: httpx.Client) -> list[SearchResult]:
+    """Search hianime.at for anime matching `query`."""
+    resp = _get(SEARCH_URL, client, params={"keyword": _search_keyword(query)})
+    return _parse_cards(resp.text.split(_SIDEBAR_MARKER)[0])
+
+
+# -- Catalog browsing ------------------------------------------------------
+#
+# The site publishes the same rankings its own home page is built from as
+# plain paginated pages of the standard card grid, so "Top Airing" and
+# friends need no API and no AniList round trip -- one GET and _parse_cards.
+# Every path below was confirmed live to return a full grid; the ones that
+# look like they should exist but don't (/completed, /recently-added,
+# /genre/<x>) are deliberately absent -- this site spells them
+# /latest-completed, /new-anime and /genres/<x>.
+
+# Ordered: this is also the order the home page stacks its rows in.
+CATALOGS: dict[str, str] = {
+    "top-airing": "Top Airing",
+    "most-popular": "Most Popular",
+    "most-favorite": "Most Favorite",
+    "latest-completed": "Latest Completed",
+    "recently-updated": "Latest Episodes",
+    "new-anime": "New on HiAnime",
+    "top-upcoming": "Top Upcoming",
+    "subbed-anime": "Recently Subbed",
+    "dubbed-anime": "Recently Dubbed",
+    "movie": "Movies",
+    "tv": "TV Series",
+    "ova": "OVAs",
+    "ona": "ONAs",
+    "special": "Specials",
+}
+
+FILTER_URL = f"{BASE_URL}/filter"
+GENRE_PATH_PREFIX = "genres/"
+
+# The filter form's own option lists, as (value, label) pairs, lifted from
+# /filter. Hardcoded rather than scraped on every launch: they are a fixed
+# part of the site's UI, and a filter bar that can't draw itself until a
+# network round trip lands is worse than one that is occasionally a value
+# out of date. get_genres() *is* fetched, since that list is long and does
+# grow.
+FILTER_TYPES = (("tv", "TV"), ("movie", "Movie"), ("ova", "OVA"),
+                ("ona", "ONA"), ("special", "Special"), ("music", "Music"))
+FILTER_STATUSES = (("completed", "Finished"), ("releasing", "Airing"),
+                   ("not_yet_aired", "Upcoming"))
+FILTER_SEASONS = (("spring", "Spring"), ("summer", "Summer"),
+                  ("fall", "Fall"), ("winter", "Winter"))
+FILTER_LANGUAGES = (("sub", "Sub"), ("dub", "Dub"))
+FILTER_SORTS = (("", "Default"), ("most_viewed", "Most Watched"),
+                ("most_followed", "Most Followed"), ("trending", "Trending"),
+                ("avg_score", "Score"), ("release_date", "Newest"),
+                ("updated_date", "Recently Updated"), ("added_date", "Recently Added"),
+                ("title_az", "Name A-Z"))
+
+_SPOTLIGHT_SPLIT_RE = re.compile(r'<div class="deslide-item">')
+_SPOTLIGHT_RANK_RE = re.compile(r'<div class="desi-sub-text">\s*#(\d+)')
+_SPOTLIGHT_TITLE_RE = re.compile(r'desi-head-title[^>]*data-jname="([^"]*)"[^>]*>\s*([^<]+)')
+_SPOTLIGHT_BANNER_RE = re.compile(r'<img class="film-poster-img"\s+src="([^"]+)"')
+_SPOTLIGHT_DESC_RE = re.compile(r'<div class="desi-description">\s*(.*?)\s*</div>')
+_SPOTLIGHT_DETAIL_RE = re.compile(r'href="[^"]*?/([^"/?]+)"\s+class="btn btn-secondary')
+_SCD_ITEM_RE = re.compile(r'<div class="scd-item[^"]*">\s*(?:<i[^>]*></i>)?\s*([^<]*?)\s*<')
+
+_TRENDING_ITEM_RE = re.compile(
+    r'<div class="number">\s*<span>(\d+)</span>.*?data-jname="([^"]*)">([^<]*)<.*?'
+    r'href="[^"]*?/([^"/?]+)" class="film-poster".*?<img src="([^"]+)"',
+    re.S,
+)
+
+# "Next" rather than counting page numbers: the paginator only ever renders a
+# window of three around the current page, so the page-number links say
+# nothing about whether more exist.
+_NEXT_PAGE_MARKER = 'title="Next"'
+
+_GENRE_ITEM_RE = re.compile(r'f-genre-item" data-id="([^"]+)">([^<]+)<')
+# The genre half of a catalog path is the only part not drawn from a fixed
+# list, and it is pasted straight into a URL -- so it is checked against the
+# shape a genre slug actually has rather than merely for its prefix.
+_GENRE_SLUG_RE = re.compile(r"[a-z0-9-]+$")
+
+
+def _is_catalog_path(category: str) -> bool:
+    if category in CATALOGS:
+        return True
+    prefix, _, slug = category.partition("/")
+    return prefix + "/" == GENRE_PATH_PREFIX and _GENRE_SLUG_RE.fullmatch(slug) is not None
+
+
+@dataclass(frozen=True, slots=True)
+class Spotlight:
+    """A featured entry from the home page's hero carousel.
+
+    Distinct from SearchResult because the hero is the one place the site
+    hands over a wide banner image and a synopsis -- a poster card carries
+    neither, and a hero built from a 2:3 poster looks like a mistake.
+    """
+
+    slug_id: str
+    numeric_id: str
+    title: str
+    japanese_title: str
+    banner_url: str
+    description: str
+    kind: str  # "TV", "Movie", ...
+    duration: str  # e.g. "24m"
+    released: str  # e.g. "Apr 7, 2013"
+    sub_count: int
+    dub_count: int
+    rank: int  # its position in the carousel, as the site numbers it
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogPage:
+    results: tuple[SearchResult, ...]
+    page: int
+    has_more: bool
+
+
+def _catalog_page(url: str, page: int, client: httpx.Client, **kwargs) -> CatalogPage:
+    # A list of pairs rather than a dict: the filter endpoint takes genre[]
+    # once per selected genre, which a mapping cannot express.
+    params = [*kwargs.pop("params", ()), ("page", str(page))]
+    resp = _get(url, client, params=params, **kwargs)
+    # Split off the sidebar first: it carries its own "Top 10" card grid,
+    # which would otherwise land in the results as ten phantom entries.
+    body = resp.text.split(_SIDEBAR_MARKER)[0]
+    return CatalogPage(
+        results=tuple(_parse_cards(body)),
+        page=page,
+        has_more=_NEXT_PAGE_MARKER in resp.text,
+    )
+
+
+def browse(category: str, page: int, client: httpx.Client) -> CatalogPage:
+    """One page of a named catalog (a CATALOGS key, or "genres/<slug>")."""
+    if not _is_catalog_path(category):
+        raise SourceError(f"Unknown catalog: {category}")
+    return _catalog_page(f"{BASE_URL}/{category}", page, client)
+
+
+def filter_browse(
+    client: httpx.Client,
+    page: int = 1,
+    keyword: str = "",
+    type_: str = "",
+    status: str = "",
+    season: str = "",
+    language: str = "",
+    sort: str = "",
+    genres: tuple[str, ...] = (),
+) -> CatalogPage:
+    """The site's own /filter endpoint.
+
+    Preferred over filtering AniList for anything the user is about to
+    *watch*: every result here is by definition present on the source, so a
+    click can't land on "couldn't find a stream". AniList-side filtering
+    stays for tags and for the user's own list status, neither of which this
+    endpoint knows anything about.
+    """
+    params: list[tuple[str, str]] = [
+        (name, value)
+        for name, value in (
+            ("keyword", _search_keyword(keyword) if keyword else ""),
+            ("type", type_),
+            ("status", status),
+            ("season", season),
+            ("language", language),
+            ("sort", sort),
+        )
+        if value
+    ]
+    params.extend(("genre[]", g) for g in genres)
+    return _catalog_page(FILTER_URL, page, client, params=params)
+
+
+def get_genres(client: httpx.Client) -> list[tuple[str, str]]:
+    """Every genre the filter form offers, as (slug, label)."""
+    resp = _get(FILTER_URL, client)
+    seen: set[str] = set()
+    genres: list[tuple[str, str]] = []
+    for slug, label in _GENRE_ITEM_RE.findall(_flatten(resp.text)):
+        if slug in seen:
+            continue
+        seen.add(slug)
+        genres.append((slug, html.unescape(label).strip()))
+    return genres
+
+
+def _parse_spotlight(markup: str) -> list[Spotlight]:
+    items: list[Spotlight] = []
+    for index, block in enumerate(_SPOTLIGHT_SPLIT_RE.split(markup)[1:], start=1):
+        flat = _flatten(block)
+        title_match = _SPOTLIGHT_TITLE_RE.search(flat)
+        detail_match = _SPOTLIGHT_DETAIL_RE.search(flat)
+        if not title_match or not detail_match:
+            continue
+        slug_id = detail_match.group(1)
+        id_match = _TRAILING_ID_RE.search(slug_id)
+        if not id_match:
+            continue
+        # The detail strip is positional: format, then runtime, then air date.
+        # Reading it by position rather than by pattern because each item is
+        # the same anonymous <div class="scd-item">, and an entry missing one
+        # (upcoming shows have no runtime) simply has a shorter strip.
+        details = [d for d in _SCD_ITEM_RE.findall(flat) if d]
+        rank_match = _SPOTLIGHT_RANK_RE.search(flat)
+        items.append(
+            Spotlight(
+                slug_id=slug_id,
+                numeric_id=id_match.group(1),
+                title=html.unescape(title_match.group(2)).strip(),
+                japanese_title=html.unescape(title_match.group(1)).strip(),
+                banner_url=_first(_SPOTLIGHT_BANNER_RE, flat),
+                description=html.unescape(_first(_SPOTLIGHT_DESC_RE, flat)),
+                kind=details[0] if details else "",
+                duration=details[1] if len(details) > 1 else "",
+                released=details[2] if len(details) > 2 else "",
+                sub_count=int(_first(_CARD_SUB_COUNT_RE, flat, "0")),
+                dub_count=int(_first(_CARD_DUB_COUNT_RE, flat, "0")),
+                rank=int(rank_match.group(1)) if rank_match else index,
+            )
+        )
+    return items
+
+
+def _parse_trending(markup: str) -> list[SearchResult]:
+    # Trending is a different, sparser card than the rest of the site: rank,
+    # title and poster, with no format/runtime/sub-dub strip at all. The
+    # missing fields are left empty rather than guessed, and the rank is
+    # dropped because it is just the position -- the row renders it from the
+    # index rather than carrying a number that could disagree with it.
+    results: list[SearchResult] = []
+    for _rank, _jname, title, slug_id, poster in _TRENDING_ITEM_RE.findall(markup):
+        id_match = _TRAILING_ID_RE.search(slug_id)
+        if not id_match:
+            continue
+        results.append(
+            SearchResult(
+                slug_id=slug_id,
+                numeric_id=id_match.group(1),
+                title=html.unescape(title).strip(),
+                poster_url=poster,
+                kind="",
+                rating="",
+                duration="",
+                sub_count=0,
+                dub_count=0,
+            )
+        )
+    return results
+
+
+def get_home_highlights(client: httpx.Client) -> tuple[list[Spotlight], list[SearchResult]]:
+    """The home page's hero carousel and its Trending row, from one request.
+
+    These two are the only parts of the home page that exist nowhere else on
+    the site; every other row it shows has its own catalog page (see
+    CATALOGS), which paginates and so makes a better "see all".
+    """
+    resp = _get(f"{BASE_URL}/home", client)
+    body = resp.text.split(_SIDEBAR_MARKER)[0]
+    return _parse_spotlight(body), _parse_trending(body)
 
 
 def get_episodes(slug_id: str, client: httpx.Client) -> list[Episode]:

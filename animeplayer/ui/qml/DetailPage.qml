@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Effects
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
 import org.kde.kirigami as Kirigami
@@ -16,6 +17,21 @@ Kirigami.ScrollablePage {
     property var localProgress: null
     property bool dub: false
     property var anilistDetails: null // {average_score, genres, format, episodes, description, cover_url}
+
+    // The header bleeds to the window edges, so the inset the page would
+    // normally apply lives on the content items below it -- and the grids
+    // that size their own columns need to know what width that leaves.
+    // Not "contentWidth": that name is already a FINAL property on
+    // Controls.Control, and shadowing it makes the whole page fail to load
+    // with "Cannot override FINAL property".
+    readonly property real bodyWidth: width - Kirigami.Units.largeSpacing * 2
+
+    function hasFillerEpisodes() {
+        for (let i = 0; i < pageEpisodesModel.count; i++) {
+            if (pageEpisodesModel.get(i).filler) return true
+        }
+        return false
+    }
 
     readonly property int pageSize: 100
     property int currentPage: 0
@@ -94,6 +110,39 @@ Kirigami.ScrollablePage {
         return episodesModel.count > 0 ? episodesModel.get(0).number : -1
     }
 
+    // The header's chip strip. Built as data rather than as a column of
+    // conditionally-visible Labels because what's known about a show arrives
+    // in two waves: the card that opened this page knows its format, and the
+    // AniList lookup lands a second later with the rest. The AniList facts
+    // supersede the card's, so they replace them here rather than appearing
+    // beside them repeating the same format back.
+    function headerFacts() {
+        let facts = []
+        if (page.anilistLabel !== "") {
+            facts.push({
+                text: page.anilistLabel + (page.anilistProgress > 0
+                    ? " · Episode " + page.anilistProgress : ""),
+                accent: true
+            })
+        }
+        let details = page.anilistDetails
+        if (details) {
+            if (details.format) facts.push({ text: details.format, accent: false })
+            if (details.episodes) facts.push({ text: details.episodes + " episodes", accent: false })
+            if (details.average_score) facts.push({ text: "★ " + details.average_score + "%", accent: false })
+            let genres = details.genres || []
+            // Capped: some entries carry eight or nine genres, which turns
+            // the strip into three more lines of chips than the synopsis.
+            for (let i = 0; i < Math.min(4, genres.length); i++) {
+                facts.push({ text: genres[i], accent: false })
+            }
+        } else {
+            if (page.anime.kind) facts.push({ text: page.anime.kind, accent: false })
+            if (page.anime.rating) facts.push({ text: "★ " + page.anime.rating, accent: false })
+        }
+        return facts
+    }
+
     function playEpisode(number) {
         for (let i = 0; i < episodesModel.count; i++) {
             let ep = episodesModel.get(i)
@@ -107,86 +156,161 @@ Kirigami.ScrollablePage {
         }
     }
 
+    // The page bleeds its header to the window edges, like the home page's
+    // hero; the inset is applied to the content below it instead.
+    topPadding: 0
+    leftPadding: 0
+    rightPadding: 0
+
+    readonly property string bannerUrl:
+        (anilistDetails && anilistDetails.banner_url) || ""
+    readonly property string coverUrl:
+        (anilistDetails && anilistDetails.cover_url) || anime.poster_url || ""
+
     ColumnLayout {
         width: page.width
         spacing: Kirigami.Units.largeSpacing
 
-        RowLayout {
+        // Header: key art behind the poster and the title block. AniList only
+        // has a wide banner for the better-known entries, so when there isn't
+        // one this falls back to the cover art itself, cropped wide and
+        // darkened -- which still reads as key art rather than as a gap.
+        Item {
             Layout.fillWidth: true
+            implicitHeight: Math.max(headerContent.implicitHeight + Kirigami.Units.gridUnit * 2,
+                                     Kirigami.Units.gridUnit * 16)
+
             Image {
-                source: (page.anilistDetails && page.anilistDetails.cover_url) || page.anime.poster_url
-                Layout.preferredWidth: 120
-                Layout.preferredHeight: 170
+                anchors.fill: parent
+                source: page.bannerUrl !== "" ? page.bannerUrl : page.coverUrl
                 fillMode: Image.PreserveAspectCrop
+                asynchronous: true
+                verticalAlignment: Image.AlignTop
+                // The cover fallback is portrait art stretched across a wide
+                // box, so it gets blurred to read as a backdrop rather than
+                // as a badly cropped poster.
+                layer.enabled: page.bannerUrl === ""
+                layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 48 }
             }
-            ColumnLayout {
-                Layout.fillWidth: true
-                Controls.Label {
-                    text: page.anime.title
-                    font.pointSize: 18
-                    font.bold: true
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
+
+            Rectangle {
+                anchors.fill: parent
+                gradient: Gradient {
+                    GradientStop { position: 0.0; color: Qt.rgba(0, 0, 0, 0.55) }
+                    GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.88) }
                 }
-                Controls.Label {
-                    // What the card that opened this page knew. The AniList
-                    // line below says all of this and more, so it replaces
-                    // this one as soon as it arrives rather than sitting
-                    // under it repeating the format back ("TV" / "TV · 13
-                    // episodes · ...").
-                    visible: !page.anilistDetails && text !== ""
-                    text: (page.anime.kind || "") + (page.anime.rating ? " · ★" + page.anime.rating : "")
-                    opacity: 0.7
-                }
-                Controls.Label {
-                    visible: page.anilistLabel !== ""
-                    text: "AniList: " + page.anilistLabel + (page.anilistProgress > 0 ? " · Episode " + page.anilistProgress : "")
-                    color: Kirigami.Theme.highlightColor
-                    font.bold: true
-                }
-                Controls.Label {
-                    visible: !!page.anilistDetails
-                    text: page.anilistDetails ? (
-                        (page.anilistDetails.format || "") +
-                        (page.anilistDetails.episodes ? " · " + page.anilistDetails.episodes + " episodes" : "") +
-                        (page.anilistDetails.average_score ? " · AniList " + page.anilistDetails.average_score + "%" : "") +
-                        (page.anilistDetails.genres && page.anilistDetails.genres.length ? " · " + page.anilistDetails.genres.join(", ") : "")
-                    ) : ""
-                    opacity: 0.7
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
-                }
-                Controls.Label {
-                    visible: !!(page.anilistDetails && page.anilistDetails.description)
-                    text: page.anilistDetails ? page.anilistDetails.description : ""
-                    wrapMode: Text.WordWrap
-                    Layout.fillWidth: true
-                    maximumLineCount: 4
-                    elide: Text.ElideRight
-                    opacity: 0.85
+            }
+
+            RowLayout {
+                id: headerContent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Kirigami.Units.largeSpacing
+                anchors.rightMargin: Kirigami.Units.largeSpacing
+                spacing: Kirigami.Units.largeSpacing
+
+                Rectangle {
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 9
+                    Layout.preferredHeight: Math.round(width * 1.5)
+                    Layout.alignment: Qt.AlignTop
+                    radius: Kirigami.Units.mediumSpacing
+                    clip: true
+                    color: Qt.rgba(1, 1, 1, 0.08)
+
+                    Image {
+                        anchors.fill: parent
+                        source: page.coverUrl
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                    }
                 }
 
-                RowLayout {
-                    Controls.Button {
-                        text: page.localProgress
-                            ? ("Continue — Episode " + page.localProgress.episode_number)
-                            : "Start Watching"
-                        icon.name: "media-playback-start-symbolic"
-                        onClicked: page.playEpisode(page.localProgress ? page.localProgress.episode_number : 1)
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignTop
+                    spacing: Kirigami.Units.smallSpacing
+
+                    Controls.Label {
+                        text: page.anime.title
+                        color: "white"
+                        font.pointSize: 20
+                        font.bold: true
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
                     }
-                    Controls.Label { text: "Audio:" }
-                    Controls.ButtonGroup { id: audioGroup }
-                    Controls.RadioButton {
-                        text: "Sub"
-                        checked: !page.dub
-                        Controls.ButtonGroup.group: audioGroup
-                        onToggled: if (checked) page.dub = false
+
+                    // Facts as chips rather than one run-on line. The old
+                    // version joined format, episode count, score and every
+                    // genre with dots into a single paragraph that wrapped
+                    // across three lines and read as prose.
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+
+                        Repeater {
+                            model: page.headerFacts()
+                            Rectangle {
+                                required property var modelData
+                                radius: height / 2
+                                color: modelData.accent ? Kirigami.Theme.highlightColor
+                                                        : Qt.rgba(1, 1, 1, 0.16)
+                                width: factLabel.implicitWidth + Kirigami.Units.largeSpacing
+                                height: factLabel.implicitHeight + Kirigami.Units.smallSpacing
+
+                                Controls.Label {
+                                    id: factLabel
+                                    anchors.centerIn: parent
+                                    text: modelData.text
+                                    color: "white"
+                                    font.bold: modelData.accent
+                                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                }
+                            }
+                        }
                     }
-                    Controls.RadioButton {
-                        text: "Dub"
-                        checked: page.dub
-                        Controls.ButtonGroup.group: audioGroup
-                        onToggled: if (checked) page.dub = true
+
+                    Controls.Label {
+                        visible: !!(page.anilistDetails && page.anilistDetails.description)
+                        text: page.anilistDetails ? page.anilistDetails.description : ""
+                        color: "white"
+                        wrapMode: Text.WordWrap
+                        Layout.fillWidth: true
+                        Layout.topMargin: Kirigami.Units.smallSpacing
+                        maximumLineCount: 4
+                        elide: Text.ElideRight
+                        opacity: 0.8
+                    }
+
+                    RowLayout {
+                        Layout.topMargin: Kirigami.Units.smallSpacing
+                        spacing: Kirigami.Units.largeSpacing
+
+                        Controls.Button {
+                            text: page.localProgress
+                                ? ("Continue — Episode " + page.localProgress.episode_number)
+                                : "Start Watching"
+                            icon.name: "media-playback-start-symbolic"
+                            highlighted: true
+                            onClicked: page.playEpisode(page.localProgress ? page.localProgress.episode_number : 1)
+                        }
+
+                        // A two-way switch rather than a label and two radio
+                        // buttons: there are exactly two options and one is
+                        // always chosen, which is what a segmented control is.
+                        RowLayout {
+                            spacing: 0
+                            Repeater {
+                                model: [{ label: "Sub", dub: false }, { label: "Dub", dub: true }]
+                                Controls.Button {
+                                    required property var modelData
+                                    text: modelData.label
+                                    checkable: true
+                                    checked: page.dub === modelData.dub
+                                    onClicked: page.dub = modelData.dub
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -196,6 +320,49 @@ Kirigami.ScrollablePage {
             running: page.loading
             visible: page.loading
             Layout.alignment: Qt.AlignHCenter
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.largeSpacing
+            Layout.rightMargin: Kirigami.Units.largeSpacing
+            visible: episodesModel.count > 0
+            spacing: Kirigami.Units.smallSpacing
+
+            Rectangle {
+                Layout.preferredWidth: 4
+                Layout.preferredHeight: episodesHeading.implicitHeight * 0.8
+                radius: 2
+                color: Kirigami.Theme.highlightColor
+            }
+            Kirigami.Heading {
+                id: episodesHeading
+                level: 3
+                text: "Episodes"
+            }
+            Controls.Label {
+                text: episodesModel.count + " available"
+                opacity: 0.6
+            }
+            Item { Layout.fillWidth: true }
+            // Only worth explaining when there is something orange to explain.
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+                visible: page.hasFillerEpisodes()
+                Rectangle {
+                    width: Kirigami.Units.iconSizes.small
+                    height: width
+                    radius: 3
+                    color: "transparent"
+                    border.color: "orange"
+                    border.width: 2
+                }
+                Controls.Label {
+                    text: "Filler"
+                    opacity: 0.6
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                }
+            }
         }
 
         GridLayout {
@@ -210,6 +377,8 @@ Kirigami.ScrollablePage {
             id: pageButtonGrid
             visible: page.pageCount > 1
             Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.largeSpacing
+            Layout.rightMargin: Kirigami.Units.largeSpacing
             Layout.alignment: Qt.AlignHCenter
             readonly property int idealButtonWidth: 110
             columns: Math.max(1, Math.floor((applicationWindow().width - Kirigami.Units.gridUnit * 2) / idealButtonWidth))
@@ -231,11 +400,14 @@ Kirigami.ScrollablePage {
         GridLayout {
             id: episodeGrid
             Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.largeSpacing
+            Layout.rightMargin: Kirigami.Units.largeSpacing
+            Layout.bottomMargin: Kirigami.Units.largeSpacing
             readonly property int idealCellSize: 56
-            columns: Math.max(1, Math.floor(page.width / idealCellSize))
+            columns: Math.max(1, Math.floor(page.bodyWidth / idealCellSize))
             // Cells stretch to exactly fill the row (accounting for the gaps
             // between them) instead of leaving unused space on the right.
-            readonly property real cellSize: (page.width - (columns - 1) * columnSpacing) / columns
+            readonly property real cellSize: (page.bodyWidth - (columns - 1) * columnSpacing) / columns
             rowSpacing: Kirigami.Units.smallSpacing
             columnSpacing: Kirigami.Units.smallSpacing
 

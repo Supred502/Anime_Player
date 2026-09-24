@@ -9,7 +9,7 @@ from animeplayer.storage.db import Database
 
 def _summary(media_id: int, title: str, **overrides) -> MediaSummary:
     defaults = dict(
-        id=media_id, id_mal=None, title=title, titles=(title,), cover_url=None, average_score=None,
+        id=media_id, id_mal=None, title=title, titles=(title,), cover_url=None, banner_url=None, average_score=None,
         popularity=0, genres=(), format="TV", episodes=None, description=None,
     )
     defaults.update(overrides)
