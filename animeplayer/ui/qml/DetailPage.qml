@@ -340,6 +340,11 @@ Kirigami.ScrollablePage {
             episodesModel.clear()
             for (let i = 0; i < episodes.length; i++) episodesModel.append(episodes[i])
             page.anyFiller = episodes.some((ep) => ep.filler)
+            if (page.playWhenLoaded) {
+                let target = page.playWhenLoaded
+                page.playWhenLoaded = null
+                Qt.callLater(() => page.playEpisode(target.number, target.at))
+            }
 
             // Land on the page containing the resume episode, if any.
             let startIndex = 0
@@ -486,13 +491,18 @@ Kirigami.ScrollablePage {
         page.playEpisode(number)
     }
 
-    function playEpisode(number) {
+    // {number, at}: play this episode from this second as soon as the list
+    // arrives. Set by the Words page's "Watch the line".
+    property var playWhenLoaded: null
+
+    function playEpisode(number, startAt) {
         for (let i = 0; i < episodesModel.count; i++) {
             let ep = episodesModel.get(i)
             if (ep.number === number) {
                 applicationWindow().pageStack.push(
                     Qt.resolvedUrl("PlayerPage.qml"),
-                    { anime: page.anime, episodeId: ep.episode_id, episodeNumber: ep.number, dub: page.dub }
+                    { anime: page.anime, episodeId: ep.episode_id, episodeNumber: ep.number, dub: page.dub,
+                      startAt: startAt === undefined ? -1 : startAt }
                 )
                 return
             }

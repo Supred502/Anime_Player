@@ -122,6 +122,24 @@ CREATE TABLE IF NOT EXISTS show_prefs (
     skip_filler INTEGER NOT NULL DEFAULT 0
 );
 
+-- Words saved while watching with Japanese subtitles on: the word, what
+-- it means, and the line and moment it came from, so the Words page can
+-- play that moment again.
+CREATE TABLE IF NOT EXISTS saved_words (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    word        TEXT NOT NULL,     -- dictionary form, as written
+    reading     TEXT NOT NULL,     -- hiragana
+    meaning     TEXT NOT NULL,
+    pos         TEXT NOT NULL DEFAULT '',
+    sentence    TEXT NOT NULL,     -- the Japanese line it came from
+    translation TEXT NOT NULL DEFAULT '',
+    slug_id     TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL DEFAULT '',
+    episode     REAL NOT NULL DEFAULT 0,
+    position    REAL NOT NULL DEFAULT 0,
+    created_at  REAL NOT NULL
+);
+
 -- Watch statistics. Seconds actually spent playing, bucketed per day and
 -- show -- a counter rather than a log, so it stays small however much is
 -- watched -- plus one row per episode finished.
@@ -392,6 +410,38 @@ class Database:
                 )
             else:
                 self._conn.execute("DELETE FROM auto_download WHERE slug_id = ?", (slug_id,))
+            self._conn.commit()
+
+    # -- saved words ------------------------------------------------------
+
+    def save_word(self, fields: dict) -> int:
+        """Saving the same word from the same line twice is one save."""
+        with self._lock:
+            existing = self._conn.execute(
+                "SELECT id FROM saved_words WHERE word = ? AND sentence = ?",
+                (fields["word"], fields["sentence"]),
+            ).fetchone()
+            if existing:
+                return existing["id"]
+            cursor = self._conn.execute(
+                "INSERT INTO saved_words (word, reading, meaning, pos, sentence, translation, "
+                "slug_id, title, episode, position, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (fields["word"], fields.get("reading", ""), fields.get("meaning", ""),
+                 fields.get("pos", ""), fields["sentence"], fields.get("translation", ""),
+                 fields.get("slug_id", ""), fields.get("title", ""),
+                 float(fields.get("episode") or 0), float(fields.get("position") or 0), time.time()),
+            )
+            self._conn.commit()
+            return cursor.lastrowid
+
+    def saved_words(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM saved_words ORDER BY created_at DESC").fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_saved_word(self, word_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM saved_words WHERE id = ?", (word_id,))
             self._conn.commit()
 
     # -- per-show preferences ---------------------------------------------

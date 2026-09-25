@@ -299,6 +299,22 @@ class MpvVideoItem(QQuickFramebufferObject):
         if not self.closed:
             self.mpv.mute = value
 
+    @Slot(bool)
+    def setSubtitlesVisible(self, visible: bool) -> None:
+        if not self.closed:
+            self.mpv.sub_visibility = visible
+
+    @Slot(result=str)
+    def currentSubtitleText(self) -> str:
+        """The English line on screen right now, for a saved word's
+        translation. "" between lines."""
+        if self.closed:
+            return ""
+        try:
+            return self.mpv.sub_text or ""
+        except Exception:  # noqa: BLE001 -- property unavailable with no sub track
+            return ""
+
     @Slot(float, int)
     def setSubtitleStyle(self, scale: float, position: int) -> None:
         """Subtitle size (1.0 = mpv's default) and vertical position (100 =

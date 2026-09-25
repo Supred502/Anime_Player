@@ -15,6 +15,9 @@ Kirigami.Page {
     property int episodeId: 0
     property real episodeNumber: 0
     property bool dub: false
+    // Seconds to jump to once the video is ready, e.g. a saved word's line.
+    // -1: start wherever playback normally starts.
+    property real startAt: -1
     title: (anime.title || "") + " - Episode " + episodeNumber
     padding: 0
     focus: true // needed for Keys.onPressed below to actually receive events
@@ -29,6 +32,32 @@ Kirigami.Page {
         if (video) video.setSubtitleStyle(page.subScale, page.subPosition)
     }
     function saveSubtitleStyle() { backend.setSubtitleStyle(page.subScale, page.subPosition) }
+
+    // -- Learn Japanese (see LearnOverlay.qml) ---------------------------------
+    property bool learnMode: false
+    property bool showEnglish: true
+    property bool learnAutoSynced: false
+    onShowEnglishChanged: if (video) video.setSubtitlesVisible(page.showEnglish)
+    onLearnModeChanged: {
+        backend.setLearnMode(page.learnMode)
+        if (page.learnMode) page.startLearning()
+        else { learnOverlay.cues = []; learnOverlay.status = ""; video.setSubtitlesVisible(true) }
+    }
+    function startLearning() {
+        learnOverlay.cues = []
+        learnOverlay.status = "Loading Japanese subtitles\u2026"
+        if (backend.dictionaryState() === "missing") {
+            showPassiveNotification("Setting up the dictionary -- a one-time 10 MB download")
+            backend.prepareDictionary()
+        }
+        video.setSubtitlesVisible(page.showEnglish)
+        backend.loadJapaneseSubs(page.episodeNumber)
+    }
+    function learnFlag(name, fallback) {
+        let value = backend.learnOption(name)
+        return value === "" ? fallback : value === "true"
+    }
+    function setLearnFlag(name, value) { backend.setLearnOption(name, value ? "true" : "false") }
 
     property bool loadingStream: true
     property bool controlsVisible: true
@@ -70,6 +99,12 @@ Kirigami.Page {
         page.autoNextEnabled = backend.getAutoNextEnabled()
         page.episodeCount = backend.getCurrentEpisodeCount()
         page.firstEpisodeNumber = backend.getFirstEpisodeNumber()
+        learnOverlay.showRomaji = page.learnFlag("romaji", true)
+        learnOverlay.showFurigana = page.learnFlag("furigana", true)
+        learnOverlay.pauseOnHover = page.learnFlag("pause_hover", true)
+        learnOverlay.pauseEachLine = page.learnFlag("pause_line", false)
+        page.showEnglish = page.learnFlag("english", true)
+        page.learnMode = backend.getLearnMode()
         let style = backend.subtitleStyle()
         page.subScale = style.scale
         page.subPosition = style.position
@@ -253,6 +288,12 @@ Kirigami.Page {
             video.setMuted(!video.muted)
             page.flashVolume()
             event.accepted = true
+        } else if (event.key === Qt.Key_L) {
+            page.learnMode = !page.learnMode
+            event.accepted = true
+        } else if (event.key === Qt.Key_R && page.learnMode) {
+            learnOverlay.replayLine()
+            event.accepted = true
         } else if (event.key === Qt.Key_Question || event.key === Qt.Key_Slash) {
             shortcutHelp.visible = !shortcutHelp.visible
             event.accepted = true
@@ -281,6 +322,23 @@ Kirigami.Page {
             page.loadingStream = false
             showPassiveNotification("Playback failed: " + message)
         }
+        function onJapaneseSubsReady(payload) {
+            if (payload.episode !== page.episodeNumber) return
+            learnOverlay.cues = payload.cues
+            learnOverlay.status = ""
+            // Lined up with the English subtitles automatically when they
+            // agree clearly on an offset (see learn/sync.py); the Timing
+            // buttons adjust from there.
+            learnOverlay.offset = payload.offset !== undefined && payload.offset !== null ? payload.offset : 0
+            page.learnAutoSynced = payload.offset !== undefined && payload.offset !== null
+        }
+        function onJapaneseSubsFailed(message) {
+            if (page.learnMode) learnOverlay.status = message
+        }
+        function onDictionaryReady() {
+            if (page.learnMode) showPassiveNotification("Dictionary ready -- hover a word to look it up")
+        }
+        function onDictionaryFailed(message) { showPassiveNotification(message) }
         function onSkipTimesReady(times) {
             page.skipOp = times.op || null
             page.skipEd = times.ed || null
@@ -298,6 +356,7 @@ Kirigami.Page {
             page.edAutoSkipped = false
             page.justSkipped = ""
             page.autoRetried = false
+            if (page.learnMode) page.startLearning()
             // This page is reused for the next episode rather than rebuilt,
             // so the "already counted as watched" guard has to be cleared or
             // every episode after the first would skip its own cleanup.
@@ -402,6 +461,7 @@ Kirigami.Page {
         Component.onDestruction: close()
         onPositionChanged: (value) => {
             if (value > 0) { page.stalled = false; stallTimer.stop() }
+            if (page.learnMode) learnOverlay.update(value)
             // Auto-skip: seek past the interval the moment playback enters it.
             // The *AutoSkipped guards stop this from firing again every
             // position tick for the rest of the interval (position keeps
@@ -418,7 +478,13 @@ Kirigami.Page {
                 page.announceSkip("outro")
             }
         }
-        onDurationChanged: (value) => { if (value > 0) { page.stalled = false; stallTimer.stop() } }
+        onDurationChanged: (value) => {
+            if (value > 0) { page.stalled = false; stallTimer.stop() }
+            if (value > 0 && page.startAt >= 0) {
+                video.seekAbsolute(page.startAt)
+                page.startAt = -1
+            }
+        }
         onPlaybackError: (message) => {
             // Never-successfully-started errors (dead/expired link, transient
             // source-side hiccup) are common enough to be worth one silent
@@ -465,6 +531,15 @@ Kirigami.Page {
         onClicked: video.togglePause()
     }
 
+    LearnOverlay {
+        id: learnOverlay
+        objectName: "learnOverlay"
+        anchors.fill: parent
+        video: video
+        visible: page.learnMode && !page.loadingStream
+        onWordSaved: (word) => showPassiveNotification("Saved " + word + " to your words")
+    }
+
     ColumnLayout {
         anchors.centerIn: parent
         visible: page.loadingStream || page.stalled
@@ -506,6 +581,99 @@ Kirigami.Page {
         anchors.right: parent.right
         anchors.margins: Kirigami.Units.largeSpacing
         visible: !page.loadingStream && page.controlsVisible
+
+        AppButton {
+            text: "\u3042"
+            Layout.preferredWidth: implicitHeight * 1.3
+            leftPadding: 0
+            rightPadding: 0
+            checkable: true
+            checked: page.learnMode
+            font.bold: true
+            onClicked: learnPopup.opened ? learnPopup.close() : learnPopup.open()
+            Controls.ToolTip.visible: hovered
+            Controls.ToolTip.text: "Learn Japanese (L)"
+
+            Controls.Popup {
+                id: learnPopup
+                Kirigami.Theme.inherit: true
+                y: parent.height + Kirigami.Units.smallSpacing
+                x: parent.width - width
+                padding: Kirigami.Units.largeSpacing
+                onOpened: { page.controlsVisible = true; hideTimer.stop() }
+                onClosed: hideTimer.restart()
+
+                ColumnLayout {
+                    spacing: Kirigami.Units.smallSpacing
+                    AppCheckBox {
+                        text: "Learn Japanese"
+                        checked: page.learnMode
+                        onToggled: page.learnMode = checked
+                    }
+                    Kirigami.Separator { Layout.fillWidth: true }
+                    AppCheckBox {
+                        text: "Readings over kanji (furigana)"
+                        enabled: page.learnMode
+                        checked: learnOverlay.showFurigana
+                        onToggled: { learnOverlay.showFurigana = checked; page.setLearnFlag("furigana", checked) }
+                    }
+                    AppCheckBox {
+                        text: "Romaji"
+                        enabled: page.learnMode
+                        checked: learnOverlay.showRomaji
+                        onToggled: { learnOverlay.showRomaji = checked; page.setLearnFlag("romaji", checked) }
+                    }
+                    AppCheckBox {
+                        text: "English subtitles"
+                        enabled: page.learnMode
+                        checked: page.showEnglish
+                        onToggled: { page.showEnglish = checked; page.setLearnFlag("english", checked) }
+                    }
+                    AppCheckBox {
+                        text: "Pause while I'm pointing at a word"
+                        enabled: page.learnMode
+                        checked: learnOverlay.pauseOnHover
+                        onToggled: { learnOverlay.pauseOnHover = checked; page.setLearnFlag("pause_hover", checked) }
+                    }
+                    AppCheckBox {
+                        text: "Pause after each line"
+                        enabled: page.learnMode
+                        checked: learnOverlay.pauseEachLine
+                        onToggled: { learnOverlay.pauseEachLine = checked; page.setLearnFlag("pause_line", checked) }
+                    }
+                    RowLayout {
+                        enabled: page.learnMode
+                        Controls.Label { text: "Timing" }
+                        Controls.Button {
+                            Kirigami.Theme.inherit: true
+                            text: "\u2212 0.5s"
+                            onClicked: learnOverlay.offset -= 0.5
+                        }
+                        Controls.Label {
+                            text: (learnOverlay.offset > 0 ? "+" : "") + learnOverlay.offset.toFixed(1) + "s"
+                            Layout.minimumWidth: Kirigami.Units.gridUnit * 2.5
+                            horizontalAlignment: Text.AlignHCenter
+                        }
+                        Controls.Button {
+                            Kirigami.Theme.inherit: true
+                            text: "+ 0.5s"
+                            onClicked: learnOverlay.offset += 0.5
+                        }
+                    }
+                    Controls.Label {
+                        visible: page.learnAutoSynced
+                        text: "Lined up with the English subtitles automatically."
+                        color: Kirigami.Theme.positiveTextColor
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                    Controls.Label {
+                        text: "Japanese lines too early? Press \u2212. Too late? Press +.\nR replays the line."
+                        opacity: 0.6
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                }
+            }
+        }
 
         Controls.Button {
             Kirigami.Theme.inherit: true
@@ -752,6 +920,7 @@ Kirigami.Page {
             ["Space", "Play / pause"], ["\u2190 \u2192", "Back / forward 5s"],
             ["\u2191 \u2193", "Volume"], ["M", "Mute"], ["F", "Fullscreen"],
             ["S", "Skip intro or outro"], ["N / P", "Next / previous episode"],
+            ["L", "Learn Japanese on / off"], ["R", "Replay the Japanese line"],
             ["Esc", "Pause and leave fullscreen"], ["?", "This list"]
         ]
         GridLayout {

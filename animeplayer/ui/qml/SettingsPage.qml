@@ -25,6 +25,9 @@ Kirigami.ScrollablePage {
     Connections {
         target: backend
         function onDownloadsChanged() { page.refreshDownloadSize() }
+        function onDictionaryProgress(fraction) { page.dictionaryState = "building"; page.dictionaryProgress = fraction }
+        function onDictionaryReady() { page.dictionaryState = "ready" }
+        function onDictionaryFailed(message) { page.dictionaryState = "missing"; showPassiveNotification(message) }
         function onThemeChanged() { page.currentAccent = backend.theme.accentName }
     }
 
@@ -62,6 +65,9 @@ Kirigami.ScrollablePage {
     property bool remoteRunning: false
     property string remoteUrl: ""
     property string remotePin: ""
+    property bool hasJimakuKey: false
+    property string dictionaryState: "missing"
+    property real dictionaryProgress: 0
 
     Component.onCompleted: {
         clientIdField.text = backend.anilistClientId()
@@ -73,6 +79,8 @@ Kirigami.ScrollablePage {
         autoFullscreenToggle.checked = backend.getAutoFullscreenEnabled()
         deleteWatchedToggle.checked = backend.getDeleteAfterWatchingEnabled()
         newEpisodeToggle.checked = backend.getNewEpisodeAlertsEnabled()
+        page.hasJimakuKey = backend.hasJimakuKey()
+        page.dictionaryState = backend.dictionaryState()
         let style = backend.subtitleStyle()
         subScaleSlider.value = style.scale
         subPosSlider.value = style.position
@@ -176,6 +184,74 @@ Kirigami.ScrollablePage {
                         TapHandler { onTapped: backend.setThemeAccent(modelData.key) }
                     }
                 }
+            }
+        }
+
+        Kirigami.Separator { Layout.fillWidth: true }
+
+        Kirigami.FormLayout {
+            Layout.fillWidth: true
+
+            // Japanese subtitles come from Jimaku, which needs a free
+            // account's API key; the dictionary is JMdict, downloaded once.
+            RowLayout {
+                Kirigami.FormData.label: "Learn Japanese:"
+                Controls.TextField {
+                    id: jimakuField
+                    Kirigami.Theme.inherit: true
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                    echoMode: TextInput.Password
+                    placeholderText: page.hasJimakuKey ? "Key saved \u2014 paste a new one to replace it"
+                                                       : "Paste your Jimaku API key"
+                    onAccepted: saveKeyButton.clicked()
+                }
+                Controls.Button {
+                    id: saveKeyButton
+                    Kirigami.Theme.inherit: true
+                    text: "Save"
+                    enabled: jimakuField.text.trim() !== ""
+                    onClicked: {
+                        backend.setJimakuKey(jimakuField.text)
+                        jimakuField.text = ""
+                        page.hasJimakuKey = backend.hasJimakuKey()
+                        showPassiveNotification("Jimaku key saved")
+                    }
+                }
+            }
+            Controls.Label {
+                Kirigami.FormData.label: " "
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                wrapMode: Text.WordWrap
+                textFormat: Text.StyledText
+                onLinkActivated: (link) => Qt.openUrlExternally(link)
+                text: (page.hasJimakuKey ? "Key saved. " : "")
+                    + "Japanese subtitles come from <a href=\"https://jimaku.cc\">jimaku.cc</a>: "
+                    + "make a free account, then generate a key on its <a href=\"https://jimaku.cc/account\">account page</a>."
+                opacity: 0.8
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
+            }
+            RowLayout {
+                Kirigami.FormData.label: "Dictionary:"
+                Controls.Label {
+                    text: page.dictionaryState === "ready" ? "Ready (works offline)"
+                        : page.dictionaryState === "building"
+                          ? (page.dictionaryProgress >= 1 ? "Building\u2026"
+                             : "Downloading " + Math.round(page.dictionaryProgress * 100) + "%")
+                          : "Not set up yet (10 MB, one-time)"
+                }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    visible: page.dictionaryState === "missing"
+                    text: "Set up now"
+                    onClicked: { page.dictionaryState = "building"; backend.prepareDictionary() }
+                }
+            }
+            Controls.Label {
+                Kirigami.FormData.label: " "
+                text: "JMdict, from the Electronic Dictionary Research and Development Group (CC BY-SA 4.0)."
+                opacity: 0.6
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
         }
 

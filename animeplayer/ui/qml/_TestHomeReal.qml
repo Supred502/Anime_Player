@@ -148,6 +148,29 @@ AppWindow {
                 if (root.step === 6) log("browse again: " + root.pageStack.get(0).presetLabel)
                 return
             }
+            if (root.mode === "words") {
+                if (root.step === 1) root.goTo("words", "WordsPage.qml")
+                if (root.step === 3) {
+                    if (testPause === "watch") {
+                        let w = root.pageStack.get(0).words.filter((x) => x.word === "放す")[0]
+                        log("watching the line of " + w.word + " at " + w.position)
+                        root.pageStack.get(0).watchMoment(w)
+                    } else root.pageStack.get(0).tab = 1
+                }
+                if (root.step === 6) {
+                    let top = root.pageStack.currentItem
+                    log("now on: " + top.title + " startAt(pending)=" + top.startAt)
+                    let find = (item) => {
+                        if (!item) return null
+                        if (item.objectName === "learnOverlay") return item
+                        for (let i = 0; i < item.children.length; i++) { let f = find(item.children[i]); if (f) return f }
+                        return null
+                    }
+                    let o = find(top)
+                    log("overlay: cues=" + o.cues.length + " offset=" + o.offset + " synced=" + top.learnAutoSynced + " status=" + o.status)
+                }
+                return
+            }
             if (root.mode === "rows") {
                 if (root.step === 5) {
                     let h = root.homePage()

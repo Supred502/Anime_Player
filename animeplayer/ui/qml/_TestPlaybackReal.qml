@@ -121,6 +121,11 @@ AppWindow {
                 if (page.skipEd) page.seekTo(page.skipEd.start - 2)
                 else page.seekRelative(1100)
                 root.log("parked before outro, controls pinned")
+                if (testMode === "learn") {
+                    page.seekTo(30.6)
+                    root.log("learn: seeked to 30.6s")
+                    learnTimer.start()
+                }
                 if (testMode === "subs") {
                     page.subScale = 1.6
                     page.subPosition = 80
@@ -145,6 +150,54 @@ AppWindow {
         onTriggered: {
             let page = root.pageStack.currentItem
             if (page && page.hasOwnProperty("controlsVisible")) page.controlsVisible = true
+        }
+    }
+
+    // Learn Japanese: once a line is up, point at its first real word.
+    function findByName(item, name) {
+        if (!item) return null
+        if (item.objectName === name) return item
+        for (let i = 0; i < item.children.length; i++) {
+            let found = root.findByName(item.children[i], name)
+            if (found) return found
+        }
+        return null
+    }
+    Timer {
+        id: learnTimer
+        interval: 2500
+        onTriggered: {
+            let overlay = root.findByName(root.pageStack.currentItem, "learnOverlay")
+            if (!overlay) { root.log("learn: no overlay"); return }
+            root.log("learn: cues=" + overlay.cues.length + " offset=" + overlay.offset + " status=" + overlay.status
+                     + " line=" + (overlay.cue ? JSON.stringify(overlay.cue.text) + " speaker=" + overlay.cue.speaker
+                                   + " romaji=" + overlay.cue.romaji : "none"))
+            if (overlay.cue) {
+                let tokens = overlay.cue.tokens
+                for (let i = 0; i < tokens.length; i++) {
+                    if (tokens[i].lookup && tokens[i].furigana) {
+                        overlay.lookupAt(i)
+                        root.log("learn: looked up " + tokens[i].surface + " (" + tokens[i].lemma + ")")
+                        learnSave.index = i
+                        learnSave.start()
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    // Saved a moment later, the way a click would come: right after a
+    // seek the English line for the new spot hasn't loaded yet.
+    Timer {
+        id: learnSave
+        property int index: -1
+        interval: 1500
+        onTriggered: {
+            let overlay = root.findByName(root.pageStack.currentItem, "learnOverlay")
+            root.log("learn: english now = " + JSON.stringify(overlay.video.currentSubtitleText()))
+            overlay.saveAt(index)
+            root.log("learn: saved words = " + JSON.stringify(backend.savedWords().map((w) => [w.word, w.reading, w.meaning, w.sentence, w.translation])))
         }
     }
 

@@ -28,3 +28,30 @@ def clear_token() -> None:
         keyring.delete_password(_SERVICE_NAME, _TOKEN_KEY)
     except keyring.errors.PasswordDeleteError:
         pass
+
+
+# The Jimaku API key (Japanese subtitles, see learn/jimaku.py). A credential,
+# so it lives in the keyring beside the AniList token rather than in the
+# settings table.
+_JIMAKU_SERVICE = "animeplayer-jimaku-test" if os.environ.get("ANIMEPLAYER_DB_PATH") else "animeplayer-jimaku"
+
+
+def save_jimaku_key(key: str) -> None:
+    if key.strip():
+        keyring.set_password(_JIMAKU_SERVICE, "api_key", key.strip())
+    else:
+        clear_jimaku_key()
+
+
+def load_jimaku_key() -> str:
+    try:
+        return keyring.get_password(_JIMAKU_SERVICE, "api_key") or ""
+    except keyring.errors.KeyringError:
+        return ""
+
+
+def clear_jimaku_key() -> None:
+    try:
+        keyring.delete_password(_JIMAKU_SERVICE, "api_key")
+    except keyring.errors.PasswordDeleteError:
+        pass

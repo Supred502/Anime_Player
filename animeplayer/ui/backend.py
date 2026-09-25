@@ -53,9 +53,11 @@ from animeplayer.player.idle_inhibitor import IdleInhibitor
 from animeplayer.remote.server import RemoteServer
 from animeplayer.sources import hianime as source
 from animeplayer.sources import jikan
+from animeplayer.learn import dictionary as jmdict
+from animeplayer.learn import jimaku
 from animeplayer.stats import compute_anilist_stats, compute_watch_stats
 from animeplayer.storage import secrets
-from animeplayer.storage.db import AniDBMapping, AniListStatus, Database, DownloadEntry
+from animeplayer.storage.db import DEFAULT_DB_PATH, AniDBMapping, AniListStatus, Database, DownloadEntry
 
 # The Android remote app is a thin WebView shell (see android-remote/) around
 # the same page RemoteServer already serves. Also published as a GitHub
@@ -1891,6 +1893,200 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, self.anilistStatsReady.emit, failed))
 
+    # -- Learn Japanese ------------------------------------------------------
+    #
+    # Japanese subtitles from Jimaku, split into words with readings and
+    # romaji (learn/japanese.py), and a JMdict dictionary for hovering a word
+    # (learn/dictionary.py). Everything is cached under the app's data folder:
+    # parsed subtitles per episode, the built dictionary once.
+
+    japaneseSubsReady = Signal("QVariantMap")   # {episode, file, cues: [{start, end, text, tokens, romaji}]}
+    japaneseSubsFailed = Signal(str)
+    dictionaryProgress = Signal(float)          # 0..1 while downloading; 1 while building
+    dictionaryReady = Signal()
+    dictionaryFailed = Signal(str)
+    savedWordsChanged = Signal()
+
+    _LEARN_DIR = DEFAULT_DB_PATH.parent / "learn"
+
+    @property
+    def _dictionary(self) -> jmdict.Dictionary:
+        if getattr(self, "_jmdict", None) is None:
+            self._jmdict = jmdict.Dictionary(self._LEARN_DIR / "jmdict.db")
+        return self._jmdict
+
+    @Slot(result=bool)
+    def hasJimakuKey(self) -> bool:
+        return bool(secrets.load_jimaku_key())
+
+    @Slot(str)
+    def setJimakuKey(self, key: str) -> None:
+        secrets.save_jimaku_key(key)
+
+    @Slot(result=str)
+    def dictionaryState(self) -> str:
+        if self._dictionary.ready:
+            return "ready"
+        return "building" if getattr(self, "_dictionary_building", False) else "missing"
+
+    @Slot()
+    def prepareDictionary(self) -> None:
+        """Downloads JMdict (~10 MB) and builds the lookup database (~5 s),
+        once. Everything after that is offline."""
+        if self._dictionary.ready or getattr(self, "_dictionary_building", False):
+            if self._dictionary.ready:
+                self.dictionaryReady.emit()
+            return
+        self._dictionary_building = True
+        folder = self._LEARN_DIR
+
+        def work() -> None:
+            folder.mkdir(parents=True, exist_ok=True)
+            gz = folder / "JMdict_e.gz"
+            jmdict.download(gz, self._http, on_progress=lambda f: self.dictionaryProgress.emit(min(f, 0.99)))
+            self.dictionaryProgress.emit(1.0)
+            jmdict.build(gz, folder / "jmdict.db")
+            gz.unlink(missing_ok=True)
+
+        def done(_result: None) -> None:
+            self._dictionary_building = False
+            self.dictionaryReady.emit()
+
+        def failed(message: str) -> None:
+            self._dictionary_building = False
+            self.dictionaryFailed.emit("Couldn't set up the dictionary: " + message)
+
+        self._pool.start(_Worker(work, done, failed))
+
+    @Slot(str, str, str, result=list)
+    def lookupWord(self, lemma: str, surface: str, reading: str) -> list[dict[str, Any]]:
+        """Up to three entries: the dictionary form first (食べる for 食べ),
+        then the word as written, then its reading."""
+        results = self._dictionary.lookup(lemma, surface, reading)
+        return [
+            {
+                "word": d.kanji[0] if d.kanji else d.readings[0],
+                "reading": d.readings[0] if d.readings else "",
+                "common": d.common,
+                "senses": [{"pos": ", ".join(pos[:2]), "glosses": "; ".join(glosses[:4])}
+                           for pos, glosses in d.senses[:4]],
+            }
+            for d in results
+        ]
+
+    @Slot(float)
+    def loadJapaneseSubs(self, episode_number: float) -> None:
+        """For the episode playing now. Needs the show's AniList id, which
+        can land after playback starts -- if it isn't known yet, this waits
+        for _resolve_current_anime_status to call it again."""
+        anime = self._current_anime
+        if anime is None:
+            return
+        anime["_want_japanese_subs"] = episode_number
+        anilist_id = anime.get("anilist_id")
+        if not anilist_id:
+            return
+        key = secrets.load_jimaku_key()
+        episode = int(episode_number)
+        cache = self._LEARN_DIR / "subs" / f"{anilist_id}-{episode}.json"
+
+        def work() -> dict[str, Any]:
+            payload = json.loads(cache.read_text()) if cache.exists() else fetch()
+            # Not cached with the subtitles: it depends on which release is
+            # streaming, and that can change between two viewings.
+            payload["offset"] = self._offset_against_english([c["start"] for c in payload["cues"]])
+            return payload
+
+        def fetch() -> dict[str, Any]:
+            name, cues = jimaku.fetch_episode(self._http, key, anilist_id, episode)
+            from animeplayer.learn import japanese
+            payload = {
+                "episode": episode_number,
+                "file": name,
+                "cues": [{"start": c.start, "end": c.end, "text": c.text, **japanese.analyse(c.text)}
+                         for c in cues],
+            }
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(payload, ensure_ascii=False))
+            return payload
+
+        def done(payload: dict[str, Any]) -> None:
+            # Dropped only if a *different* episode is known to be playing
+            # by now. A cached file is back before the player has even
+            # registered the episode it's starting, and treating "not known
+            # yet" as a mismatch silently threw that answer away.
+            playing = (self._current_anime or {}).get("current_episode_number")
+            if playing is None or playing == episode_number:
+                self.japaneseSubsReady.emit(payload)
+
+        def failed(message: str) -> None:
+            self.japaneseSubsFailed.emit(message)
+
+        self._pool.start(_Worker(work, done, failed))
+
+    def _offset_against_english(self, jp_starts: list[float]) -> float | None:
+        """Runs on a worker thread. How far to shift the Japanese lines to
+        match the English subtitles of the stream actually playing (see
+        learn/sync.py). Waits briefly for the stream to be known: the
+        Japanese file can be back before the stream has resolved."""
+        from animeplayer.learn import subtitles, sync
+        playing = None
+        for _ in range(60):
+            playing = self._now_playing
+            if playing is not None:
+                break
+            time.sleep(0.25)
+        if playing is None:
+            return None
+        try:
+            if playing.get("subtitle_path"):
+                data = Path(playing["subtitle_path"]).read_bytes()
+            elif playing.get("subtitle_url"):
+                response = self._http.get(playing["subtitle_url"], timeout=20,
+                                          headers={"Referer": playing.get("referer") or ""})
+                response.raise_for_status()
+                data = response.content
+            else:
+                return None
+        except (httpx.HTTPError, OSError):
+            return None
+        english = subtitles.parse("english.vtt", data)
+        return sync.best_offset(jp_starts, [c.start for c in english])
+
+    @Slot("QVariantMap")
+    def saveWord(self, fields: dict[str, Any]) -> None:
+        anime = self._current_anime or {}
+        self._db.save_word({**fields,
+                            "slug_id": anime.get("slug_id") or "",
+                            "title": anime.get("title") or "",
+                            "episode": anime.get("current_episode_number") or 0})
+        self.savedWordsChanged.emit()
+
+    @Slot(result=list)
+    def savedWords(self) -> list[dict[str, Any]]:
+        return self._db.saved_words()
+
+    @Slot(int)
+    def removeSavedWord(self, word_id: int) -> None:
+        self._db.delete_saved_word(word_id)
+        self.savedWordsChanged.emit()
+
+    @Slot(result=bool)
+    def getLearnMode(self) -> bool:
+        return self._db.get_setting("learn_mode") == "true"
+
+    @Slot(bool)
+    def setLearnMode(self, on: bool) -> None:
+        self._db.set_setting("learn_mode", "true" if on else "false")
+
+    @Slot(str, result=str)
+    def learnOption(self, name: str) -> str:
+        return self._db.get_setting(f"learn_{name}") or ""
+
+    @Slot(str, str)
+    def setLearnOption(self, name: str, value: str) -> None:
+        self._db.set_setting(f"learn_{name}", value)
+
     # -- Rating -------------------------------------------------------------------
 
     askForRating = Signal(int, str, float)   # (anilist id, title, current score out of 10)
@@ -2874,6 +3070,8 @@ class Backend(QObject):
                 current_episode_number = self._current_anime.get("current_episode_number")
                 if current_episode_number is not None:
                     self._maybe_fetch_skip_times(current_episode_number)
+                    if self._current_anime.get("_want_japanese_subs") is not None:
+                        self.loadJapaneseSubs(self._current_anime["_want_japanese_subs"])
                     # An episode that started before the AniList match came
                     # back -- one picked from the phone opens the player
                     # straight away -- went unsynced. Catch it up now.

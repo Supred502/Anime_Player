@@ -132,6 +132,21 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // Opens a show at an episode and a second -- the Words page's "Watch
+    // the line". The episode's id comes from the show's episode list, so
+    // the detail page opens first and plays it once the list arrives.
+    //
+    // Deferred: it's called from the Words page, and goTo() clears the page
+    // stack -- which destroys that page while its own click handler is still
+    // running ("attempted to evaluate a function in an invalid context").
+    function openAt(anime, episodeNumber, seconds) {
+        Qt.callLater(root.openAtNow, anime, episodeNumber, seconds)
+    }
+    function openAtNow(anime, episodeNumber, seconds) {
+        let detail = root.goTo("words", "DetailPage.qml", { anime: anime })
+        detail.playWhenLoaded = { number: episodeNumber, at: seconds }
+    }
+
     // Asked once, right after the last episode of a finished show (see
     // backend._maybe_ask_for_rating). On the window, not the player page: the
     // player may be on its way out by the time the answer comes.
@@ -296,6 +311,13 @@ Kirigami.ApplicationWindow {
                 iconName: "media-playback-start-symbolic"
                 current: root.section === "continue"
                 onClicked: root.goContinue()
+            }
+
+            NavButton {
+                text: "Words"
+                iconName: "bookmarks-symbolic"
+                current: root.section === "words"
+                onClicked: root.goTo("words", "WordsPage.qml")
             }
 
             NavButton {
