@@ -75,6 +75,25 @@ Kirigami.ScrollablePage {
     property var genres: []
     property var allTags: []
     property var shownTags: []
+    // What the tag search box holds, and which first letter is open when it
+    // is empty ("" none, "*" every tag).
+    property string tagQuery: ""
+    property string tagLetter: ""
+    // A new list (another letter, another search) starts capped again.
+    // A tag chosen, or cleared, from outside the letter or search on show
+    // must still join the list -- it's what the section's count reads.
+    onTagStatesChanged: page.refreshShownTags()
+    onTagLetterChanged: { tagSection.limit = tagSection.baseLimit; page.refreshShownTags() }
+
+    // "A" -> 24 and so on, for the alphabet strip. Digits share one "#".
+    readonly property var tagLetters: {
+        let counts = {}
+        for (let i = 0; i < allTags.length; i++) {
+            let letter = page.tagBucket(allTags[i])
+            counts[letter] = (counts[letter] || 0) + 1
+        }
+        return Object.keys(counts).sort().map((letter) => ({ letter: letter, count: counts[letter] }))
+    }
 
     readonly property int filterCount:
         Object.keys(genreStates).length + Object.keys(tagStates).length
@@ -205,7 +224,7 @@ Kirigami.ScrollablePage {
         function onAnilistGenresLoaded(list) { page.genres = list.filter((name) => name !== "Hentai") }
         function onAnilistTagsLoaded(list) {
             page.allTags = list
-            page.applyTagFilterText(tagField.text)
+            page.refreshShownTags()
         }
         function onBrowseFinished(payload) {
             page.loading = false
@@ -411,33 +430,71 @@ Kirigami.ScrollablePage {
         return prev[b.length]
     }
 
+    function tagBucket(name) {
+        let first = name.charAt(0).toUpperCase()
+        return first >= "A" && first <= "Z" ? first : "#"
+    }
+
     function applyTagFilterText(text) {
-        let needle = (text || "").trim().toLowerCase()
-        let shown = []
-        for (let i = 0; i < page.allTags.length && shown.length < 60; i++) {
-            if (needle === "" || page.allTags[i].toLowerCase().includes(needle)) {
-                shown.push(page.allTags[i])
+        page.tagQuery = text || ""
+        tagSection.limit = tagSection.baseLimit
+        page.refreshShownTags()
+    }
+
+    // How far a tag is from what was typed, or -1 if too far to offer.
+    // Each word is compared whole and by its opening letters, so a search
+    // still being typed ("here", on the way to "harem") already finds it.
+    // `strict` (real matches were found) allows one slip rather than two, so
+    // typo guesses don't bury them.
+    function tagTypoRank(tag, needle, strict) {
+        let allowed = needle.length >= 5 && !strict ? 2 : 1
+        let name = tag.toLowerCase()
+        let best = 99
+        let whole = (text) => {
+            let d = page.editDistance(text, needle)
+            if (d <= allowed) best = Math.min(best, d * 10 + Math.abs(text.length - needle.length))
+        }
+        whole(name)
+        for (let word of name.split(/[\s-]+/)) {
+            whole(word)
+            // Half a word can't be judged as loosely as a whole one.
+            if (word.length > needle.length
+                    && page.editDistance(word.substring(0, needle.length), needle) <= 1) {
+                best = Math.min(best, 11)
             }
         }
-        // Nothing contains it: likely a typo ("heram"), so fall back to tags
-        // with a word close enough to it. Exact matches above still come first.
-        if (needle.length >= 4 && shown.length === 0) {
-            let allowed = needle.length >= 5 ? 2 : 1
-            let near = []
-            for (let i = 0; i < page.allTags.length; i++) {
-                let name = page.allTags[i].toLowerCase()
-                // Rank by distance, then by how close the lengths are:
-                // "heram" is two edits from both "harem" and "hero", and
-                // the word it was meant to be is the one the same size.
-                let best = page.editDistance(name, needle) * 10 + Math.abs(name.length - needle.length)
-                for (let word of name.split(/[\s-]+/)) {
-                    best = Math.min(best, page.editDistance(word, needle) * 10
-                                          + Math.abs(word.length - needle.length))
-                }
-                if (best < (allowed + 1) * 10) near.push({ tag: page.allTags[i], rank: best })
+        return best < 99 ? best : -1
+    }
+
+    function refreshShownTags() {
+        let needle = page.tagQuery.trim().toLowerCase()
+        let shown = []
+        if (needle === "") {
+            shown = page.tagLetter === "*" ? page.allTags.slice()
+                  : page.allTags.filter((tag) => page.tagBucket(tag) === page.tagLetter)
+        } else {
+            // Anywhere in the name counts ("matic" finds Achromatic), but a
+            // tag with a word starting that way is the likelier target.
+            let starts = [], inside = []
+            for (let tag of page.allTags) {
+                let name = tag.toLowerCase()
+                if (!name.includes(needle)) continue
+                let atWord = name.startsWith(needle) || name.split(/[\s-]+/).some((w) => w.startsWith(needle))
+                ;(atWord ? starts : inside).push(tag)
             }
-            near.sort((a, b) => a.rank - b.rank || a.tag.localeCompare(b.tag))
-            shown = near.slice(0, 60).map((entry) => entry.tag)
+            shown = starts.concat(inside)
+            // Then near-misses for typos ("heram"), after the real matches.
+            if (needle.length >= 4) {
+                let exact = shown.length
+                let near = []
+                for (let tag of page.allTags) {
+                    if (shown.indexOf(tag) >= 0) continue
+                    let rank = page.tagTypoRank(tag, needle, exact > 0)
+                    if (rank >= 0) near.push({ tag: tag, rank: rank })
+                }
+                near.sort((a, b) => a.rank - b.rank || a.tag.localeCompare(b.tag))
+                shown = shown.concat(near.map((entry) => entry.tag))
+            }
         }
         // Selected tags stay visible even when they fall outside the list --
         // otherwise retyping the search silently hides a filter still applied.
@@ -702,22 +759,62 @@ Kirigami.ScrollablePage {
                 keys: page.shownTags
                 states: page.tagStates
                 collapsible: true
+                baseLimit: 40
+                // Shown even with no chips: until a letter is picked or
+                // something typed, the section is just its search and letters.
+                showEmpty: page.allTags.length > 0
                 onToggled: (key) => { page.tagStates = page.tristate(page.tagStates, key); page.reload() }
-            }
 
-            // Below its section rather than above it, and only while that
-            // section is open: AniList publishes several hundred tags, so the
-            // search field is the only practical way through them -- but a
-            // search box for a list nobody has opened is just more to look at.
-            Controls.TextField {
-                Kirigami.Theme.inherit: true
-                id: tagField
-                Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.gridUnit
-                Layout.bottomMargin: Kirigami.Units.smallSpacing
-                visible: tagSection.open
-                placeholderText: "Find a tag, e.g. \"Time Skip\" or \"Isekai\"..."
-                onTextChanged: page.applyTagFilterText(text)
+                // Several hundred tags: search them, or open them a letter at
+                // a time. The letters only show while the search is empty.
+                tools: ColumnLayout {
+                    spacing: Kirigami.Units.smallSpacing
+
+                    Controls.TextField {
+                        Kirigami.Theme.inherit: true
+                        Layout.fillWidth: true
+                        text: page.tagQuery
+                        placeholderText: "Find a tag, e.g. \"Time Skip\" or \"Isekai\"..."
+                        onTextChanged: if (text !== page.tagQuery) page.applyTagFilterText(text)
+                    }
+
+                    Flow {
+                        Layout.fillWidth: true
+                        spacing: 2
+                        visible: page.tagQuery.trim() === ""
+
+                        Controls.ToolButton {
+                            Kirigami.Theme.inherit: true
+                            text: "All"
+                            checkable: true
+                            checked: page.tagLetter === "*"
+                            onClicked: page.tagLetter = checked ? "*" : ""
+                            Controls.ToolTip.visible: hovered
+                            Controls.ToolTip.text: page.allTags.length + " tags"
+                        }
+                        Repeater {
+                            model: page.tagLetters
+                            Controls.ToolButton {
+                                required property var modelData
+                                Kirigami.Theme.inherit: true
+                                text: modelData.letter
+                                checkable: true
+                                checked: page.tagLetter === modelData.letter
+                                implicitWidth: Math.max(implicitHeight, implicitContentWidth + leftPadding + rightPadding)
+                                onClicked: page.tagLetter = checked ? modelData.letter : ""
+                                Controls.ToolTip.visible: hovered
+                                Controls.ToolTip.text: modelData.count + (modelData.count === 1 ? " tag" : " tags")
+                            }
+                        }
+                    }
+
+                    Controls.Label {
+                        visible: page.tagQuery.trim() !== "" && page.shownTags.length === Object.keys(page.tagStates).length
+                        text: "No tag matches \"" + page.tagQuery.trim() + "\""
+                        opacity: 0.7
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                }
             }
         }
 
@@ -834,7 +931,11 @@ Kirigami.ScrollablePage {
         property var keys: []
         property var states: ({})
         property bool collapsible: false
-        property int limit: 20
+        property int baseLimit: 20
+        property int limit: baseLimit
+        property bool showEmpty: false
+        // Optional controls between the header and the chips.
+        property Component tools: null
         // Tracked separately from `open` so that a section the user closed by
         // hand stays closed even though it has an active filter.
         property bool touched: false
@@ -861,7 +962,7 @@ Kirigami.ScrollablePage {
 
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
-        visible: names.length > 0
+        visible: names.length > 0 || showEmpty
 
         // The header is the whole clickable row, not just the arrow -- a
         // disclosure triangle is a small target for something used this often.
@@ -918,12 +1019,20 @@ Kirigami.ScrollablePage {
             }
         }
 
+        Loader {
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.gridUnit
+            active: section.tools !== null && section.open
+            visible: active
+            sourceComponent: section.tools
+        }
+
         Flow {
             Layout.fillWidth: true
             Layout.leftMargin: Kirigami.Units.gridUnit
             Layout.bottomMargin: Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing
-            visible: section.open
+            visible: section.open && section.names.length > 0
 
             Repeater {
                 model: section.visibleIndexes
@@ -937,11 +1046,11 @@ Kirigami.ScrollablePage {
 
             Controls.ToolButton {
                 Kirigami.Theme.inherit: true
-                visible: section.collapsible && section.names.length > 20
+                visible: section.collapsible && section.names.length > section.baseLimit
                 text: section.expanded ? "Show fewer"
                                        : "+" + (section.names.length - section.limit) + " more"
                 icon.name: section.expanded ? "go-up-symbolic" : "go-down-symbolic"
-                onClicked: section.limit = section.expanded ? 20 : section.names.length
+                onClicked: section.limit = section.expanded ? section.baseLimit : section.names.length
             }
         }
     }

@@ -206,8 +206,18 @@ AppWindow {
                 if (root.step === 2) {
                     log("genres=" + b.genres.length + " hasHentai=" + (b.genres.indexOf("Hentai") >= 0)
                         + " tags=" + b.allTags.length)
-                    b.applyTagFilterText("heram")
-                    log("heram -> " + b.shownTags.join(", "))
+                    for (let q of ["heram", "here", "matic", "time skp", "isekia", "zzzz"]) {
+                        b.applyTagFilterText(q)
+                        log(q + " -> " + b.shownTags.slice(0, 8).join(", ")
+                            + (b.shownTags.length > 8 ? " (+" + (b.shownTags.length - 8) + ")" : ""))
+                    }
+                    b.applyTagFilterText("")
+                    log("letters=" + b.tagLetters.map((l) => l.letter + l.count).join(" "))
+                    b.tagLetter = "H"
+                    log("H -> " + b.shownTags.join(", "))
+                    b.tagLetter = "*"
+                    log("All -> " + b.shownTags.length)
+                    b.tagLetter = "M"
                     b.tagStates = { "Female Harem": 1 }
                     b.reload()
                     return
