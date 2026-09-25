@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 import random
 import re
+import shutil
 import socket
+import subprocess
 import tempfile
 import time
 import webbrowser
@@ -21,10 +23,12 @@ from typing import Any, Callable
 
 import httpx
 import qrcode
-from PySide6.QtCore import Property, QObject, QRunnable, QThreadPool, Signal, Slot
+from PySide6.QtCore import Property, QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
 
+from animeplayer.alerts import find_new_episodes
 from animeplayer.anilist import matcher
 from animeplayer.anilist.client import (
+    AiringState,
     AniListClient,
     ChainEntry,
     MediaSummary,
@@ -39,13 +43,17 @@ from animeplayer.player.downloads import (
     disk_usage,
     download_subtitle,
     ffmpeg_available,
+    load_skip_times,
     probe_duration,
+    save_skip_times,
+    skip_times_path,
     target_path,
 )
 from animeplayer.player.idle_inhibitor import IdleInhibitor
 from animeplayer.remote.server import RemoteServer
 from animeplayer.sources import hianime as source
 from animeplayer.sources import jikan
+from animeplayer.stats import compute_watch_stats
 from animeplayer.storage import secrets
 from animeplayer.storage.db import AniDBMapping, AniListStatus, Database, DownloadEntry
 
@@ -111,6 +119,23 @@ _DEFAULT_ACCENT = "blue"
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 
 
+def _notify_desktop(title: str, body: str) -> None:
+    """A desktop notification, through the freedesktop notification service
+    every Linux desktop runs. notify-send rather than D-Bus from Python:
+    Notify's typed arguments (uint, string array, variant map) don't
+    marshal cleanly through PySide. Missing tool, no notification -- the
+    home page row still shows it."""
+    if shutil.which("notify-send") is None:
+        return
+    try:
+        subprocess.Popen(
+            ["notify-send", "--app-name=Anime Player", "--icon=video-television", title, body],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        pass
+
+
 def _strip_html(text: str) -> str:
     """AniList's description(asHtml: false) still leaves simple tags like <br>
     and <i> in place -- strip them for plain display in QML."""
@@ -171,6 +196,9 @@ class Backend(QObject):
     anilistAnimeResolveErrored = Signal(str)  # the lookup itself failed (site down, no network, ...)
     anilistGenresLoaded = Signal(list)
     anilistTagsLoaded = Signal(list)
+    tagDescriptionsLoaded = Signal(dict)  # {tag name: what it means}
+    newEpisodesChanged = Signal(list)  # home row: watched shows with an aired, unwatched episode
+    becauseYouWatchedReady = Signal(str, list)  # (seed title, recommendation cards)
     recommendationsFailed = Signal(str)  # recommendations couldn't be built (e.g. not logged in yet)
     # Surprise Me couldn't land on anything. Its own signal because the text is
     # a finished sentence for the user, where anilistAnimeResolveErrored's is a
@@ -251,6 +279,7 @@ class Backend(QObject):
         # parking one of the shared pool's threads on it for that long starves
         # the searches and catalog loads the user is waiting on.
         self._downloader = Downloader()
+        self._playing = False
         self._download_pool = QThreadPool()
         self._download_pool.setMaxThreadCount(1)
         # Anything left mid-flight when the app was last closed is not
@@ -265,6 +294,15 @@ class Backend(QObject):
         # steps in between (no visiting Settings to click Start each time).
         if (self._db.get_setting("remote_enabled") or "true") == "true":
             self.startRemoteServer()
+
+        # New-episode alerts: once shortly after launch, then every half hour.
+        # One AniList request per check, however many shows are followed.
+        self._new_episodes: list[dict[str, Any]] = []
+        self._alert_timer = QTimer(self)
+        self._alert_timer.setInterval(self.NEW_EPISODE_CHECK_MS)
+        self._alert_timer.timeout.connect(self.checkNewEpisodes)
+        self._alert_timer.start()
+        QTimer.singleShot(15_000, self.checkNewEpisodes)
 
     def _drop_mappings_from_a_previous_source(self) -> None:
         """One-time cache reset when the streaming backend changes underneath
@@ -296,6 +334,9 @@ class Backend(QObject):
         player/idle_inhibitor.py for why playback alone doesn't keep the
         session awake. Deliberately follows pause as well as page lifetime:
         pausing and walking away should let the screen sleep normally."""
+        # Also what downloads read to decide whether to hold back -- see
+        # _run_download.
+        self._playing = awake
         if awake:
             self._idle_inhibitor.inhibit()
         else:
@@ -461,6 +502,27 @@ class Backend(QObject):
         self._fetch_static_list(
             "tag", self._anilist_public.get_tag_collection, self.anilistTagsLoaded
         )
+
+    @Slot()
+    def fetchTagDescriptions(self) -> None:
+        """Stored beside the tag names and refreshed on the same weekly
+        schedule. Emitted as a map rather than threaded through the names
+        list, so nothing that already consumes that list has to change."""
+        raw = self._db.get_setting("anilist_tag_desc")
+        stamp = self._db.get_setting("anilist_tag_desc_at")
+        try:
+            if raw and stamp and time.time() - float(stamp) <= self._STATIC_LIST_MAX_AGE:
+                self.tagDescriptionsLoaded.emit(json.loads(raw))
+                return
+        except (ValueError, json.JSONDecodeError):
+            pass
+
+        def done(values: dict[str, str]) -> None:
+            self._db.set_setting("anilist_tag_desc", json.dumps(values))
+            self._db.set_setting("anilist_tag_desc_at", str(time.time()))
+            self.tagDescriptionsLoaded.emit(values)
+
+        self._pool.start(_Worker(self._anilist_public.get_tag_descriptions, done, lambda _msg: None))
 
     def _affinity_sorted(self, results: list[MediaSummary]) -> list[MediaSummary]:
         # Same relevance heuristic as the Home page's Planning row: shows
@@ -909,6 +971,7 @@ class Backend(QObject):
     def loadEpisodes(self, slug_id: str, numeric_id: str, title: str, poster_url: str) -> None:
         self._current_anime = {
             "slug_id": slug_id,
+            "numeric_id": numeric_id,
             "title": title,
             "poster_url": poster_url,
             "anilist_id": None,
@@ -945,10 +1008,17 @@ class Backend(QObject):
             self.episodesFinished.emit([asdict(e) for e in episodes])
             if self._current_anime is not None and self._current_anime["slug_id"] == slug_id:
                 self._current_anime["slug_id"] = new_slug_id
+                self._current_anime["numeric_id"] = new_numeric_id
                 self._current_anime["episode_count"] = len(episodes)
                 self._current_anime["has_filler_data"] = any(e.filler for e in episodes)
                 self._current_anime["episodes"] = episodes
                 self._maybe_fetch_filler_fallback(new_slug_id)
+                # Catch the rolling window up on open, too: episodes may have
+                # been watched elsewhere, or a download failed while offline.
+                auto_dub = self._db.get_auto_download(new_slug_id)
+                progress = self._db.get_progress(new_slug_id)
+                if auto_dub is not None and progress is not None:
+                    self._top_up_auto_download(after=progress.episode_number - 1e-6, dub=auto_dub)
             # Unconditional: what this fills in is public AniList data (see
             # _resolve_current_anime_status), and gating it on being logged in
             # meant a logged-out detail page showed a title and nothing else.
@@ -1005,7 +1075,11 @@ class Backend(QObject):
             # quality -- the selector stays empty rather than offering
             # switches that would silently do nothing.
             self.streamQualitiesAvailable.emit([])
-            self._maybe_fetch_skip_times(episode_number)
+            saved_times = load_skip_times(saved.path)
+            if saved_times:
+                self.skipTimesReady.emit(saved_times)
+            else:
+                self._maybe_fetch_skip_times(episode_number)
             return
 
         def finish_up(info: source.StreamInfo) -> None:
@@ -1077,15 +1151,20 @@ class Backend(QObject):
         extra request and specific to the exact episode being played, so those
         are used when present. ani-skip stays as the fallback for episodes the
         source has no timings for."""
+        times = self._skip_times_of(info)
+        if times:
+            self.skipTimesReady.emit(times)
+            return
+        self._maybe_fetch_skip_times(episode_number)
+
+    @staticmethod
+    def _skip_times_of(info: source.StreamInfo) -> dict[str, dict[str, float]]:
         times = {}
         if info.skip_intro:
             times["op"] = {"start": info.skip_intro[0], "end": info.skip_intro[1]}
         if info.skip_outro:
             times["ed"] = {"start": info.skip_outro[0], "end": info.skip_outro[1]}
-        if times:
-            self.skipTimesReady.emit(times)
-            return
-        self._maybe_fetch_skip_times(episode_number)
+        return times
 
     def _maybe_fetch_skip_times(self, episode_number: float) -> None:
         """No-ops until mal_id is known -- see _resolve_current_anime_status,
@@ -1323,6 +1402,8 @@ class Backend(QObject):
 
         self._download_pool.start(_Worker(work, done, failed))
 
+    DOWNLOAD_READRATE_WHILE_PLAYING = 3.0
+
     def _run_download(self, request: DownloadRequest, destination: Path) -> None:
         """Runs on the download thread. Raises to report failure -- _Worker
         turns that into the failed() callback above."""
@@ -1339,18 +1420,34 @@ class Backend(QObject):
         url = info.variants[0].url if info.variants else info.master_url
         duration = probe_duration(url, info.referer)
 
+        # The subtitle and the skip times first: small, and fetched from the
+        # same resolve as the video, so they shouldn't wait behind a download
+        # that can take ten minutes on a slow CDN day.
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        subtitle_path = None
+        if info.subtitle_url:
+            subtitle_path = download_subtitle(
+                info.subtitle_url, destination.with_suffix(".vtt"), self._http,
+                referer=info.referer,
+            )
+        save_skip_times(destination, self._skip_times_of(info))
+
         def on_progress(fraction: float, written: int) -> None:
             # Already throttled to roughly one call per percent by the
             # downloader -- see the note in Downloader.fetch.
             self.downloadProgress.emit(request.episode_id, request.dub, fraction, written)
 
-        self._downloader.fetch(url, info.referer, destination, duration, on_progress)
-
-        subtitle_path = None
-        if info.subtitle_url:
-            subtitle_path = download_subtitle(
-                info.subtitle_url, destination.with_suffix(".vtt"), self._http
-            )
+        # Held to a few times playback speed while an episode is playing, so
+        # a queue of background downloads never starves the stream being
+        # watched. Still far faster than watching -- a 24-minute episode
+        # takes about eight -- and unthrottled the moment nothing is playing.
+        readrate = self.DOWNLOAD_READRATE_WHILE_PLAYING if self._playing else 0.0
+        try:
+            self._downloader.fetch(url, info.referer, destination, duration, on_progress,
+                                   readrate=readrate)
+        except DownloadError:
+            delete_files(subtitle_path, skip_times_path(destination))
+            raise
 
         self._db.upsert_download(
             DownloadEntry(
@@ -1373,7 +1470,8 @@ class Backend(QObject):
         entry = self._db.get_download(episode_id, dub)
         if entry is not None:
             delete_files(entry.path, entry.subtitle_path,
-                         str(Path(entry.path).with_suffix(".part.mp4")))
+                         str(Path(entry.path).with_suffix(".part.mp4")),
+                         skip_times_path(entry.path))
         self._db.delete_download(episode_id, dub)
         self.downloadsChanged.emit()
 
@@ -1393,14 +1491,222 @@ class Backend(QObject):
     @Slot(int, bool)
     def episodeWatched(self, episode_id: int, dub: bool) -> None:
         """Called by the player once an episode has actually been watched
-        through. Deletes its saved copy if the user left that on -- which is
-        the whole point of downloading it in the first place: watch it, then
-        get the space back without having to think about it."""
-        if not self.getDeleteAfterWatchingEnabled():
+        through.
+
+        Deletes saved episodes *older than the previous one*, rather than the
+        one just finished: watch 3 and episode 1 goes, while 2 and 3 stay for
+        a quick rewind or a rewatch of the ending. Streamed episodes count
+        too -- watching 3 online still clears a saved 1.
+
+        Then, for a show with auto-download on, tops the queue back up."""
+        anime = self._current_anime
+        episodes = (anime or {}).get("episodes") or []
+        watched = next((e for e in episodes if e.episode_id == episode_id), None)
+        if anime is None or watched is None:
+            # Nothing to reason about neighbours with; fall back to this one.
+            if self.getDeleteAfterWatchingEnabled() and self._db.get_download(episode_id, dub):
+                self.removeDownload(episode_id, dub)
             return
-        if self._db.get_download(episode_id, dub) is None:
+
+        slug_id = anime["slug_id"]
+        self._record_watch_event(slug_id, anime.get("title") or "", watched.number)
+
+        if self.getDeleteAfterWatchingEnabled():
+            earlier = sorted(e.number for e in episodes if e.number < watched.number)
+            keep_from = earlier[-1] if earlier else watched.number
+            for entry in self._db.downloads_for(slug_id):
+                if entry.dub == dub and entry.status == "ready" and entry.episode_number < keep_from:
+                    self.removeDownload(entry.episode_id, entry.dub)
+
+        auto_dub = self._db.get_auto_download(slug_id)
+        if auto_dub is not None:
+            self._top_up_auto_download(after=watched.number, dub=auto_dub)
+
+    # -- New-episode alerts -------------------------------------------------
+    #
+    # Follows everything in Continue Watching -- local progress and the
+    # AniList Watching list alike -- and asks AniList how far each has aired.
+    # A show with an aired episode you haven't watched goes in a row on the
+    # home page; one that aired since the last check also gets a desktop
+    # notification. AniList's schedule is the sub's: it has no dub data.
+
+    NEW_EPISODE_CHECK_MS = 30 * 60 * 1000
+
+    @Slot(result=bool)
+    def getNewEpisodeAlertsEnabled(self) -> bool:
+        return (self._db.get_setting("new_episode_alerts") or "true") == "true"
+
+    @Slot(bool)
+    def setNewEpisodeAlertsEnabled(self, value: bool) -> None:
+        self._db.set_setting("new_episode_alerts", "true" if value else "false")
+        if not value:
+            self._new_episodes = []
+            self.newEpisodesChanged.emit([])
+        else:
+            self.checkNewEpisodes()
+
+    @Slot(result=list)
+    def newEpisodes(self) -> list[dict[str, Any]]:
+        return self._new_episodes
+
+    def _followed_shows(self) -> dict[int, tuple[int, str, str]]:
+        """anilist id -> (episodes watched, source slug or "", title as shown
+        in Continue Watching), for everything there that can be tied to an
+        AniList entry."""
+        meta = self._db.anime_meta()
+        followed: dict[int, tuple[int, str, str]] = {}
+        for row in self._continue_watching_rows():
+            anilist_id = row["anilist_id"] or (meta.get(row["slug_id"]) or ("", None))[1]
+            if not anilist_id:
+                continue
+            number = row["episode_number"]
+            # Local progress points at the episode being watched: it counts
+            # as seen only once it's nearly over.
+            if row["slug_id"] and not (row["duration_seconds"] > 0
+                                       and row["position_seconds"] >= row["duration_seconds"] * 0.9):
+                number -= 1
+            watched = int(max(0, number))
+            previous = followed.get(anilist_id)
+            if previous is None or watched > previous[0]:
+                followed[anilist_id] = (watched, row["slug_id"] or (previous[1] if previous else ""),
+                                        row["title"])
+        return followed
+
+    @Slot()
+    def checkNewEpisodes(self) -> None:
+        if not self.getNewEpisodeAlertsEnabled():
             return
-        self.removeDownload(episode_id, dub)
+        followed = self._followed_shows()
+        if not followed:
+            return
+
+        def work() -> list[AiringState]:
+            return self._anilist_public.get_airing(list(followed))
+
+        def done(airing: list[AiringState]) -> None:
+            watched = {media_id: entry[0] for media_id, entry in followed.items()}
+            waiting, announce, updates = find_new_episodes(airing, watched, self._db.airing_seen())
+            for media_id, episode in updates.items():
+                self._db.set_airing_seen(media_id, episode)
+            self._new_episodes = [
+                self._card(
+                    anilist_id=n.state.media.id,
+                    slug_id=followed[n.state.media.id][1],
+                    numeric_id=followed[n.state.media.id][1].rsplit("-", 1)[-1]
+                    if followed[n.state.media.id][1] else "",
+                    # The name it has in Continue Watching, not AniList's:
+                    # the same show under two spellings reads as two shows.
+                    title=followed[n.state.media.id][2] or n.state.media.title,
+                    poster_url=n.state.media.cover_url or "",
+                    reason=(f"Episode {n.state.latest_aired} is out" if n.unwatched == 1
+                            else f"Ep {n.state.latest_aired} out · {n.unwatched} to catch up"),
+                )
+                for n in waiting
+            ]
+            self.newEpisodesChanged.emit(self._new_episodes)
+            for n in announce:
+                _notify_desktop(
+                    followed[n.state.media.id][2] or n.state.media.title,
+                    f"Episode {n.state.latest_aired} is out"
+                    + (f" · {n.unwatched} to catch up on" if n.unwatched > 1 else ""),
+                )
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    # -- "Because you watched" ------------------------------------------------
+
+    @Slot()
+    def refreshBecauseYouWatched(self) -> None:
+        """AniList's community recommendations for the show most recently
+        played, minus anything already on the user's list. One request,
+        cached like every other AniList read."""
+        meta = self._db.anime_meta()
+        seed = None
+        for row in self._continue_watching_rows():
+            anilist_id = row["anilist_id"] or (meta.get(row["slug_id"]) or ("", None))[1]
+            if anilist_id:
+                seed = (anilist_id, row["title"])
+                break
+        if seed is None:
+            self.becauseYouWatchedReady.emit("", [])
+            return
+        seed_id, seed_title = seed
+        known = self._anilist_known_ids() | {seed_id}
+
+        def work() -> list[MediaSummary]:
+            return list(self._anilist_public.get_media_extras(seed_id).recommendations)
+
+        def done(recommendations: list[MediaSummary]) -> None:
+            cards = [self._media_summary_to_card(m) for m in recommendations if m.id not in known]
+            self.becauseYouWatchedReady.emit(seed_title, cards)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    # -- Watch statistics -----------------------------------------------------
+    #
+    # Two things are recorded, both locally and nowhere else: seconds spent
+    # actually playing (reported by the player every few seconds while it
+    # plays -- paused time is not watching), and each episode finished.
+
+    def _record_watch_event(self, slug_id: str, title: str, number: float) -> None:
+        self._db.add_watch_event(slug_id, title, number, time.time())
+
+    @Slot(float)
+    def addWatchTime(self, seconds: float) -> None:
+        anime = self._current_anime
+        if anime is None or seconds <= 0:
+            return
+        day = time.strftime("%Y-%m-%d")
+        self._db.add_watch_time(day, anime["slug_id"], anime.get("title") or "", seconds)
+
+    @Slot(result="QVariantMap")
+    def watchStats(self) -> dict[str, Any]:
+        return compute_watch_stats(
+            self._db.watch_time_rows(), self._db.watch_event_rows(), self._db.anime_meta(),
+            today=time.strftime("%Y-%m-%d"),
+        )
+
+    # -- Auto-download --------------------------------------------------------
+    #
+    # For long shows: rather than saving all 1,100 episodes of One Piece,
+    # keep the next few on disk and add one each time one is watched. Watch 3
+    # and episode 13 is queued (with 1 deleted, see episodeWatched) -- so the
+    # disk always holds the previous episode, the current one and ten ahead.
+
+    AUTO_DOWNLOAD_AHEAD = 10
+
+    @Slot(str, result=bool)
+    def isAutoDownload(self, slug_id: str) -> bool:
+        return self._db.get_auto_download(slug_id) is not None
+
+    @Slot(str, bool, bool, float)
+    def setAutoDownload(self, slug_id: str, enabled: bool, dub: bool, from_number: float) -> None:
+        """from_number is where to start: the episode the user is up to."""
+        self._db.set_auto_download(slug_id, enabled, dub)
+        if enabled:
+            self._top_up_auto_download(after=from_number - 1e-6, dub=dub)
+        self.downloadsChanged.emit()
+
+    def _top_up_auto_download(self, after: float, dub: bool) -> None:
+        """Queues the next AUTO_DOWNLOAD_AHEAD episodes after `after` that
+        aren't already saved or queued -- nearest first, so the one you'll
+        watch next is always the first to be ready."""
+        anime = self._current_anime
+        episodes = (anime or {}).get("episodes") or []
+        if anime is None or not episodes or not ffmpeg_available():
+            return
+        ahead = sorted((e for e in episodes if e.number > after), key=lambda e: e.number)
+        for episode in ahead[: self.AUTO_DOWNLOAD_AHEAD]:
+            self._queue_download({
+                "episode_id": episode.episode_id,
+                "dub": dub,
+                "slug_id": anime["slug_id"],
+                "numeric_id": anime.get("numeric_id") or "",
+                "title": anime.get("title") or "",
+                "poster_url": anime.get("poster_url") or "",
+                "episode_number": episode.number,
+            })
+        self.downloadsChanged.emit()
 
     # Listings built from this machine rather than from a catalog. They can't
     # be expressed as AniList filters -- "what I have on disk" and "what I was
@@ -1474,6 +1780,40 @@ class Backend(QObject):
     @Slot()
     def clearBrowseState(self) -> None:
         self._db.delete_setting("browse_state")
+
+    # Named filter sets the user saved themselves ("Short romcoms"). Stored
+    # as the same state dict Browse already saves and restores, so a preset
+    # is exactly "put the page back like this".
+
+    @Slot(result=list)
+    def filterPresets(self) -> list[dict[str, Any]]:
+        raw = self._db.get_setting("filter_presets")
+        try:
+            saved = json.loads(raw) if raw else []
+        except json.JSONDecodeError:
+            return []
+        return [p for p in saved if isinstance(p, dict) and p.get("name")] if isinstance(saved, list) else []
+
+    @Slot(str, dict)
+    def saveFilterPreset(self, name: str, state: dict[str, Any]) -> None:
+        name = name.strip()
+        if not name:
+            return
+        # Saving under an existing name updates it in place, keeping its spot.
+        presets = self.filterPresets()
+        entry = {"name": name, "state": dict(state or {})}
+        for i, preset in enumerate(presets):
+            if preset["name"].lower() == name.lower():
+                presets[i] = entry
+                break
+        else:
+            presets.append(entry)
+        self._db.set_setting("filter_presets", json.dumps(presets))
+
+    @Slot(str)
+    def deleteFilterPreset(self, name: str) -> None:
+        presets = [p for p in self.filterPresets() if p["name"] != name]
+        self._db.set_setting("filter_presets", json.dumps(presets))
 
     # -- Window geometry ----------------------------------------------------
     #
@@ -2207,6 +2547,9 @@ class Backend(QObject):
                 self.anilistCurrentStatus.emit("", 0)
             if summary is not None:
                 self._fetch_anime_extras(summary.id, slug_id)
+                # Remembered for watch stats (genres) and the "Because you
+                # watched" row (the AniList id to ask for recommendations).
+                self._db.set_anime_meta(slug_id, title, summary.id, list(summary.genres))
                 self.anilistMediaDetails.emit(
                     {
                         "average_score": summary.average_score or 0,

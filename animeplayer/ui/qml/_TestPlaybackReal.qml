@@ -115,8 +115,12 @@ AppWindow {
             let page = root.pageStack.currentItem
             if (page && page.hasOwnProperty("controlsVisible")) {
                 page.controlsVisible = true
-                page.seekRelative(1100)
-                root.log("parked in outro, controls pinned")
+                // Just before the outro, so auto-skip fires and its notice
+                // can be screenshotted. Falls back to a fixed jump when the
+                // episode has no outro timing.
+                if (page.skipEd) page.seekTo(page.skipEd.start - 2)
+                else page.seekRelative(1100)
+                root.log("parked before outro, controls pinned")
             }
         }
     }

@@ -6,6 +6,7 @@ that's all Continue Watching needs. Per-episode history isn't tracked yet.
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import threading
@@ -102,6 +103,46 @@ CREATE TABLE IF NOT EXISTS downloads (
     message        TEXT,               -- why it failed, for the UI to show
     created_at     REAL NOT NULL,
     PRIMARY KEY (episode_id, dub)
+);
+
+-- Shows that keep their next few episodes downloaded as you watch (see
+-- Backend._top_up_auto_download). Keyed by the source's slug, since that is
+-- what episodes and downloads are keyed by.
+CREATE TABLE IF NOT EXISTS auto_download (
+    slug_id TEXT PRIMARY KEY,
+    dub     INTEGER NOT NULL DEFAULT 0
+);
+
+-- Watch statistics. Seconds actually spent playing, bucketed per day and
+-- show -- a counter rather than a log, so it stays small however much is
+-- watched -- plus one row per episode finished.
+CREATE TABLE IF NOT EXISTS watch_time (
+    day     TEXT NOT NULL,     -- YYYY-MM-DD, local time
+    slug_id TEXT NOT NULL,
+    title   TEXT NOT NULL,
+    seconds REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, slug_id)
+);
+CREATE TABLE IF NOT EXISTS watch_events (
+    slug_id        TEXT NOT NULL,
+    title          TEXT NOT NULL,
+    episode_number REAL NOT NULL,
+    watched_at     REAL NOT NULL
+);
+-- What a show is, remembered when its page is opened, so stats can say
+-- which genres the time went to without asking AniList again.
+CREATE TABLE IF NOT EXISTS anime_meta (
+    slug_id    TEXT PRIMARY KEY,
+    title      TEXT NOT NULL,
+    anilist_id INTEGER,
+    genres     TEXT NOT NULL DEFAULT '[]'
+);
+
+-- The newest aired episode already announced per show, so a new-episode
+-- alert fires once per episode rather than on every check.
+CREATE TABLE IF NOT EXISTS airing_seen (
+    anilist_id INTEGER PRIMARY KEY,
+    episode    INTEGER NOT NULL
 );
 """
 
@@ -318,6 +359,105 @@ class Database:
                 "INSERT INTO anime_prefs (anilist_id, ignore_anilist) VALUES (?, ?) "
                 "ON CONFLICT(anilist_id) DO UPDATE SET ignore_anilist=excluded.ignore_anilist",
                 (anilist_id, 1 if ignore else 0),
+            )
+            self._conn.commit()
+
+    # -- auto-download -----------------------------------------------------
+
+    def get_auto_download(self, slug_id: str) -> bool | None:
+        """None when off; otherwise whether it keeps the dub (True) or the
+        sub (False) downloaded."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT dub FROM auto_download WHERE slug_id = ?", (slug_id,)
+            ).fetchone()
+        return None if row is None else bool(row["dub"])
+
+    def set_auto_download(self, slug_id: str, enabled: bool, dub: bool = False) -> None:
+        with self._lock:
+            if enabled:
+                self._conn.execute(
+                    "INSERT INTO auto_download (slug_id, dub) VALUES (?, ?) "
+                    "ON CONFLICT(slug_id) DO UPDATE SET dub=excluded.dub",
+                    (slug_id, 1 if dub else 0),
+                )
+            else:
+                self._conn.execute("DELETE FROM auto_download WHERE slug_id = ?", (slug_id,))
+            self._conn.commit()
+
+    # -- watch statistics ---------------------------------------------------
+
+    def add_watch_time(self, day: str, slug_id: str, title: str, seconds: float) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO watch_time (day, slug_id, title, seconds) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(day, slug_id) DO UPDATE SET seconds = seconds + excluded.seconds, "
+                "title = excluded.title",
+                (day, slug_id, title, seconds),
+            )
+            self._conn.commit()
+
+    def add_watch_event(self, slug_id: str, title: str, episode_number: float, at: float) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO watch_events (slug_id, title, episode_number, watched_at) "
+                "VALUES (?, ?, ?, ?)",
+                (slug_id, title, episode_number, at),
+            )
+            self._conn.commit()
+
+    def watch_time_rows(self) -> list[tuple[str, str, str, float]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT day, slug_id, title, seconds FROM watch_time ORDER BY day"
+            ).fetchall()
+        return [(r["day"], r["slug_id"], r["title"], r["seconds"]) for r in rows]
+
+    def watch_event_rows(self) -> list[tuple[str, str, float, float]]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT slug_id, title, episode_number, watched_at FROM watch_events "
+                "ORDER BY watched_at"
+            ).fetchall()
+        return [(r["slug_id"], r["title"], r["episode_number"], r["watched_at"]) for r in rows]
+
+    def set_anime_meta(self, slug_id: str, title: str, anilist_id: int | None,
+                       genres: list[str]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO anime_meta (slug_id, title, anilist_id, genres) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(slug_id) DO UPDATE SET title=excluded.title, "
+                "anilist_id=COALESCE(excluded.anilist_id, anime_meta.anilist_id), "
+                "genres=excluded.genres",
+                (slug_id, title, anilist_id, json.dumps(list(genres))),
+            )
+            self._conn.commit()
+
+    def anime_meta(self) -> dict[str, tuple[str, int | None, list[str]]]:
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM anime_meta").fetchall()
+        out = {}
+        for r in rows:
+            try:
+                genres = json.loads(r["genres"])
+            except ValueError:
+                genres = []
+            out[r["slug_id"]] = (r["title"], r["anilist_id"], genres)
+        return out
+
+    # -- new-episode alerts -------------------------------------------------
+
+    def airing_seen(self) -> dict[int, int]:
+        with self._lock:
+            rows = self._conn.execute("SELECT anilist_id, episode FROM airing_seen").fetchall()
+        return {r["anilist_id"]: r["episode"] for r in rows}
+
+    def set_airing_seen(self, anilist_id: int, episode: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO airing_seen (anilist_id, episode) VALUES (?, ?) "
+                "ON CONFLICT(anilist_id) DO UPDATE SET episode=MAX(episode, excluded.episode)",
+                (anilist_id, episode),
             )
             self._conn.commit()
 

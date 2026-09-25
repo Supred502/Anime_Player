@@ -72,6 +72,7 @@ Kirigami.ScrollablePage {
         autoNextToggle.checked = backend.getAutoNextEnabled()
         autoFullscreenToggle.checked = backend.getAutoFullscreenEnabled()
         deleteWatchedToggle.checked = backend.getDeleteAfterWatchingEnabled()
+        newEpisodeToggle.checked = backend.getNewEpisodeAlertsEnabled()
         page.themeAccents = backend.themeAccents()
         page.currentAccent = backend.theme.accentName
         page.canDownload = backend.canDownload()
@@ -206,10 +207,26 @@ Kirigami.ScrollablePage {
             }
 
             AppCheckBox {
+                id: newEpisodeToggle
+                Kirigami.FormData.label: "Alerts:"
+                text: "Tell me when a show I'm watching gets a new episode"
+                onToggled: backend.setNewEpisodeAlertsEnabled(checked)
+            }
+            Controls.Label {
+                Kirigami.FormData.label: " "
+                text: "Checked every half hour while the app is open, for everything in "
+                    + "Continue Watching. Uses AniList's airing schedule, which is for the sub."
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                opacity: 0.7
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
+
+            AppCheckBox {
                 id: deleteWatchedToggle
                 Kirigami.FormData.label: "Downloads:"
                 enabled: page.canDownload
-                text: "Delete a saved episode once I've watched it"
+                text: "Clear saved episodes as I watch (keeps the one before)"
                 onToggled: backend.setDeleteAfterWatchingEnabled(checked)
             }
             Controls.Label {

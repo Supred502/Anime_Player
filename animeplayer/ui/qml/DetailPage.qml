@@ -125,6 +125,9 @@ Kirigami.ScrollablePage {
     // while the app runs, and a binding that reads `backend` is re-evaluated
     // during teardown after the context property is gone.
     property bool canDownload: false
+    // Keeps the next few episodes saved as you watch -- see
+    // backend.setAutoDownload.
+    property bool autoDownload: false
 
     function refreshDownloads() {
         if (!page.anime.slug_id) return
@@ -271,6 +274,7 @@ Kirigami.ScrollablePage {
         backend.loadEpisodes(anime.slug_id, anime.numeric_id, anime.title, anime.poster_url)
         page.localProgress = backend.getLocalProgress(anime.slug_id)
         page.canDownload = backend.canDownload()
+        page.autoDownload = backend.isAutoDownload(anime.slug_id)
         page.refreshDownloads()
     }
 
@@ -1067,6 +1071,37 @@ Kirigami.ScrollablePage {
                         visible: page.anilistId !== 0
                         text: "Watching this won't touch your AniList progress. "
                             + "The buttons above still work."
+                        wrapMode: Text.WordWrap
+                        opacity: 0.6
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+
+                    Kirigami.Separator {
+                        Layout.fillWidth: true
+                        Layout.topMargin: Kirigami.Units.largeSpacing
+                        Layout.bottomMargin: Kirigami.Units.smallSpacing
+                        visible: page.canDownload
+                    }
+
+                    AppCheckBox {
+                        Layout.fillWidth: true
+                        visible: page.canDownload
+                        text: "Keep the next 10 episodes saved (" + (page.dub ? "dub" : "sub") + ")"
+                        checked: page.autoDownload
+                        onToggled: {
+                            page.autoDownload = checked
+                            backend.setAutoDownload(page.anime.slug_id, checked, page.dub,
+                                                    page.resumeEpisode)
+                            if (checked) showPassiveNotification("Saving the next episodes in the background")
+                        }
+                    }
+
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        visible: page.canDownload
+                        text: "For long shows. Each episode you finish queues one more, and "
+                            + "older ones are cleared as you go. Downloads slow down while "
+                            + "you're watching, so they never interrupt the episode on screen."
                         wrapMode: Text.WordWrap
                         opacity: 0.6
                         font.pixelSize: Kirigami.Theme.smallFont.pixelSize

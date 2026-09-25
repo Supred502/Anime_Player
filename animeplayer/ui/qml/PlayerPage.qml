@@ -158,6 +158,9 @@ Kirigami.Page {
     // Shared actions -- used by both the keyboard shortcuts below and by
     // remote-control commands (see onRemoteCommand in the Connections block),
     // so there's exactly one implementation of each behavior.
+    function seekTo(seconds) {
+        video.seekAbsolute(Math.max(0, Math.min(video.duration, seconds)))
+    }
     function seekRelative(deltaSeconds) {
         video.seekAbsolute(Math.max(0, Math.min(video.duration, video.position + deltaSeconds)))
     }
@@ -167,6 +170,26 @@ Kirigami.Page {
     function skipOutroNow() {
         if (page.skipEd) { page.edAutoSkipped = true; video.seekAbsolute(page.skipEd.end) }
     }
+    // An automatic skip is announced for a few seconds, with a way back:
+    // otherwise it is indistinguishable from the video jumping by itself,
+    // and there is no way to watch an opening you actually wanted to see.
+    property string justSkipped: ""   // "intro", "outro" or ""
+    function announceSkip(which) {
+        page.justSkipped = which
+        skipNotice.restart()
+    }
+    function undoSkip() {
+        let range = page.justSkipped === "intro" ? page.skipOp : page.skipEd
+        page.justSkipped = ""
+        // The *AutoSkipped guard is still set, so this won't skip again.
+        if (range) video.seekAbsolute(range.start)
+    }
+    Timer {
+        id: skipNotice
+        interval: 6000
+        onTriggered: page.justSkipped = ""
+    }
+
     function nextEpisode() { backend.loadNextEpisode(page.episodeNumber, page.dub) }
     function previousEpisode() { backend.loadPreviousEpisode(page.episodeNumber, page.dub) }
     function volumeUp() { video.setVolume(video.volume + 10) }
@@ -221,6 +244,7 @@ Kirigami.Page {
             page.skipEd = null
             page.opAutoSkipped = false
             page.edAutoSkipped = false
+            page.justSkipped = ""
             page.autoRetried = false
             // This page is reused for the next episode rather than rebuilt,
             // so the "already counted as watched" guard has to be cleared or
@@ -256,6 +280,16 @@ Kirigami.Page {
         running: !video.paused && !page.loadingStream
         repeat: true
         onTriggered: backend.savePlaybackPosition(page.episodeId, page.episodeNumber, video.position)
+    }
+
+    // Time actually spent watching, for the Stats page. Counted in the
+    // player rather than inferred from episodes finished: half an episode
+    // is still half an episode's time, and paused time is not watching.
+    Timer {
+        interval: 5000
+        running: !video.paused && !page.loadingStream && video.duration > 0
+        repeat: true
+        onTriggered: backend.addWatchTime(interval / 1000)
     }
 
     // Keeps the phone remote's "now playing" readout reasonably fresh --
@@ -317,10 +351,12 @@ Kirigami.Page {
             if (page.skipOp && !page.opAutoSkipped && value >= page.skipOp.start && value < page.skipOp.end) {
                 page.opAutoSkipped = true
                 video.seekAbsolute(page.skipOp.end)
+                page.announceSkip("intro")
             }
             if (page.skipEd && !page.edAutoSkipped && value >= page.skipEd.start && value < page.skipEd.end) {
                 page.edAutoSkipped = true
                 video.seekAbsolute(page.skipEd.end)
+                page.announceSkip("outro")
             }
         }
         onDurationChanged: (value) => { if (value > 0) { page.stalled = false; stallTimer.stop() } }
@@ -436,13 +472,20 @@ Kirigami.Page {
         anchors.margins: Kirigami.Units.largeSpacing
         spacing: Kirigami.Units.smallSpacing
 
-        component SkipButton: Controls.Button {
+        component SkipButton: AppButton {
             property var range: null
-            visible: !page.loadingStream && range
+            visible: !page.loadingStream && !!range
                 && video.position >= range.start && video.position < range.end
             icon.name: "media-seek-forward-symbolic"
             display: Controls.AbstractButton.TextBesideIcon
-            highlighted: true
+            accented: true
+        }
+
+        AppButton {
+            visible: page.justSkipped !== "" && !page.loadingStream
+            text: page.justSkipped === "intro" ? "Skipped intro \u00b7 Watch it" : "Skipped outro \u00b7 Watch it"
+            icon.name: "edit-undo-symbolic"
+            onClicked: page.undoSkip()
         }
 
         SkipButton {

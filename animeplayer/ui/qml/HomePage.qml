@@ -34,6 +34,9 @@ Kirigami.ScrollablePage {
     property var genres: []
     property var continueWatching: []
     property var planning: []
+    property var newEpisodes: []
+    property string becauseTitle: ""
+    property var becauseCards: []
 
     // key -> card array, and key -> "loading"/"ready"/"failed". Reassigned
     // rather than mutated in place: QML only notifies on assignment for
@@ -71,6 +74,8 @@ Kirigami.ScrollablePage {
         backend.fetchAnilistGenres()
         backend.refreshContinueWatching()
         backend.refreshAnilistHomeLists()
+        page.newEpisodes = backend.newEpisodes()
+        backend.refreshBecauseYouWatched()
         for (let i = 0; i < page.sourceRows.length; i++) page.setRowState(page.sourceRows[i].key, "loading")
         backend.refreshHomeFeed()
     }
@@ -134,6 +139,11 @@ Kirigami.ScrollablePage {
         }
         function onContinueWatchingChanged(entries) { page.continueWatching = entries }
         function onAnilistPlanningChanged(entries) { page.planning = entries }
+        function onNewEpisodesChanged(entries) { page.newEpisodes = entries }
+        function onBecauseYouWatchedReady(title, cards) {
+            page.becauseTitle = title
+            page.becauseCards = cards
+        }
         function onHomeSpotlightReady(entries) { page.spotlight = entries }
         function onHomeRowReady(key, cards) {
             page.setRowData(key, cards)
@@ -235,6 +245,29 @@ Kirigami.ScrollablePage {
                         onClicked: page.openContinueEntry(page.continueWatching[index])
                     }
                 }
+            }
+
+            // Shows being followed that have aired something not yet
+            // watched. Right under Continue Watching: it's the same question
+            // -- "what do I watch now" -- answered by the schedule.
+            PosterRow {
+                Layout.fillWidth: true
+                visible: page.newEpisodes.length > 0
+                heading: "New Episodes"
+                model: page.newEpisodes
+                subtitleFor: (entry) => entry.reason || ""
+                onCardClicked: (index) => page.openContinueEntry(page.newEpisodes[index])
+            }
+
+            PosterRow {
+                Layout.fillWidth: true
+                visible: page.becauseCards.length > 0
+                heading: "Because you watched " + page.becauseTitle
+                model: page.becauseCards
+                subtitleFor: (entry) => [entry.kind, entry.rating ? "\u2605 " + entry.rating : ""]
+                    .filter((part) => !!part).join(" · ")
+                onCardClicked: (index) => backend.openAnilistAnime(
+                    page.becauseCards[index].anilist_id, page.becauseCards[index].title)
             }
 
             // Breaks up the run of shelves, and turns the filters people

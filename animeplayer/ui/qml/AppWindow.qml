@@ -207,6 +207,13 @@ Kirigami.ApplicationWindow {
                 onClicked: root.goContinue()
             }
 
+            NavButton {
+                text: "Stats"
+                iconName: "office-chart-bar-symbolic"
+                current: root.section === "stats"
+                onClicked: root.goTo("stats", "StatsPage.qml")
+            }
+
             Item { Layout.fillWidth: true }
 
             NavButton {
@@ -234,11 +241,27 @@ Kirigami.ApplicationWindow {
                 onClicked: root.toggleMaximised()
             }
             WindowButton {
+                id: closeButton
                 iconName: "window-close-symbolic"
                 hint: "Close"
                 danger: true
+                lit: closeZone.hovered
                 onClicked: root.close()
             }
+        }
+
+        // Everything from the close button to the window's top and right
+        // edges counts as the close button. The bar keeps a margin above its
+        // buttons, so without this the very corner -- where a pointer thrown
+        // at the corner of the screen lands -- hit nothing.
+        Item {
+            id: closeZone
+            readonly property bool hovered: closeZoneHover.hovered
+            x: closeButton.x
+            width: navBar.width - closeButton.x
+            height: closeButton.y + closeButton.height
+            HoverHandler { id: closeZoneHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: root.close() }
         }
     }
 
@@ -315,7 +338,12 @@ Kirigami.ApplicationWindow {
         property string iconName: ""
 
         hoverEnabled: true
-        Layout.preferredWidth: navContent.implicitWidth + Kirigami.Units.largeSpacing * 2
+        // Padding on both sides rather than just extra width: the content is
+        // laid out from the left, so width alone left the icon flush against
+        // the tint's left edge with all the slack on the right.
+        leftPadding: Kirigami.Units.largeSpacing
+        rightPadding: Kirigami.Units.largeSpacing
+        Layout.preferredWidth: navContent.implicitWidth + leftPadding + rightPadding
         Layout.preferredHeight: root.navItemHeight
 
         background: NavBackground { on: nav.current; lit: nav.hovered }
@@ -348,18 +376,22 @@ Kirigami.ApplicationWindow {
         // Shown on hover. "Restore" and "Maximise" are the same button, so
         // the caller passes the label rather than it being derived here.
         property string hint: ""
+        // Hover coming from somewhere other than the button itself -- see
+        // the close zone in the nav bar.
+        property bool lit: false
+        readonly property bool shownHovered: hovered || lit
 
         hoverEnabled: true
         Layout.preferredWidth: root.navItemHeight
         Layout.preferredHeight: root.navItemHeight
 
-        Controls.ToolTip.visible: hovered && winButton.hint !== ""
+        Controls.ToolTip.visible: shownHovered && winButton.hint !== ""
         Controls.ToolTip.text: winButton.hint
         Controls.ToolTip.delay: 400
 
         background: Rectangle {
             radius: Kirigami.Units.smallSpacing
-            color: !winButton.hovered ? "transparent"
+            color: !winButton.shownHovered ? "transparent"
                  : winButton.danger ? Kirigami.Theme.negativeTextColor
                  : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
                            Kirigami.Theme.textColor.b, 0.15)
@@ -377,7 +409,7 @@ Kirigami.ApplicationWindow {
                 isMask: true
                 width: Kirigami.Units.iconSizes.small
                 height: width
-                color: winButton.danger && winButton.hovered ? "white" : Kirigami.Theme.textColor
+                color: winButton.danger && winButton.shownHovered ? "white" : Kirigami.Theme.textColor
             }
         }
 

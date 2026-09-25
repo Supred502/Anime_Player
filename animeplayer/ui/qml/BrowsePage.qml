@@ -66,6 +66,8 @@ Kirigami.ScrollablePage {
     // Filled in once on load -- see the Instantiator below for why this is
     // not a binding.
     property var catalogPresets: []
+    // The user's own saved filter sets: [{name, state}].
+    property var userPresets: []
     // Listings built from this machine (Continue Watching, Downloaded) rather
     // than from a catalog. Non-empty means one of them is showing, and the
     // filter controls are put away while it is: "what I have on disk" is not
@@ -79,10 +81,26 @@ Kirigami.ScrollablePage {
     // is empty ("" none, "*" every tag).
     property string tagQuery: ""
     property string tagLetter: ""
+    // AniList's own one-line explanation of each tag, for hover text: many
+    // of them (Iyashikei, Inseki, Henshin) mean nothing to most people.
+    property var tagDescriptions: ({})
+
+    // How many tags are required / excluded, for the strip's two views that
+    // list just those.
+    readonly property int includedTagCount: Object.keys(tagStates).filter((k) => tagStates[k] === 1).length
+    readonly property int excludedTagCount: Object.keys(tagStates).filter((k) => tagStates[k] === 2).length
     // A new list (another letter, another search) starts capped again.
     // A tag chosen, or cleared, from outside the letter or search on show
     // must still join the list -- it's what the section's count reads.
-    onTagStatesChanged: page.refreshShownTags()
+    onTagStatesChanged: {
+        // Cleared the last one while looking at just those: back to nothing
+        // open, not an empty view with its button gone.
+        if ((page.tagLetter === "+" && page.includedTagCount === 0)
+                || (page.tagLetter === "-" && page.excludedTagCount === 0)) {
+            page.tagLetter = ""
+        }
+        page.refreshShownTags()
+    }
     onTagLetterChanged: { tagSection.limit = tagSection.baseLimit; page.refreshShownTags() }
 
     // "A" -> 24 and so on, for the alphabet strip. Digits share one "#".
@@ -192,9 +210,11 @@ Kirigami.ScrollablePage {
 
     Component.onCompleted: {
         page.catalogPresets = backend.catalogs()
+        page.userPresets = backend.filterPresets()
         page.localCatalogs = backend.localCatalogs()
         backend.fetchAnilistGenres()
         backend.fetchAnilistTags()
+        backend.fetchTagDescriptions()
         if (page.startWithRecommendations) {
             page.loadRecommendations()
         } else if (page.startGenre !== "") {
@@ -222,6 +242,7 @@ Kirigami.ScrollablePage {
         // source carries no adult titles either -- so the Hentai genre can
         // only ever come back empty. Offering it just looks broken.
         function onAnilistGenresLoaded(list) { page.genres = list.filter((name) => name !== "Hentai") }
+        function onTagDescriptionsLoaded(map) { page.tagDescriptions = map }
         function onAnilistTagsLoaded(list) {
             page.allTags = list
             page.refreshShownTags()
@@ -383,6 +404,26 @@ Kirigami.ScrollablePage {
         page.rememberState()
     }
 
+    function applyUserPreset(preset) {
+        let state = Object.assign({}, preset.state)
+        state.presetLabel = preset.name
+        state.filtersOpen = page.filtersOpen
+        page.restoreBrowseState(state)
+        page.rememberState()
+    }
+
+    function saveUserPreset(name) {
+        let state = page.browseState()
+        // What the preset is called goes on the button once it's applied;
+        // the label that happened to be showing when it was saved does not.
+        delete state.presetLabel
+        delete state.filtersOpen
+        backend.saveFilterPreset(name, state)
+        page.userPresets = backend.filterPresets()
+        page.presetLabel = name.trim()
+        page.rememberState()
+    }
+
     function clearFilters(skipReload) {
         page.localKey = ""
         page.filterSeason = ""
@@ -471,6 +512,8 @@ Kirigami.ScrollablePage {
         let shown = []
         if (needle === "") {
             shown = page.tagLetter === "*" ? page.allTags.slice()
+                  : page.tagLetter === "+" ? Object.keys(page.tagStates).filter((k) => page.tagStates[k] === 1).sort()
+                  : page.tagLetter === "-" ? Object.keys(page.tagStates).filter((k) => page.tagStates[k] === 2).sort()
                   : page.allTags.filter((tag) => page.tagBucket(tag) === page.tagLetter)
         } else {
             // Anywhere in the name counts ("matic" finds Achromatic), but a
@@ -498,8 +541,11 @@ Kirigami.ScrollablePage {
         }
         // Selected tags stay visible even when they fall outside the list --
         // otherwise retyping the search silently hides a filter still applied.
+        // Not in the required/excluded views, whose whole point is showing
+        // one of the two.
+        let splitView = needle === "" && (page.tagLetter === "+" || page.tagLetter === "-")
         for (let name in page.tagStates) {
-            if (shown.indexOf(name) < 0) shown.push(name)
+            if (!splitView && shown.indexOf(name) < 0) shown.push(name)
         }
         page.shownTags = shown
     }
@@ -610,6 +656,68 @@ Kirigami.ScrollablePage {
                             required property var modelData
                             text: modelData.label
                             onTriggered: page.applyPreset(modelData.key)
+                        }
+                    }
+                }
+            }
+
+            // Filter sets the user named and saved. Its own menu rather than
+            // more rows in Quick picks: those are the source's rankings, and
+            // these are yours.
+            AppButton {
+                text: "Presets"
+                icon.name: "bookmarks-symbolic"
+                onClicked: userPresetMenu.popup()
+
+                Controls.Menu {
+                    Kirigami.Theme.inherit: true
+                    id: userPresetMenu
+
+                    Instantiator {
+                        model: page.userPresets
+                        onObjectAdded: (index, object) => userPresetMenu.insertItem(index, object)
+                        onObjectRemoved: (index, object) => userPresetMenu.removeItem(object)
+                        delegate: Controls.MenuItem {
+                            id: presetItem
+                            required property var modelData
+                            text: modelData.name
+                            onTriggered: page.applyUserPreset(modelData)
+                            contentItem: RowLayout {
+                                spacing: Kirigami.Units.smallSpacing
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    text: presetItem.text
+                                    elide: Text.ElideRight
+                                }
+                                Controls.ToolButton {
+                                    Kirigami.Theme.inherit: true
+                                    icon.name: "edit-delete-symbolic"
+                                    implicitWidth: implicitHeight
+                                    onClicked: {
+                                        backend.deleteFilterPreset(presetItem.modelData.name)
+                                        page.userPresets = backend.filterPresets()
+                                    }
+                                    Controls.ToolTip.visible: hovered
+                                    Controls.ToolTip.text: "Delete this preset"
+                                }
+                            }
+                        }
+                    }
+                    Controls.MenuItem {
+                        enabled: false
+                        visible: page.userPresets.length === 0
+                        height: visible ? implicitHeight : 0
+                        text: "No saved presets yet"
+                    }
+                    Controls.MenuSeparator {}
+                    Controls.MenuItem {
+                        text: "Save current filters\u2026"
+                        icon.name: "document-save-symbolic"
+                        enabled: page.localKey === ""
+                        onTriggered: {
+                            presetNameField.text = page.userPresets.some((p) => p.name === page.presetLabel)
+                                ? page.presetLabel : ""
+                            savePresetDialog.open()
                         }
                     }
                 }
@@ -758,6 +866,7 @@ Kirigami.ScrollablePage {
                 names: page.shownTags
                 keys: page.shownTags
                 states: page.tagStates
+                hints: page.tagDescriptions
                 collapsible: true
                 baseLimit: 40
                 // Shown even with no chips: until a letter is picked or
@@ -783,6 +892,28 @@ Kirigami.ScrollablePage {
                         spacing: 2
                         visible: page.tagQuery.trim() === ""
 
+                        // Just what's set: everything required, everything
+                        // excluded. Only offered once there's something.
+                        Controls.ToolButton {
+                            Kirigami.Theme.inherit: true
+                            visible: page.includedTagCount > 0
+                            text: "\u2713 " + page.includedTagCount
+                            checkable: true
+                            checked: page.tagLetter === "+"
+                            onClicked: page.tagLetter = checked ? "+" : ""
+                            Controls.ToolTip.visible: hovered
+                            Controls.ToolTip.text: "Required tags"
+                        }
+                        Controls.ToolButton {
+                            Kirigami.Theme.inherit: true
+                            visible: page.excludedTagCount > 0
+                            text: "\u2717 " + page.excludedTagCount
+                            checkable: true
+                            checked: page.tagLetter === "-"
+                            onClicked: page.tagLetter = checked ? "-" : ""
+                            Controls.ToolTip.visible: hovered
+                            Controls.ToolTip.text: "Excluded tags"
+                        }
                         Controls.ToolButton {
                             Kirigami.Theme.inherit: true
                             text: "All"
@@ -819,6 +950,39 @@ Kirigami.ScrollablePage {
         }
 
         Kirigami.Separator { Layout.fillWidth: true }
+    }
+
+    Controls.Dialog {
+        id: savePresetDialog
+        Kirigami.Theme.inherit: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: "Save filters as a preset"
+        standardButtons: Controls.Dialog.Save | Controls.Dialog.Cancel
+        onOpened: presetNameField.forceActiveFocus()
+        onAccepted: if (presetNameField.text.trim() !== "") page.saveUserPreset(presetNameField.text)
+
+        ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+            Controls.Label {
+                text: "Saves the search, every filter and the sort order."
+                opacity: 0.7
+            }
+            Controls.TextField {
+                id: presetNameField
+                Kirigami.Theme.inherit: true
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 20
+                placeholderText: "Name, e.g. \"Short romcoms\""
+                onAccepted: savePresetDialog.accept()
+            }
+            Controls.Label {
+                visible: page.userPresets.some((p) => p.name.toLowerCase() === presetNameField.text.trim().toLowerCase())
+                text: "Replaces the preset with this name."
+                color: Kirigami.Theme.neutralTextColor
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
+        }
     }
 
     GridView {
@@ -930,6 +1094,8 @@ Kirigami.ScrollablePage {
         property var names: []
         property var keys: []
         property var states: ({})
+        // key -> hover text; optional.
+        property var hints: ({})
         property bool collapsible: false
         property int baseLimit: 20
         property int limit: baseLimit
@@ -1040,6 +1206,7 @@ Kirigami.ScrollablePage {
                     required property var modelData
                     text: section.names[modelData]
                     state3: section.states[section.keys[modelData]] || 0
+                    hint: section.hints[section.keys[modelData]] || ""
                     onClicked: section.toggled(section.keys[modelData])
                 }
             }
@@ -1060,6 +1227,11 @@ Kirigami.ScrollablePage {
     component TriStateChip: Controls.Button {
         id: chip
         property int state3: 0
+        property string hint: ""
+
+        Controls.ToolTip.visible: hovered && hint !== ""
+        Controls.ToolTip.text: hint
+        Controls.ToolTip.delay: 600
 
         readonly property color tint: state3 === 1 ? Kirigami.Theme.positiveTextColor
                                     : state3 === 2 ? Kirigami.Theme.negativeTextColor

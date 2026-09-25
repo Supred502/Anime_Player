@@ -14,6 +14,7 @@ same total time either way.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -98,12 +99,17 @@ def _headers(referer: str) -> str:
     return f"Referer: {referer}\r\nOrigin: {origin}\r\n"
 
 
-def download_subtitle(url: str, destination: Path, client: httpx.Client) -> Path | None:
+def download_subtitle(url: str, destination: Path, client: httpx.Client,
+                      referer: str = "") -> Path | None:
     """Subtitles are a separate WebVTT file, not a track inside the stream, so
     an offline copy needs them fetched alongside. A failure here is not a
-    failed download -- the episode is still watchable."""
+    failed download -- the episode is still watchable.
+
+    The Referer matters: the host refuses some subtitle files without it
+    (measured: episode 1 of a show 200 either way, episode 3 403 bare and
+    200 with it), which left saved episodes silently without subtitles."""
     try:
-        response = client.get(url, timeout=30)
+        response = client.get(url, timeout=30, headers={"Referer": referer} if referer else None)
         response.raise_for_status()
         destination.write_bytes(response.content)
         return destination
@@ -141,7 +147,7 @@ class Downloader:
             self._cancelled.discard((episode_id, dub))
 
     def fetch(self, url: str, referer: str, destination: Path, duration: float,
-              on_progress) -> None:
+              on_progress, readrate: float = 0.0) -> None:
         """Pulls one stream to `destination`. Raises DownloadError on failure.
 
         Writes to a .part file and renames on success, so a half-finished
@@ -157,6 +163,9 @@ class Downloader:
         command = [
             "ffmpeg", "-y", "-loglevel", "error",
             "-headers", _headers(referer),
+            # Read at most this many times realtime; 0 means as fast as the
+            # network allows.
+            *(["-readrate", f"{readrate:g}"] if readrate > 0 else []),
             "-i", url,
             # No re-encode: the segments are already h264/aac, and copying is
             # what makes this run faster than realtime. aac_adtstoasc is
@@ -199,6 +208,26 @@ class Downloader:
             raise DownloadError(stderr.splitlines()[-1] if stderr else "ffmpeg failed")
 
         partial.replace(destination)
+
+
+def skip_times_path(media: str | Path) -> Path:
+    """The intro/outro timings saved beside an episode. They arrive with the
+    stream, which a saved episode never resolves again -- without keeping
+    them, a downloaded episode could never skip its intro."""
+    return Path(media).with_suffix(".skip.json")
+
+
+def save_skip_times(media: str | Path, times: dict) -> None:
+    if times:
+        skip_times_path(media).write_text(json.dumps(times))
+
+
+def load_skip_times(media: str | Path) -> dict:
+    try:
+        saved = json.loads(skip_times_path(media).read_text())
+    except (OSError, ValueError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
 
 
 def delete_files(*paths: str | Path | None) -> None:

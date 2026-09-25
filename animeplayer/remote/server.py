@@ -56,6 +56,9 @@ _REMOTE_PAGE = """<!doctype html>
   button.primary:active { background: #3a75dd; }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+  .grid1 { display: grid; grid-template-columns: 1fr; gap: 8px; margin-bottom: 8px; }
+  .grid4 { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+  button.big { padding: 20px; font-size: 18px; }
   .dpad { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr 1fr; gap: 8px; width: 220px; margin: 8px auto; }
   .dpad button { padding: 18px 0; font-size: 20px; }
   .dpad .mid { grid-column: 2; grid-row: 2; background: #4c8bf5; }
@@ -99,22 +102,22 @@ _REMOTE_PAGE = """<!doctype html>
 
   <div id="playerTab">
     <div class="card">
-      <div class="grid3">
-        <button onclick="cmd('prev_episode')">⏮ Prev Ep</button>
-        <button class="primary" onclick="cmd('play_pause')" id="playPauseBtn">Play/Pause</button>
-        <button onclick="cmd('next_episode')">Next Ep ⏭</button>
+      <div class="grid1">
+        <button class="primary big" onclick="cmd('play_pause')" id="playPauseBtn">Play / Pause</button>
       </div>
       <div class="grid2">
-        <button onclick="cmd('seek', -5)">« 5s</button>
-        <button onclick="cmd('seek', 5)">5s »</button>
+        <button onclick="cmd('prev_episode')">⏮ Previous episode</button>
+        <button onclick="cmd('next_episode')">Next episode ⏭</button>
       </div>
       <div class="grid2">
         <button onclick="cmd('skip_intro')">Skip Intro</button>
         <button onclick="cmd('skip_outro')">Skip Outro</button>
       </div>
-      <div class="grid2">
-        <button onclick="cmd('seek', -85)">« 85s</button>
-        <button onclick="cmd('seek', 85)">85s »</button>
+      <div class="grid4">
+        <button onclick="cmd('seek', -10)">« 10s</button>
+        <button onclick="cmd('seek', -5)">« 5s</button>
+        <button onclick="cmd('seek', 5)">5s »</button>
+        <button onclick="cmd('seek', 30)">30s »</button>
       </div>
       <div class="grid2">
         <button onclick="cmd('volume', -10)">🔉 Vol -</button>

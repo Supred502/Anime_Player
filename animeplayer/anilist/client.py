@@ -155,6 +155,7 @@ _TAG_COLLECTION_QUERY = """
 query {
   MediaTagCollection {
     name
+    description
     isAdult
   }
 }
@@ -579,6 +580,15 @@ class AniListClient:
         data = self._request(_TAG_COLLECTION_QUERY)
         return [t["name"] for t in data["MediaTagCollection"] if not t.get("isAdult")]
 
+    def get_tag_descriptions(self) -> dict[str, str]:
+        """What each tag means, for hover text. Same query as the names, so
+        fetched together they cost one request."""
+        data = self._request(_TAG_COLLECTION_QUERY)
+        return {
+            t["name"]: (t.get("description") or "").strip()
+            for t in data["MediaTagCollection"] if not t.get("isAdult")
+        }
+
     def search_by_filters(
         self,
         search: str,
@@ -677,6 +687,30 @@ class AniListClient:
         page_data = data["Page"]
         last_page = (page_data.get("pageInfo") or {}).get("lastPage") or page
         return [_media_summary_of(m) for m in page_data["media"]], last_page
+
+    def get_airing(self, media_ids: list[int]) -> list["AiringState"]:
+        """How far each show has aired, in one request however many shows.
+        Uncached: this is the question that is asked precisely because the
+        answer may have changed since last time."""
+        if not media_ids:
+            return []
+        data = self._request(_AIRING_QUERY, {"ids": list(media_ids)[:50]}, cache=False)
+        out = []
+        for media in (data.get("Page") or {}).get("media") or []:
+            upcoming = media.get("nextAiringEpisode") or {}
+            if upcoming.get("episode"):
+                latest = int(upcoming["episode"]) - 1
+            elif media.get("status") == "FINISHED":
+                latest = int(media.get("episodes") or 0)
+            else:
+                latest = 0
+            out.append(AiringState(
+                media=_media_summary_of(media),
+                latest_aired=latest,
+                next_episode=upcoming.get("episode"),
+                next_airing_at=upcoming.get("airingAt"),
+            ))
+        return out
 
     def get_media_extras(self, media_id: int) -> "MediaExtras":
         """Everything the detail page shows beside the episode list: related
@@ -960,6 +994,27 @@ class Review:
     rating: int  # how many readers found it helpful
     rating_amount: int
     user: str
+
+
+@dataclass(frozen=True, slots=True)
+class AiringState:
+    media: MediaSummary
+    latest_aired: int           # 0 when nothing has aired, or it can't be told
+    next_episode: int | None
+    next_airing_at: int | None  # unix seconds
+
+
+_AIRING_QUERY = f"""
+query ($ids: [Int]) {{
+  Page(perPage: 50) {{
+    media(id_in: $ids, type: ANIME) {{
+      {_MEDIA_FIELDS}
+      status
+      nextAiringEpisode {{ episode airingAt }}
+    }}
+  }}
+}}
+"""
 
 
 @dataclass(frozen=True, slots=True)

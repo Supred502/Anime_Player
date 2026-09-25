@@ -126,3 +126,52 @@ def test_only_ready_episodes_count_as_downloaded(tmp_path) -> None:
     db = Database(tmp_path / "t.db")
     db.upsert_download(_entry(tmp_path, status="downloading"))
     assert db.downloaded_anime() == []
+
+
+def test_skip_times_round_trip_beside_the_file(tmp_path) -> None:
+    media = tmp_path / "episode-1-sub.mp4"
+    downloads.save_skip_times(media, {"op": {"start": 10.0, "end": 100.0}})
+    assert downloads.load_skip_times(media) == {"op": {"start": 10.0, "end": 100.0}}
+    # Nothing saved: an empty map, not an exception.
+    assert downloads.load_skip_times(tmp_path / "other.mp4") == {}
+
+
+def test_a_throttled_download_asks_ffmpeg_for_a_read_rate(tmp_path, monkeypatch) -> None:
+    seen = {}
+
+    class FakeProcess:
+        returncode = 0
+        stdout = iter(())
+        stderr = None
+
+        def wait(self):
+            return 0
+
+    def fake_popen(command, **_kwargs):
+        seen["command"] = command
+        (tmp_path / "ep.part.mp4").write_bytes(b"x")
+        return FakeProcess()
+
+    monkeypatch.setattr(downloads, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(downloads.subprocess, "Popen", fake_popen)
+    downloads.Downloader().fetch("http://x/m.m3u8", "", tmp_path / "ep.mp4", 0, lambda *_: None,
+                                 readrate=3)
+    command = seen["command"]
+    # Must come before -i: it's an input option.
+    assert command[command.index("-readrate") + 1] == "3"
+    assert command.index("-readrate") < command.index("-i")
+
+
+def test_a_subtitle_is_fetched_with_the_referer(tmp_path) -> None:
+    """The host refuses some subtitle files without it."""
+    import httpx
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("Referer") != "https://embed.example/":
+            return httpx.Response(403)
+        return httpx.Response(200, text="WEBVTT")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    saved = downloads.download_subtitle("https://cdn.example/s.vtt", tmp_path / "s.vtt", client,
+                                        referer="https://embed.example/")
+    assert saved is not None and saved.read_text() == "WEBVTT"

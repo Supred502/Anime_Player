@@ -48,8 +48,84 @@ AppWindow {
         repeat: true
         onTriggered: {
             root.step++
+            // The personal rows under Continue Watching, once the new-episode
+            // check (15s after launch) has answered.
+            // Saved presets, and the tag strip's required/excluded views.
+            if (root.mode === "presets") {
+                if (root.step === 1) {
+                    root.pageStack.push(Qt.resolvedUrl("BrowsePage.qml"), {})
+                    return
+                }
+                let b = root.pageStack.get(root.pageStack.depth - 1)
+                if (root.step === 2) {
+                    b.clearFilters(true)
+                    b.genreStates = { "Romance": 1, "Comedy": 1 }
+                    b.formatStates = { "TV_SHORT": 1 }
+                    b.tagStates = { "Female Harem": 1, "Isekai": 2, "Time Skip": 1 }
+                    b.saveUserPreset("Test short romcoms")
+                    log("presets=" + JSON.stringify(backend.filterPresets().map((p) => p.name)))
+                    log("descriptions=" + Object.keys(b.tagDescriptions).length
+                        + " Isekai: " + b.tagDescriptions["Isekai"])
+                    b.clearFilters()
+                    return
+                }
+                if (root.step === 3) {
+                    log("after clear: genres=" + JSON.stringify(b.genreStates) + " label=" + b.presetLabel)
+                    b.applyUserPreset(backend.filterPresets().filter((p) => p.name === "Test short romcoms")[0])
+                    return
+                }
+                if (root.step === 4) {
+                    log("applied: label=" + b.presetLabel + " genres=" + JSON.stringify(b.genreStates)
+                        + " tags=" + JSON.stringify(b.tagStates) + " results=" + b.results.length
+                        + " included=" + b.includedTagCount + " excluded=" + b.excludedTagCount)
+                    b.tagLetter = "+"
+                    log("+ view: " + b.shownTags.join(", "))
+                    b.tagLetter = "-"
+                    log("- view: " + b.shownTags.join(", "))
+                    b.tagLetter = "+"
+                }
+                if (root.step === 6) {
+                    backend.deleteFilterPreset("Test short romcoms")
+                    log("after delete presets=" + JSON.stringify(backend.filterPresets().map((p) => p.name)))
+                }
+                return
+            }
+            // What sits under the window's top-right corner pixel.
+            if (root.mode === "corner") {
+                if (root.step === 1 || root.step === 2) {
+                    let bar = root.header
+                    let hit = bar.childAt(bar.width - 1, 0)
+                    log((root.maximised ? "maximised" : "windowed") + " corner hit: "
+                        + (hit ? hit + " x=" + hit.x + " w=" + hit.width + " h=" + hit.height : "nothing")
+                        + " bar=" + bar.width + "x" + bar.height)
+                    if (root.step === 1) { if (root.maximised) root.showNormal(); else root.showMaximized() }
+                }
+                return
+            }
+            if (root.mode === "stats") {
+                if (root.step === 1) root.goTo("stats", "StatsPage.qml")
+                if (root.step === 2) {
+                    let f = root.pageStack.get(0).flickable
+                    f.contentY = f.contentHeight - f.height
+                }
+                return
+            }
+            if (root.mode === "rows") {
+                if (root.step === 5) {
+                    let h = root.homePage()
+                    log("new episodes: " + h.newEpisodes.map((e) => e.title + " [" + e.reason + "]").join(", "))
+                    h.flickable.contentY = 420
+                }
+                return
+            }
             if (root.mode === "home") {
                 if (root.step === 1) { root.reportRows(); return }
+                if (root.step === 2) {
+                    let h = root.homePage()
+                    log("new episodes: " + h.newEpisodes.map((e) => e.title + " [" + e.reason + "]").join(", "))
+                    log("because you watched " + h.becauseTitle + ": " + h.becauseCards.length
+                        + (h.becauseCards.length ? " first=" + h.becauseCards[0].title : ""))
+                }
                 let flick = root.homePage().flickable
                 flick.contentY = Math.min(flick.contentHeight - flick.height,
                                           flick.contentY + flick.height * 0.85)
