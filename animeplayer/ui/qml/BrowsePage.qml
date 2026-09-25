@@ -199,7 +199,10 @@ Kirigami.ScrollablePage {
 
     Connections {
         target: backend
-        function onAnilistGenresLoaded(list) { page.genres = list }
+        // Every query asks AniList for isAdult: false, and the streaming
+        // source carries no adult titles either -- so the Hentai genre can
+        // only ever come back empty. Offering it just looks broken.
+        function onAnilistGenresLoaded(list) { page.genres = list.filter((name) => name !== "Hentai") }
         function onAnilistTagsLoaded(list) {
             page.allTags = list
             page.applyTagFilterText(tagField.text)
@@ -385,13 +388,56 @@ Kirigami.ScrollablePage {
         }
     }
 
+    // Edits between two words, counting two swapped neighbours ("isekia")
+    // as one slip rather than two.
+    function editDistance(a, b) {
+        if (Math.abs(a.length - b.length) > 2) return 99
+        let before = []
+        let prev = []
+        for (let j = 0; j <= b.length; j++) prev.push(j)
+        for (let i = 1; i <= a.length; i++) {
+            let row = [i]
+            for (let j = 1; j <= b.length; j++) {
+                let cost = a[i - 1] === b[j - 1] ? 0 : 1
+                let best = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + cost)
+                if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+                    best = Math.min(best, before[j - 2] + 1)
+                }
+                row.push(best)
+            }
+            before = prev
+            prev = row
+        }
+        return prev[b.length]
+    }
+
     function applyTagFilterText(text) {
-        let needle = (text || "").toLowerCase()
+        let needle = (text || "").trim().toLowerCase()
         let shown = []
         for (let i = 0; i < page.allTags.length && shown.length < 60; i++) {
             if (needle === "" || page.allTags[i].toLowerCase().includes(needle)) {
                 shown.push(page.allTags[i])
             }
+        }
+        // Nothing contains it: likely a typo ("heram"), so fall back to tags
+        // with a word close enough to it. Exact matches above still come first.
+        if (needle.length >= 4 && shown.length === 0) {
+            let allowed = needle.length >= 5 ? 2 : 1
+            let near = []
+            for (let i = 0; i < page.allTags.length; i++) {
+                let name = page.allTags[i].toLowerCase()
+                // Rank by distance, then by how close the lengths are:
+                // "heram" is two edits from both "harem" and "hero", and
+                // the word it was meant to be is the one the same size.
+                let best = page.editDistance(name, needle) * 10 + Math.abs(name.length - needle.length)
+                for (let word of name.split(/[\s-]+/)) {
+                    best = Math.min(best, page.editDistance(word, needle) * 10
+                                          + Math.abs(word.length - needle.length))
+                }
+                if (best < (allowed + 1) * 10) near.push({ tag: page.allTags[i], rank: best })
+            }
+            near.sort((a, b) => a.rank - b.rank || a.tag.localeCompare(b.tag))
+            shown = near.slice(0, 60).map((entry) => entry.tag)
         }
         // Selected tags stay visible even when they fall outside the list --
         // otherwise retyping the search silently hides a filter still applied.

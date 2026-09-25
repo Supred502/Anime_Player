@@ -195,6 +195,30 @@ AppWindow {
                 return
             }
 
+            // The genre and tag vocabularies: no genre that can only come
+            // back empty, and a misspelt tag search still finds the tag.
+            if (root.mode === "tags") {
+                if (root.step === 1) {
+                    root.pageStack.push(Qt.resolvedUrl("BrowsePage.qml"), {})
+                    return
+                }
+                let b = root.pageStack.get(root.pageStack.depth - 1)
+                if (root.step === 2) {
+                    log("genres=" + b.genres.length + " hasHentai=" + (b.genres.indexOf("Hentai") >= 0)
+                        + " tags=" + b.allTags.length)
+                    b.applyTagFilterText("heram")
+                    log("heram -> " + b.shownTags.join(", "))
+                    b.tagStates = { "Female Harem": 1 }
+                    b.reload()
+                    return
+                }
+                if (root.step === 3) {
+                    log("Female Harem results=" + b.results.length
+                        + (b.results.length > 0 ? " first=" + b.results[0].title : ""))
+                }
+                return
+            }
+
             // The two listings built from this machine rather than a catalog.
             if (root.mode === "local") {
                 if (root.step === 1) {
