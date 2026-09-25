@@ -116,8 +116,12 @@ Kirigami.ScrollablePage {
     // left a column of empty page down both sides and nothing to read.
     readonly property int sidePanelWidth: Kirigami.Units.gridUnit * 15
     readonly property bool showSidePanel: page.bodyWidth > Kirigami.Units.gridUnit * 42
+    // Two gaps, not one: the row holds the grid, a stretching spacer and the
+    // panel, and its spacing (largeSpacing * 2) falls on both sides of the
+    // spacer. Counting one made the row 12px wider than a 1280px window,
+    // which pushed the panel and the header text off the right edge.
     readonly property real episodeAreaWidth: page.bodyWidth
-        - (page.showSidePanel ? page.sidePanelWidth + Kirigami.Units.largeSpacing * 2 : 0)
+        - (page.showSidePanel ? page.sidePanelWidth + Kirigami.Units.largeSpacing * 4 : 0)
 
     // Everything watched already. Worth its own name because "the episode
     // after the last one you saw" is episode 13 of a 12-episode show, which

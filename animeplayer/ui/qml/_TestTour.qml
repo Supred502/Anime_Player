@@ -29,6 +29,28 @@ AppWindow {
         log("chain " + chain.join(" < "))
     }
 
+    // Items that stick out past the right edge of the page, outermost first
+    // -- how a layout that is wider than the window gets tracked down.
+    function reportOverflow(page) {
+        let found = []
+        function walk(item, depth) {
+            if (!item || depth > 14 || found.length > 12) return
+            let kids = item.children
+            for (let i = 0; i < kids.length; i++) {
+                let k = kids[i]
+                if (!k.visible || k.width <= 0) continue
+                let right = k.mapToItem(page, k.width, 0).x
+                if (right > page.width + 1) {
+                    found.push(depth + " " + String(k).split("(")[0] + " right=" + Math.round(right)
+                               + " w=" + Math.round(k.width) + " implicitW=" + Math.round(k.implicitWidth))
+                }
+                walk(k, depth + 1)
+            }
+        }
+        walk(page, 0)
+        log("page width " + page.width + "; overflowing:\n  " + found.join("\n  "))
+    }
+
     Connections {
         target: backend
         function onSearchFinished(results) { if (!root.found && results.length) root.found = results[0] }
@@ -64,6 +86,9 @@ AppWindow {
         id: shotTimer
         property string name
         interval: 6000
-        onTriggered: root.shoot(name)
+        onTriggered: {
+            root.shoot(name)
+            if (name === "4-detail") root.reportOverflow(root.pageStack.currentItem)
+        }
     }
 }
