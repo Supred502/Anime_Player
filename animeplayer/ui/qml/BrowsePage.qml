@@ -204,9 +204,12 @@ Kirigami.ScrollablePage {
     // Not "transient": that is a reserved QML keyword, and using it makes the
     // whole page fail to load with "Reserved keyword cannot be used as a QML
     // identifier".
+    // The Continue nav entry opens this page at a category with no label,
+    // which this used to miss -- so visiting Continue saved "Continue
+    // Watching" as the Browse state, and Browse opened on it afterwards.
     readonly property bool openedAtTarget: page.startGenre !== ""
         || page.startListStatus !== "" || page.startWithRecommendations
-        || page.startLabel !== ""
+        || page.startLabel !== "" || page.startCategory !== "top-airing"
 
     Component.onCompleted: {
         page.catalogPresets = backend.catalogs()

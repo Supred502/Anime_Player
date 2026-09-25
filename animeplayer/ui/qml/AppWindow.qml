@@ -152,7 +152,11 @@ Kirigami.ApplicationWindow {
         RowLayout {
             id: navRow
             anchors.fill: parent
+            // The same inset on both ends as above and below the buttons, so
+            // the logo and the close button sit the same distance from both
+            // edges of their corner.
             anchors.leftMargin: Kirigami.Units.smallSpacing
+            anchors.rightMargin: Kirigami.Units.smallSpacing
             spacing: Kirigami.Units.smallSpacing
 
             // The logo is the Home button. A separate "Home" entry beside a
@@ -170,7 +174,7 @@ Kirigami.ApplicationWindow {
                 hoverEnabled: true
                 onClicked: root.goHome()
 
-                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.visible: hovered || homeZone.hovered
                 Controls.ToolTip.text: "Home"
                 Controls.ToolTip.delay: 500
 
@@ -178,7 +182,7 @@ Kirigami.ApplicationWindow {
                 // the app opens -- a permanent tint box drawn around a
                 // wordmark just reads as a border someone forgot to remove,
                 // and the page's own title already says Home.
-                background: NavBackground { lit: logoButton.hovered }
+                background: NavBackground { lit: logoButton.hovered || homeZone.hovered }
 
                 contentItem: Image {
                     source: Qt.resolvedUrl("../assets/images/AP.svg")
@@ -251,9 +255,18 @@ Kirigami.ApplicationWindow {
         }
 
         // Everything from the close button to the window's top and right
-        // edges counts as the close button. The bar keeps a margin above its
-        // buttons, so without this the very corner -- where a pointer thrown
-        // at the corner of the screen lands -- hit nothing.
+        // edges counts as the close button, and the same for the logo in the
+        // top-left. The bar keeps a margin around its buttons, so without
+        // this the very corners -- where a pointer thrown at the corner of
+        // the screen lands -- hit nothing.
+        Item {
+            id: homeZone
+            readonly property bool hovered: homeZoneHover.hovered
+            width: logoButton.x + logoButton.width
+            height: logoButton.y + logoButton.height
+            HoverHandler { id: homeZoneHover; cursorShape: Qt.PointingHandCursor }
+            TapHandler { onTapped: root.goHome() }
+        }
         Item {
             id: closeZone
             readonly property bool hovered: closeZoneHover.hovered

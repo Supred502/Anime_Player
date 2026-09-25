@@ -44,8 +44,30 @@ Kirigami.ScrollablePage {
 
     // How many dubbed episodes are behind the subbed ones, from the source's
     // own two counts (AniList has neither).
-    readonly property int subCount: page.anime.sub_count || 0
-    readonly property int dubCount: page.anime.dub_count || 0
+    // The card that opened the page may carry them; the source's own page
+    // is asked every time regardless (see backend.audioCountsReady), since
+    // many ways in carry no counts and a dub gains episodes weekly.
+    property int fetchedSubCount: -1
+    property int fetchedDubCount: -1
+    readonly property int subCount: page.fetchedSubCount >= 0 ? page.fetchedSubCount : (page.anime.sub_count || 0)
+    readonly property int dubCount: page.fetchedDubCount >= 0 ? page.fetchedDubCount : (page.anime.dub_count || 0)
+    // Whether the dub count is actually known -- a card with no counts
+    // reads as 0, which must not hide every episode.
+    readonly property bool dubCountKnown: page.fetchedDubCount >= 0 || (page.anime.sub_count || 0) > 0
+
+    // The episodes the chosen audio actually has. The source's dub count
+    // means "the first N" -- verified live on One Piece (1155 of 1179:
+    // 1155 has a dub server, 1156 doesn't) -- so the dub list is a prefix of
+    // the sub one, and with Dub selected nothing past it is offered.
+    readonly property int shownEpisodeCount: page.dub && page.dubCountKnown
+        ? Math.min(page.dubCount, episodesModel.count) : episodesModel.count
+    // Deferred, and through one named function: Qt.callLater collapses
+    // repeat calls of the *same* function into one. The list is filled a row
+    // at a time, so this count changes once per episode -- and with a fresh
+    // arrow function each time, One Piece queued 1179 rebuilds of a
+    // 100-cell page and froze the window.
+    onShownEpisodeCountChanged: Qt.callLater(page.reshowCurrentPage)
+    function reshowCurrentPage() { page.showPage(page.currentPage) }
     readonly property int dubBehind: page.subCount > 0 && page.dubCount > 0
         ? Math.max(0, page.subCount - page.dubCount) : 0
 
@@ -128,6 +150,9 @@ Kirigami.ScrollablePage {
     // Keeps the next few episodes saved as you watch -- see
     // backend.setAutoDownload.
     property bool autoDownload: false
+    // The audio it saves, chosen when it was switched on -- not the Sub/Dub
+    // toggle, which only says what the next click will play.
+    property bool autoDownloadDub: false
 
     function refreshDownloads() {
         if (!page.anime.slug_id) return
@@ -259,7 +284,7 @@ Kirigami.ScrollablePage {
 
     readonly property int pageSize: 100
     property int currentPage: 0
-    readonly property int pageCount: Math.max(1, Math.ceil(episodesModel.count / pageSize))
+    readonly property int pageCount: Math.max(1, Math.ceil(page.shownEpisodeCount / pageSize))
 
     Timer {
         // A minute, not a second: the countdown is shown in days and hours,
@@ -275,6 +300,7 @@ Kirigami.ScrollablePage {
         page.localProgress = backend.getLocalProgress(anime.slug_id)
         page.canDownload = backend.canDownload()
         page.autoDownload = backend.isAutoDownload(anime.slug_id)
+        page.autoDownloadDub = backend.autoDownloadDub(anime.slug_id)
         page.refreshDownloads()
     }
 
@@ -309,6 +335,11 @@ Kirigami.ScrollablePage {
                 }
             }
             page.showPage(Math.floor(startIndex / page.pageSize))
+        }
+        function onAudioCountsReady(slug, subbed, dubbed) {
+            if (slug !== page.anime.slug_id) return
+            page.fetchedSubCount = subbed
+            page.fetchedDubCount = dubbed
         }
         function onAnimeRemapped(mapping) {
             // The id this page was opened with turned out to belong to a
@@ -376,8 +407,13 @@ Kirigami.ScrollablePage {
         page.currentPage = Math.max(0, Math.min(index, page.pageCount - 1))
         pageEpisodesModel.clear()
         let start = page.currentPage * page.pageSize
-        let end = Math.min(start + page.pageSize, episodesModel.count)
+        let end = Math.min(start + page.pageSize, page.shownEpisodeCount)
         for (let i = start; i < end; i++) pageEpisodesModel.append(episodesModel.get(i))
+    }
+
+    function pageEpisodesCount() { return pageEpisodesModel.count }
+    function lastShownNumber() {
+        return pageEpisodesModel.count > 0 ? pageEpisodesModel.get(pageEpisodesModel.count - 1).number : -1
     }
 
     function firstEpisodeNumber() {
@@ -737,7 +773,11 @@ Kirigami.ScrollablePage {
                 text: "Episodes"
             }
             Controls.Label {
-                text: episodesModel.count + " available"
+                text: page.dub && page.dubCountKnown
+                    ? page.shownEpisodeCount + " dubbed"
+                      + (page.shownEpisodeCount < episodesModel.count
+                         ? " of " + episodesModel.count : "")
+                    : episodesModel.count + " available"
                 opacity: 0.6
             }
             Item { Layout.fillWidth: true }
@@ -798,12 +838,21 @@ Kirigami.ScrollablePage {
                 model: page.pageCount
                 delegate: AppButton {
                     required property int index
-                    text: (index * page.pageSize + 1) + "-" + Math.min((index + 1) * page.pageSize, episodesModel.count)
+                    text: (index * page.pageSize + 1) + "-" + Math.min((index + 1) * page.pageSize, page.shownEpisodeCount)
                     checkable: true
                     checked: page.currentPage === index
                     onClicked: page.showPage(index)
                 }
             }
+        }
+
+        Kirigami.PlaceholderMessage {
+            Layout.fillWidth: true
+            Layout.margins: Kirigami.Units.largeSpacing
+            visible: page.dub && page.dubCountKnown && page.dubCount === 0 && episodesModel.count > 0
+            icon.name: "audio-volume-muted-symbolic"
+            text: "No dubbed episodes yet"
+            explanation: "Switch to Sub to watch the " + episodesModel.count + " that are out."
         }
 
         // A row length chosen to come out even, centred, rather than as many
@@ -1086,10 +1135,12 @@ Kirigami.ScrollablePage {
                     AppCheckBox {
                         Layout.fillWidth: true
                         visible: page.canDownload
-                        text: "Keep the next 10 episodes saved (" + (page.dub ? "dub" : "sub") + ")"
+                        text: "Keep the next 10 episodes saved ("
+                            + ((page.autoDownload ? page.autoDownloadDub : page.dub) ? "dub" : "sub") + ")"
                         checked: page.autoDownload
                         onToggled: {
                             page.autoDownload = checked
+                            page.autoDownloadDub = page.dub
                             backend.setAutoDownload(page.anime.slug_id, checked, page.dub,
                                                     page.resumeEpisode)
                             if (checked) showPassiveNotification("Saving the next episodes in the background")

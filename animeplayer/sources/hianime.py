@@ -429,6 +429,33 @@ def get_home_highlights(client: httpx.Client) -> tuple[list[Spotlight], list[Sea
     return _parse_spotlight(body), _parse_trending(body)
 
 
+def get_audio_counts(slug_id: str, client: httpx.Client) -> tuple[int, int] | None:
+    """(subbed, dubbed) episode counts from the anime's own page.
+
+    The dub count is the only dub data anywhere -- AniList has none -- and
+    it means "the first N episodes": checked live on One Piece, which the
+    source lists as 1179 sub / 1155 dub, where episodes 1, 500, 1000 and
+    1155 each offer a dub server and 1156 and 1179 offer only sub.
+
+    Read from the page header only. The same markup repeats on every
+    recommendation card further down the page, so a pattern run over the
+    whole page happily returns some other show's numbers. None when the
+    header can't be found; a header with no dub tick means no dub (0)."""
+    resp = client.get(f"{BASE_URL}/{slug_id}")
+    resp.raise_for_status()
+    page = resp.text
+    start = page.find('class="anisc-detail"')
+    stats = page.find('class="film-stats"', start) if start >= 0 else -1
+    if stats < 0:
+        return None
+    header = _flatten(page[stats: stats + 1500])
+    header = header[: header.find('class="film-description') if 'class="film-description' in header else None]
+    sub = _first(_CARD_SUB_COUNT_RE, header, "")
+    if not sub:
+        return None
+    return int(sub), int(_first(_CARD_DUB_COUNT_RE, header, "0"))
+
+
 def get_episodes(slug_id: str, client: httpx.Client) -> list[Episode]:
     """List episodes for an anime, given its full slug (e.g. "dorohedoro-2691").
 

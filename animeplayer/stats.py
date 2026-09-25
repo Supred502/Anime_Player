@@ -122,3 +122,87 @@ def compute_watch_stats(
         "episodes_by_hour": by_hour,
         "busiest_hour": max(range(24), key=lambda h: by_hour[h]) if any(by_hour) else -1,
     }
+
+
+# -- From the AniList list ---------------------------------------------------
+#
+# AniList keeps far more history than this app ever saw: every show finished
+# and when, and every rewatch. Time is worked out the way AniList's own
+# profile does it -- episodes watched times episode length, with each full
+# rewatch counted again.
+
+# Used when AniList doesn't know an episode's length (rare, mostly very new
+# entries). The typical TV episode.
+DEFAULT_EPISODE_MINUTES = 24
+
+
+def _episodes_watched(entry: Any) -> int:
+    full_run = entry.episodes or entry.progress
+    return entry.progress + entry.repeat * full_run
+
+
+def compute_anilist_stats(entries: list[Any], today: str) -> dict[str, Any]:
+    """`entries` are anilist/client.HistoryEntry."""
+    today_date = dt.date.fromisoformat(today)
+    watched = [e for e in entries if e.status != "PLANNING"]
+
+    minutes_by_entry = {
+        e.media_id: _episodes_watched(e) * (e.duration or DEFAULT_EPISODE_MINUTES) for e in watched
+    }
+    total_minutes = sum(minutes_by_entry.values())
+
+    statuses = Counter(e.status for e in entries)
+    scored = [e.score for e in entries if e.score > 0]
+
+    # Finished per month over the last year, oldest first, empty months kept.
+    months = []
+    year, month = today_date.year, today_date.month
+    for _ in range(12):
+        months.append(f"{year:04d}-{month:02d}")
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    months.reverse()
+    finished_by_month = Counter(e.completed[:7] for e in entries if len(e.completed) >= 7)
+    per_month = [
+        {"month": m, "label": dt.date(int(m[:4]), int(m[5:]), 1).strftime("%b"),
+         "count": finished_by_month.get(m, 0)}
+        for m in months
+    ]
+
+    recent = sorted((e for e in entries if e.completed), key=lambda e: e.completed, reverse=True)[:8]
+
+    genre_minutes: dict[str, float] = defaultdict(float)
+    for e in watched:
+        for genre in e.genres:
+            genre_minutes[genre] += minutes_by_entry[e.media_id]
+    top_genres = [
+        {"genre": g, "hours": round(m / 60, 1),
+         "share": round(m / total_minutes, 3) if total_minutes else 0}
+        for g, m in sorted(genre_minutes.items(), key=lambda kv: -kv[1])[:8]
+    ]
+
+    rewatched = sorted((e for e in entries if e.repeat > 0), key=lambda e: -e.repeat)
+
+    return {
+        "days_watched": round(total_minutes / 1440, 1),
+        "hours_watched": round(total_minutes / 60),
+        "episodes_watched": sum(_episodes_watched(e) for e in watched),
+        "completed": statuses.get("COMPLETED", 0) + statuses.get("REPEATING", 0),
+        "watching": statuses.get("CURRENT", 0),
+        "planning": statuses.get("PLANNING", 0),
+        "dropped": statuses.get("DROPPED", 0),
+        "paused": statuses.get("PAUSED", 0),
+        "mean_score": round(sum(scored) / len(scored), 1) if scored else 0,
+        "rewatch_count": sum(e.repeat for e in entries),
+        "rewatched_shows": len(rewatched),
+        "most_rewatched": [{"title": e.title, "times": e.repeat} for e in rewatched[:5]],
+        "finished_per_month": per_month,
+        "finished_this_year": sum(1 for e in entries if e.completed[:4] == f"{today_date.year:04d}"),
+        "recently_finished": [
+            {"title": e.title, "date": e.completed, "score": e.score, "repeat": e.repeat,
+             "cover_url": e.cover_url or ""}
+            for e in recent
+        ],
+        "top_genres": top_genres,
+    }

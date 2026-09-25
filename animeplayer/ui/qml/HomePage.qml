@@ -35,6 +35,24 @@ Kirigami.ScrollablePage {
     property var continueWatching: []
     property var planning: []
     property var newEpisodes: []
+    property real nowSeconds: Date.now() / 1000
+
+    // A minute is fine grain for a countdown shown in days and hours.
+    Timer {
+        interval: 60000
+        running: page.newEpisodes.length > 0
+        repeat: true
+        onTriggered: page.nowSeconds = Date.now() / 1000
+    }
+
+    function countdownText(seconds) {
+        let days = Math.floor(seconds / 86400)
+        let hours = Math.floor((seconds % 86400) / 3600)
+        let minutes = Math.floor((seconds % 3600) / 60)
+        if (days > 0) return days + "d " + hours + "h"
+        if (hours > 0) return hours + "h " + minutes + "m"
+        return minutes + "m"
+    }
     property string becauseTitle: ""
     property var becauseCards: []
 
@@ -256,6 +274,11 @@ Kirigami.ScrollablePage {
                 heading: "New Episodes"
                 model: page.newEpisodes
                 subtitleFor: (entry) => entry.reason || ""
+                // Counting down to the next one. Reads page.nowSeconds so the
+                // badge re-evaluates as the clock below ticks.
+                badgeFor: (entry) => entry.next_airing_at > page.nowSeconds
+                    ? "Ep " + entry.next_episode + " in " + page.countdownText(entry.next_airing_at - page.nowSeconds)
+                    : ""
                 onCardClicked: (index) => page.openContinueEntry(page.newEpisodes[index])
             }
 

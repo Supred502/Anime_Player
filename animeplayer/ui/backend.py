@@ -53,7 +53,7 @@ from animeplayer.player.idle_inhibitor import IdleInhibitor
 from animeplayer.remote.server import RemoteServer
 from animeplayer.sources import hianime as source
 from animeplayer.sources import jikan
-from animeplayer.stats import compute_watch_stats
+from animeplayer.stats import compute_anilist_stats, compute_watch_stats
 from animeplayer.storage import secrets
 from animeplayer.storage.db import AniDBMapping, AniListStatus, Database, DownloadEntry
 
@@ -197,6 +197,8 @@ class Backend(QObject):
     anilistGenresLoaded = Signal(list)
     anilistTagsLoaded = Signal(list)
     tagDescriptionsLoaded = Signal(dict)  # {tag name: what it means}
+    anilistStatsReady = Signal("QVariantMap")  # see stats.compute_anilist_stats; {} when unavailable
+    audioCountsReady = Signal(str, int, int)  # (slug, subbed, dubbed) from the source's own page
     newEpisodesChanged = Signal(list)  # home row: watched shows with an aired, unwatched episode
     becauseYouWatchedReady = Signal(str, list)  # (seed title, recommendation cards)
     recommendationsFailed = Signal(str)  # recommendations couldn't be built (e.g. not logged in yet)
@@ -1006,6 +1008,7 @@ class Backend(QObject):
                 self.animeRemapped.emit({"slug_id": new_slug_id, "numeric_id": new_numeric_id})
                 self._emit_continue_watching()
             self.episodesFinished.emit([asdict(e) for e in episodes])
+            self._fetch_audio_counts(new_slug_id)
             if self._current_anime is not None and self._current_anime["slug_id"] == slug_id:
                 self._current_anime["slug_id"] = new_slug_id
                 self._current_anime["numeric_id"] = new_numeric_id
@@ -1025,6 +1028,20 @@ class Backend(QObject):
             self._resolve_current_anime_status(new_slug_id, title)
 
         self._pool.start(_Worker(work, done, self.episodesFailed.emit))
+
+    def _fetch_audio_counts(self, slug_id: str) -> None:
+        """How many episodes are dubbed, for the detail page's dub-only episode
+        list. Asked every time rather than trusted from the card that opened
+        the page: many ways in (Continue Watching, AniList rows) carry no
+        counts at all, and a dub gains episodes weekly."""
+        def work() -> tuple[int, int] | None:
+            return source.get_audio_counts(slug_id, self._http)
+
+        def done(counts: tuple[int, int] | None) -> None:
+            if counts is not None:
+                self.audioCountsReady.emit(slug_id, counts[0], counts[1])
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
 
     def _maybe_fetch_filler_fallback(self, slug_id: str) -> None:
         """If the source reported no filler episodes for the anime currently
@@ -1600,6 +1617,9 @@ class Backend(QObject):
                     poster_url=n.state.media.cover_url or "",
                     reason=(f"Episode {n.state.latest_aired} is out" if n.unwatched == 1
                             else f"Ep {n.state.latest_aired} out · {n.unwatched} to catch up"),
+                    # For the card's countdown to the next one.
+                    next_episode=n.state.next_episode or 0,
+                    next_airing_at=n.state.next_airing_at or 0,
                 )
                 for n in waiting
             ]
@@ -1666,6 +1686,24 @@ class Backend(QObject):
             today=time.strftime("%Y-%m-%d"),
         )
 
+    @Slot()
+    def loadAnilistStats(self) -> None:
+        """Stats from the AniList list itself: every finish date and rewatch
+        AniList has, going back long before this app existed."""
+        client, user_id = self._anilist_client, self._anilist_user_id
+        if client is None or user_id is None:
+            self.anilistStatsReady.emit({})
+            return
+
+        def work() -> dict[str, Any]:
+            return compute_anilist_stats(client.get_watch_history(user_id),
+                                         today=time.strftime("%Y-%m-%d"))
+
+        def failed(_message: str) -> None:
+            self.anilistStatsReady.emit({})
+
+        self._pool.start(_Worker(work, self.anilistStatsReady.emit, failed))
+
     # -- Auto-download --------------------------------------------------------
     #
     # For long shows: rather than saving all 1,100 episodes of One Piece,
@@ -1678,6 +1716,12 @@ class Backend(QObject):
     @Slot(str, result=bool)
     def isAutoDownload(self, slug_id: str) -> bool:
         return self._db.get_auto_download(slug_id) is not None
+
+    @Slot(str, result=bool)
+    def autoDownloadDub(self, slug_id: str) -> bool:
+        """Which audio the auto-download saves -- fixed when it was switched
+        on, whatever the Sub/Dub toggle says now."""
+        return bool(self._db.get_auto_download(slug_id))
 
     @Slot(str, bool, bool, float)
     def setAutoDownload(self, slug_id: str, enabled: bool, dub: bool, from_number: float) -> None:

@@ -1,6 +1,7 @@
-// What you've watched, from what this app has recorded on this machine: time
-// actually spent playing, and episodes finished. See animeplayer/stats.py for
-// how each number is worked out.
+// What you've watched, from two places: your AniList list, which has every
+// finish date and rewatch going back years, and this computer's own record of
+// time actually spent playing. See animeplayer/stats.py for how each number
+// is worked out.
 //
 // Every chart here is a single series, so each is one hue -- the accent --
 // with no legend: the heading names what it shows. Values and labels are in
@@ -18,8 +19,30 @@ Kirigami.ScrollablePage {
 
     property var stats: ({})
     readonly property bool empty: !stats.total_hours && !stats.total_episodes
+    property var anilist: ({})
+    property bool anilistLoading: true
+    readonly property bool hasAnilist: page.anilist.days_watched !== undefined
 
-    Component.onCompleted: page.stats = backend.watchStats()
+    Component.onCompleted: {
+        page.stats = backend.watchStats()
+        backend.loadAnilistStats()
+    }
+
+    Connections {
+        target: backend
+        function onAnilistStatsReady(result) {
+            page.anilist = result
+            page.anilistLoading = false
+        }
+    }
+
+    function monthDay(date) {
+        // AniList dates can be partial: "2024", "2024-03" or "2024-03-09".
+        if (date.length < 7) return date
+        let d = new Date(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1,
+                         date.length >= 10 ? Number(date.slice(8, 10)) : 1)
+        return Qt.formatDate(d, date.length >= 10 ? "d MMM yyyy" : "MMM yyyy")
+    }
 
     function hoursText(hours) {
         if (!hours) return "0m"
@@ -37,14 +60,141 @@ Kirigami.ScrollablePage {
         width: page.availableWidth
         spacing: Kirigami.Units.gridUnit * 1.5
 
+        // ================= From AniList =================
+        Kirigami.Heading {
+            level: 2
+            text: "Your AniList"
+            visible: page.hasAnilist
+        }
+
+        Controls.BusyIndicator {
+            Kirigami.Theme.inherit: true
+            Layout.alignment: Qt.AlignHCenter
+            visible: page.anilistLoading
+            running: visible
+        }
+
+        Flow {
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.largeSpacing
+            visible: page.hasAnilist
+
+            StatTile {
+                value: page.anilist.days_watched + " days"
+                label: "watched (" + page.anilist.hours_watched + " hours)"
+                note: "episodes × episode length, rewatches included"
+            }
+            StatTile {
+                value: page.anilist.episodes_watched
+                label: "episodes watched"
+            }
+            StatTile {
+                value: page.anilist.completed
+                label: "shows completed"
+                note: page.anilist.finished_this_year + " so far this year"
+            }
+            StatTile {
+                value: page.anilist.rewatch_count
+                label: page.anilist.rewatch_count === 1 ? "rewatch" : "rewatches"
+                // Naming a favourite only means something when one show was
+                // rewatched more than the others.
+                note: {
+                    let top = (page.anilist.most_rewatched || [])[0]
+                    if (!top) return ""
+                    if (top.times > 1) return "most: " + top.title + " (" + top.times + "×)"
+                    return "across " + page.anilist.rewatched_shows + " shows"
+                }
+            }
+            StatTile {
+                value: page.anilist.mean_score ? page.anilist.mean_score : "–"
+                label: "mean score"
+                note: page.anilist.watching + " watching · " + page.anilist.planning + " planned · "
+                    + page.anilist.dropped + " dropped"
+            }
+        }
+
+        Section {
+            title: "Finished per month"
+            visible: page.hasAnilist
+
+            BarColumns {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 7
+                values: (page.anilist.finished_per_month || []).map((m) => m.count)
+                labels: (page.anilist.finished_per_month || []).map((m) => m.label)
+                tips: (page.anilist.finished_per_month || []).map((m) =>
+                    page.monthDay(m.month) + ": " + m.count + (m.count === 1 ? " show" : " shows"))
+            }
+        }
+
+        Section {
+            title: "Recently finished"
+            visible: (page.anilist.recently_finished || []).length > 0
+
+            Repeater {
+                model: page.anilist.recently_finished || []
+                RowLayout {
+                    required property var modelData
+                    Layout.fillWidth: true
+                    spacing: Kirigami.Units.largeSpacing
+                    Controls.Label {
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 8
+                        text: page.monthDay(modelData.date)
+                        opacity: 0.7
+                    }
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        text: modelData.title
+                        elide: Text.ElideRight
+                    }
+                    Controls.Label {
+                        text: (modelData.repeat > 0 ? "rewatched " + modelData.repeat + "× · " : "")
+                            + (modelData.score > 0 ? "★ " + modelData.score : "")
+                        opacity: 0.7
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                }
+            }
+        }
+
+        Section {
+            title: "Genres, by time"
+            hint: "A show counts toward each of its genres, so these add up to more than 100%."
+            visible: (page.anilist.top_genres || []).length > 0
+
+            BarRows {
+                Layout.fillWidth: true
+                rows: (page.anilist.top_genres || []).map((g) => ({
+                    name: g.genre,
+                    value: g.share,
+                    text: Math.round(g.share * 100) + "% · " + Math.round(g.hours) + "h"
+                }))
+            }
+        }
+
         Kirigami.PlaceholderMessage {
             Layout.fillWidth: true
-            Layout.topMargin: Kirigami.Units.gridUnit * 4
+            visible: !page.anilistLoading && !page.hasAnilist
+            icon.name: "im-user-symbolic"
+            text: "Log in to AniList for your full history"
+            explanation: "Settings → AniList. Your list has every show you've finished, "
+                       + "when, and how many times."
+        }
+
+        // ================= On this computer =================
+        Kirigami.Heading {
+            Layout.topMargin: Kirigami.Units.gridUnit
+            level: 2
+            text: "On this computer"
+        }
+
+        Kirigami.PlaceholderMessage {
+            Layout.fillWidth: true
             visible: page.empty
             icon.name: "office-chart-bar-symbolic"
-            text: "Nothing to show yet"
-            explanation: "Stats count from now on: watch something and it will "
-                       + "show up here. Only this computer's playback is counted."
+            text: "Nothing recorded yet"
+            explanation: "Counting from now: time actually spent playing here, "
+                       + "and when you finish episodes."
         }
 
         // -- The headline numbers -------------------------------------------

@@ -53,6 +53,63 @@ query ($userId: Int!) {
 }
 """
 
+_WATCH_HISTORY_QUERY = """
+query ($userId: Int!) {
+  MediaListCollection(userId: $userId, type: ANIME) {
+    lists {
+      entries {
+        status
+        progress
+        repeat
+        score(format: POINT_10_DECIMAL)
+        startedAt { year month day }
+        completedAt { year month day }
+        media {
+          id
+          title { romaji english }
+          coverImage { large }
+          episodes
+          duration
+          genres
+          format
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def _fuzzy_date(value: dict | None) -> str:
+    """AniList's partial dates as YYYY-MM-DD, YYYY-MM or YYYY -- whatever
+    precision the user gave -- or "" when unset."""
+    if not value or not value.get("year"):
+        return ""
+    parts = [f"{value['year']:04d}"]
+    if value.get("month"):
+        parts.append(f"{value['month']:02d}")
+        if value.get("day"):
+            parts.append(f"{value['day']:02d}")
+    return "-".join(parts)
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryEntry:
+    media_id: int
+    title: str
+    cover_url: str | None
+    status: str          # CURRENT, COMPLETED, PLANNING, DROPPED, PAUSED, REPEATING
+    progress: int        # episodes watched on the current run
+    repeat: int          # times rewatched in full
+    score: float         # 0-10, 0 when unscored
+    started: str         # fuzzy date, see _fuzzy_date
+    completed: str
+    episodes: int        # 0 when AniList doesn't know yet
+    duration: int        # minutes per episode, 0 when unknown
+    genres: tuple[str, ...]
+    format: str
+
+
 _MEDIA_FIELDS = """
     id
     idMal
@@ -223,6 +280,19 @@ mutation ($mediaId: Int, $status: MediaListStatus, $progress: Int) {
 """
 
 
+# Status only. Not the progress mutation with progress set to null: AniList
+# rejects that outright ("The progress must be an integer", HTTP 400), which
+# is what broke Plan to Watch. Leaving the argument out is what leaves the
+# user's progress alone.
+_SET_LIST_STATUS_MUTATION = """
+mutation ($mediaId: Int, $status: MediaListStatus) {
+  SaveMediaListEntry(mediaId: $mediaId, status: $status) {
+    id
+  }
+}
+"""
+
+
 _DELETE_MEDIA_LIST_ENTRY_MUTATION = """
 mutation ($id: Int) {
   DeleteMediaListEntry(id: $id) { deleted }
@@ -236,6 +306,14 @@ query ($mediaId: Int, $userId: Int) {
   MediaList(mediaId: $mediaId, userId: $userId, type: ANIME) { id status }
 }
 """
+
+
+def _error_text(error: dict) -> str:
+    """AniList's validation errors say only "validation" in `message`; the
+    useful part is in `validation`, keyed by field."""
+    details = error.get("validation") or {}
+    specific = [m for messages in details.values() for m in (messages or [])]
+    return "; ".join(specific) or error.get("message") or "unknown error"
 
 
 class AniListError(Exception):
@@ -529,10 +607,17 @@ class AniListClient:
             raise AniListError(
                 "AniList is rate-limiting us right now -- give it a minute and try again."
             )
-        resp.raise_for_status()
-        payload = resp.json()
+        try:
+            payload = resp.json()
+        except ValueError:
+            payload = {}
+        # A 400 carries AniList's own explanation in the body ("The progress
+        # must be an integer"); raise_for_status would throw that away and
+        # show the user a bare "400 Bad Request".
+        if resp.status_code >= 400 and not payload.get("errors"):
+            resp.raise_for_status()
         if payload.get("errors"):
-            messages = "; ".join(e.get("message", "unknown error") for e in payload["errors"])
+            messages = "; ".join(_error_text(e) for e in payload["errors"])
             raise AniListError(messages)
         return payload["data"]
 
@@ -563,6 +648,33 @@ class AniListClient:
                     )
                 )
         return entries
+
+    def get_watch_history(self, user_id: int) -> list["HistoryEntry"]:
+        """The whole list with the dates and counts AniList keeps -- when
+        each show was started and finished, how many times it was rewatched,
+        and how long its episodes run -- for the Stats page. Cached like any
+        read: none of it changes minute to minute."""
+        data = self._request(_WATCH_HISTORY_QUERY, {"userId": user_id})
+        out = []
+        for lst in data["MediaListCollection"]["lists"]:
+            for entry in lst["entries"]:
+                media = entry["media"]
+                out.append(HistoryEntry(
+                    media_id=media["id"],
+                    title=_primary_title(media),
+                    cover_url=(media.get("coverImage") or {}).get("large"),
+                    status=entry["status"],
+                    progress=entry.get("progress") or 0,
+                    repeat=entry.get("repeat") or 0,
+                    score=entry.get("score") or 0,
+                    started=_fuzzy_date(entry.get("startedAt")),
+                    completed=_fuzzy_date(entry.get("completedAt")),
+                    episodes=media.get("episodes") or 0,
+                    duration=media.get("duration") or 0,
+                    genres=tuple(media.get("genres") or []),
+                    format=media.get("format") or "",
+                ))
+        return out
 
     def search_media(self, query: str) -> list[MediaSummary]:
         data = self._request(_MEDIA_SEARCH_QUERY, {"search": query})
@@ -854,8 +966,8 @@ class AniListClient:
         it there. Progress is left alone -- marking something Planning must
         not reset how far into it the user already got."""
         self._request(
-            _SAVE_MEDIA_LIST_ENTRY_MUTATION,
-            {"mediaId": media_id, "status": status, "progress": None},
+            _SET_LIST_STATUS_MUTATION,
+            {"mediaId": media_id, "status": status},
             cache=False,
         )
         self.clear_cache()

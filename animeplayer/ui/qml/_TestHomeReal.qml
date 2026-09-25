@@ -95,6 +95,8 @@ AppWindow {
                 if (root.step === 1 || root.step === 2) {
                     let bar = root.header
                     let hit = bar.childAt(bar.width - 1, 0)
+                    let left = bar.childAt(0, 0)
+                    log("top-left corner hit: " + left + " w=" + (left ? left.width : 0))
                     log((root.maximised ? "maximised" : "windowed") + " corner hit: "
                         + (hit ? hit + " x=" + hit.x + " w=" + hit.width + " h=" + hit.height : "nothing")
                         + " bar=" + bar.width + "x" + bar.height)
@@ -102,12 +104,48 @@ AppWindow {
                 }
                 return
             }
-            if (root.mode === "stats") {
+            if (root.mode === "stats" || root.mode === "statsbottom") {
                 if (root.step === 1) root.goTo("stats", "StatsPage.qml")
                 if (root.step === 2) {
+                    let sp = root.pageStack.get(0)
+                    log("anilist stats: " + JSON.stringify(sp.anilist).substring(0, 700))
+                }
+                if (root.step === 3 && testMode === "statsbottom") {
                     let f = root.pageStack.get(0).flickable
                     f.contentY = f.contentHeight - f.height
                 }
+                return
+            }
+            // The dub-only episode list.
+            if (root.mode === "dublist") {
+                if (root.step === 1) {
+                    root.pageStack.push(Qt.resolvedUrl("DetailPage.qml"), { anime: {
+                        slug_id: "one-piece-1", numeric_id: "1", title: "One Piece",
+                        poster_url: "", kind: "TV", rating: "" } })
+                    return
+                }
+                let d = root.pageStack.get(root.pageStack.depth - 1)
+                let report = (label) => log(label + ": dub=" + d.dub + " counts " + d.subCount + "/" + d.dubCount
+                    + " shown=" + d.shownEpisodeCount + " pages=" + d.pageCount
+                    + " current=" + d.currentPage + " lastCell="
+                    + (d.pageEpisodesCount() > 0 ? d.lastShownNumber() : "none"))
+                if (root.step === 2) { report("sub"); d.dub = true }
+                if (root.step === 3) {
+                    report("dub")
+                    d.showPage(d.pageCount - 1)
+                    d.flickable.contentY = 420
+                }
+                if (root.step === 4) report("dub, last page")
+                return
+            }
+            // Visiting Continue must not become what Browse opens on.
+            if (root.mode === "continue") {
+                if (root.step === 1) root.goBrowse()
+                if (root.step === 2) log("browse opened on: " + root.pageStack.get(0).presetLabel)
+                if (root.step === 3) root.goContinue()
+                if (root.step === 4) log("continue shows: " + root.pageStack.get(0).presetLabel)
+                if (root.step === 5) root.goBrowse()
+                if (root.step === 6) log("browse again: " + root.pageStack.get(0).presetLabel)
                 return
             }
             if (root.mode === "rows") {
@@ -190,9 +228,9 @@ AppWindow {
                         anime: testMode === "airing"
                             // A show genuinely still broadcasting, so the
                             // countdown has something real to count.
-                            ? { slug_id: "one-piece-100", numeric_id: "100",
+                            ? { slug_id: "one-piece-1", numeric_id: "1",
                                 title: "One Piece", poster_url: "", kind: "TV",
-                                rating: "", sub_count: 1179, dub_count: 1122 }
+                                rating: "" }
                             : {
                             slug_id: testMode === "detail2"
                                 ? "rezero-starting-life-in-another-world-season-2-858"

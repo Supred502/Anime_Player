@@ -141,3 +141,44 @@ def test_anime_meta_keeps_a_known_anilist_id(tmp_path) -> None:
     db.set_anime_meta("a", "A", 21, ["Action"])
     db.set_anime_meta("a", "A", None, ["Action", "Drama"])
     assert db.anime_meta()["a"] == ("A", 21, ["Action", "Drama"])
+
+
+# -- AniList history -------------------------------------------------------------
+
+from animeplayer.anilist.client import HistoryEntry, _fuzzy_date  # noqa: E402
+from animeplayer.stats import compute_anilist_stats  # noqa: E402
+
+
+def _history(media_id, status="COMPLETED", progress=12, repeat=0, episodes=12, duration=24,
+             completed="", genres=("Action",), score=0.0) -> HistoryEntry:
+    return HistoryEntry(media_id=media_id, title=f"Show {media_id}", cover_url=None, status=status,
+                        progress=progress, repeat=repeat, score=score, started="",
+                        completed=completed, episodes=episodes, duration=duration,
+                        genres=genres, format="TV")
+
+
+def test_a_rewatch_counts_the_whole_show_again() -> None:
+    stats = compute_anilist_stats([_history(1, repeat=2)], today="2026-09-25")
+    assert stats["episodes_watched"] == 36
+    assert stats["hours_watched"] == round(36 * 24 / 60)
+    assert stats["rewatch_count"] == 2
+
+
+def test_planned_shows_add_no_time() -> None:
+    stats = compute_anilist_stats([_history(1, status="PLANNING", progress=0)], today="2026-09-25")
+    assert stats["episodes_watched"] == 0 and stats["planning"] == 1
+
+
+def test_finished_per_month_covers_the_last_year_with_empty_months() -> None:
+    entries = [_history(1, completed="2026-09-01"), _history(2, completed="2026-01-15"),
+               _history(3, completed="2024-01-15"), _history(4, completed="2026")]
+    months = compute_anilist_stats(entries, today="2026-09-25")["finished_per_month"]
+    assert len(months) == 12
+    assert months[-1] == {"month": "2026-09", "label": "Sep", "count": 1}
+    assert sum(m["count"] for m in months) == 2  # 2024 is too old; "2026" has no month
+
+
+def test_partial_dates_keep_their_precision() -> None:
+    assert _fuzzy_date({"year": 2024, "month": 3, "day": 9}) == "2024-03-09"
+    assert _fuzzy_date({"year": 2024, "month": 3, "day": None}) == "2024-03"
+    assert _fuzzy_date({"year": None, "month": None, "day": None}) == ""

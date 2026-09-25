@@ -317,3 +317,31 @@ def test_cloudflare_challenge_is_reported_distinctly(client) -> None:
 
     with pytest.raises(src.CloudflareBlockedError):
         src.search("Dorohedoro", client)
+
+
+def _anime_page(stats: str) -> str:
+    card = '<div class="tick-item tick-sub"><i></i>99</div><div class="tick-item tick-dub"><i></i>77</div>'
+    return ('<div class="anisc-detail"><h2 class="film-name">Show</h2>'
+            f'<div class="film-stats"><div class="tick">{stats}</div></div>'
+            '<div class="film-description">About it.</div></div>'
+            f'<div class="recommendations">{card}{card}</div>')
+
+
+@respx.mock
+def test_audio_counts_come_from_the_header_not_the_cards_below_it() -> None:
+    respx.get(f"{src.BASE_URL}/one-piece-1").mock(return_value=httpx.Response(200, text=_anime_page(
+        '<div class="tick-item tick-sub"> <i></i>1179 </div><div class="tick-item tick-dub"> <i></i>1155 </div>'
+    )))
+    with httpx.Client() as client:
+        assert src.get_audio_counts("one-piece-1", client) == (1179, 1155)
+
+
+@respx.mock
+def test_a_show_with_no_dub_tick_has_no_dub() -> None:
+    """The recommendation cards further down do have dub ticks -- reading
+    past the header would report one of theirs."""
+    respx.get(f"{src.BASE_URL}/sub-only-5").mock(return_value=httpx.Response(200, text=_anime_page(
+        '<div class="tick-item tick-sub"><i></i>13</div>'
+    )))
+    with httpx.Client() as client:
+        assert src.get_audio_counts("sub-only-5", client) == (13, 0)

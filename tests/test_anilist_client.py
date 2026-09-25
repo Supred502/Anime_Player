@@ -719,3 +719,29 @@ def test_the_client_identifies_itself() -> None:
     """AniList asks third-party clients to say who they are, so they can reach
     an app that misbehaves instead of blocking it."""
     assert "AnimePlayer" in client_module.USER_AGENT
+
+
+@respx.mock
+def test_plan_to_watch_never_sends_a_null_progress() -> None:
+    """AniList rejects progress: null with a 400 -- which is what broke the
+    Plan to Watch button. Leaving progress out is what keeps it untouched."""
+    route = respx.post(client_module.API_URL).mock(
+        return_value=httpx.Response(200, json={"data": {"SaveMediaListEntry": {"id": 1}}})
+    )
+    AniListClient(httpx.Client(), "t").set_list_status(21, "PLANNING")
+    body = json.loads(route.calls.last.request.content)
+    assert "progress" not in body["query"]
+    assert "progress" not in body["variables"]
+
+
+@respx.mock
+def test_a_rejected_request_says_why() -> None:
+    """A 400's body names the field AniList objected to; showing the user a
+    bare "400 Bad Request" instead hides the one useful fact."""
+    respx.post(client_module.API_URL).mock(return_value=httpx.Response(400, json={
+        "errors": [{"message": "validation", "status": 400,
+                    "validation": {"progress": ["The progress must be an integer."]}}],
+        "data": None,
+    }))
+    with pytest.raises(AniListError, match="progress must be an integer"):
+        AniListClient(httpx.Client(), "t").set_list_status(21, "PLANNING")
