@@ -35,6 +35,11 @@ a = Analysis(
         *collect_submodules("animeplayer"),
         *collect_submodules("keyring.backends"),
         "win32ctypes.core",
+        # Loaded by name at runtime (fugashi finds its dictionary by
+        # importing unidic_lite), so the analysis doesn't see them.
+        "unidic_lite",
+        "fugashi",
+        *collect_submodules("cutlet"),
     ],
     excludes=["tkinter", "pytest", "respx"],
 )
