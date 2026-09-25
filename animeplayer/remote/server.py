@@ -23,6 +23,11 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import parse_qs, urlsplit
+
+import httpx
+
+from animeplayer.remote import relay
 
 _REMOTE_PAGE = """<!doctype html>
 <html>
@@ -73,6 +78,24 @@ _REMOTE_PAGE = """<!doctype html>
   .list-item img { width: 40px; height: 56px; object-fit: cover; border-radius: 4px; background: #111; }
   .list-item .name { font-size: 14px; }
   .hidden { display: none !important; }
+  input.search {
+    width: 100%; font-size: 16px; padding: 12px; border-radius: 10px; border: none;
+    background: #2a2a2e; color: #fff; margin-bottom: 10px;
+  }
+  .section-title { font-size: 13px; opacity: .6; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .5px; }
+  .ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 6px; }
+  .ep-grid button { padding: 12px 0; font-size: 15px; }
+  .ep-grid button.resume { outline: 2px solid #4c8bf5; }
+  .ep-grid button.filler { background: #4a3a22; }
+  .seg { display: flex; gap: 0; margin: 8px 0; }
+  .seg button { flex: 1; border-radius: 0; background: #232326; }
+  .seg button:first-child { border-radius: 10px 0 0 10px; }
+  .seg button:last-child { border-radius: 0 10px 10px 0; }
+  .seg button.active { background: #4c8bf5; }
+  #watch { position: fixed; inset: 0; background: #000; z-index: 10; display: flex; flex-direction: column; }
+  #watch video { flex: 1; width: 100%; background: #000; }
+  #watch .bar { display: flex; gap: 8px; padding: 10px; background: #111; }
+  #watch .bar button { flex: 1; }
   .toast {
     position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
     background: #000; color: #fff; padding: 8px 16px; border-radius: 20px; opacity: 0; transition: opacity .2s;
@@ -101,6 +124,9 @@ _REMOTE_PAGE = """<!doctype html>
   </div>
 
   <div id="playerTab">
+    <div class="grid1" id="phoneRow">
+      <button class="primary big" onclick="watchOnPhone()">📱 Continue on phone</button>
+    </div>
     <div class="card">
       <div class="grid1">
         <button class="primary big" onclick="cmd('play_pause')" id="playPauseBtn">Play / Pause</button>
@@ -127,14 +153,31 @@ _REMOTE_PAGE = """<!doctype html>
   </div>
 
   <div id="browseTab" class="hidden">
-    <div class="dpad">
-      <div></div><button onclick="moveSelection(-1)">▲</button><div></div>
-      <button onclick="moveSelection(-1)" style="visibility:hidden"></button>
-      <button class="mid" onclick="selectCurrent()">OK</button>
-      <button onclick="moveSelection(1)" style="visibility:hidden"></button>
-      <div></div><button onclick="moveSelection(1)">▼</button><div></div>
+    <div id="browseHome">
+      <input class="search" id="searchBox" type="search" placeholder="Search anime…"
+             onkeydown="if (event.key === 'Enter') search()">
+      <div id="searchResults"></div>
+      <div class="section-title">Your shows</div>
+      <div id="browseList"><div style="opacity:.6">Loading...</div></div>
     </div>
-    <div class="card" id="browseList"><div style="opacity:.6">Loading...</div></div>
+    <div id="showView" class="hidden">
+      <button onclick="closeShow()">‹ Back</button>
+      <h1 id="showTitle" style="margin-top:12px"></h1>
+      <div class="seg">
+        <button id="segSub" onclick="setAudio(false)">Sub</button>
+        <button id="segDub" onclick="setAudio(true)">Dub</button>
+      </div>
+      <div id="showInfo" style="opacity:.7; font-size:13px; margin-bottom:8px"></div>
+      <div class="ep-grid" id="episodes"></div>
+    </div>
+  </div>
+</div>
+
+<div id="watch" class="hidden">
+  <video id="phoneVideo" controls playsinline autoplay></video>
+  <div class="bar">
+    <button class="primary" onclick="backToPc()">🖥 Back to PC</button>
+    <button onclick="stopPhone()">Close</button>
   </div>
 </div>
 
@@ -225,31 +268,171 @@ async function poll() {
   } catch (e) { /* transient network hiccup, ignore -- next poll will retry */ }
 }
 
+function esc(text) {
+  return String(text == null ? '' : text).replace(/[&<>"']/g,
+    (c) => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+}
+
+function card(item, onclick) {
+  return '<div class="list-item" onclick="' + onclick + '">'
+    + '<img src="' + esc(item.poster_url || '') + '">'
+    + '<div class="name">' + esc(item.title) + '<br><span style="opacity:.6">'
+    + esc(item.subtitle || '') + '</span></div></div>';
+}
+
 function renderBrowse(items) {
+  const signature = JSON.stringify(items.map((it) => it.title + it.subtitle));
+  if (signature === renderBrowse.last) return;   // polled every 2s; don't redraw for nothing
+  renderBrowse.last = signature;
   browseItems = items;
   const el = document.getElementById('browseList');
   if (items.length === 0) { el.innerHTML = '<div style="opacity:.6">Nothing here yet</div>'; return; }
-  el.innerHTML = items.map((it, i) =>
-    '<div class="list-item' + (i === selIndex ? ' selected' : '') + '" onclick="selIndex=' + i + ';selectCurrent()">'
-    + '<img src="' + (it.poster_url || '') + '">'
-    + '<div class="name">' + it.title + '<br><span style="opacity:.6">' + it.subtitle + '</span></div>'
-    + '</div>'
-  ).join('');
+  el.innerHTML = items.map((it, i) => card(it, 'openHomeItem(' + i + ')')).join('');
 }
 
-function moveSelection(delta) {
-  if (browseItems.length === 0) return;
-  selIndex = Math.max(0, Math.min(browseItems.length - 1, selIndex + delta));
-  renderBrowse(browseItems);
-}
-
-function selectCurrent() {
-  const item = browseItems[selIndex];
+// Shows played on the PC have a source slug, so their episodes can be listed
+// right here. AniList-only ones still open on the PC, which finds them.
+function openHomeItem(i) {
+  const item = browseItems[i];
   if (!item) return;
-  const arg = item.open_cmd === 'open_anime' ? {id: item.open_arg, title: item.title} : item.open_arg;
-  cmd(item.open_cmd, arg);
-  toast('Opening ' + item.title + ' on the PC');
+  if (item.open_cmd === 'open_continue_watching') {
+    openShow({slug_id: item.open_arg, numeric_id: item.open_arg.split('-').pop(),
+              title: item.title, poster_url: item.poster_url});
+  } else {
+    cmd(item.open_cmd, {id: item.open_arg, title: item.title});
+    toast('Opening ' + item.title + ' on the PC');
+  }
 }
+
+let searchResults = [];
+async function search() {
+  const q = document.getElementById('searchBox').value.trim();
+  const el = document.getElementById('searchResults');
+  if (!q) { el.innerHTML = ''; return; }
+  el.innerHTML = '<div style="opacity:.6">Searching…</div>';
+  try {
+    const data = await (await fetch('/api/search?t=' + encodeURIComponent(token) + '&q=' + encodeURIComponent(q))).json();
+    searchResults = data.results || [];
+    el.innerHTML = searchResults.length
+      ? searchResults.map((r, i) => card({title: r.title, poster_url: r.poster_url,
+          subtitle: [r.kind, r.sub_count ? 'SUB ' + r.sub_count : '', r.dub_count ? 'DUB ' + r.dub_count : '']
+            .filter(Boolean).join(' · ')}, 'openShow(searchResults[' + i + '])')).join('')
+      : '<div style="opacity:.6">Nothing found</div>';
+  } catch (e) { el.innerHTML = ''; toast('Could not reach PC'); }
+}
+
+let show = null, showData = null, showDub = false;
+async function openShow(item) {
+  show = item;
+  document.getElementById('browseHome').classList.add('hidden');
+  document.getElementById('showView').classList.remove('hidden');
+  document.getElementById('showTitle').textContent = item.title;
+  document.getElementById('episodes').innerHTML = '<div style="opacity:.6">Loading episodes…</div>';
+  document.getElementById('showInfo').textContent = '';
+  window.scrollTo(0, 0);
+  try {
+    showData = await (await fetch('/api/episodes?t=' + encodeURIComponent(token) + '&slug=' + encodeURIComponent(item.slug_id))).json();
+    showDub = !!showData.prefer_dub && showData.dub > 0;
+    renderEpisodes();
+  } catch (e) { toast('Could not load episodes'); }
+}
+
+function closeShow() {
+  document.getElementById('showView').classList.add('hidden');
+  document.getElementById('browseHome').classList.remove('hidden');
+}
+
+function setAudio(dub) { showDub = dub; renderEpisodes(); }
+
+// Same rule as the PC: the dub list is the first N episodes.
+function renderEpisodes() {
+  if (!showData) return;
+  document.getElementById('segSub').classList.toggle('active', !showDub);
+  document.getElementById('segDub').classList.toggle('active', showDub);
+  const all = showData.episodes || [];
+  const list = showDub ? all.slice(0, showData.dub) : all;
+  document.getElementById('showInfo').textContent = showDub
+    ? (showData.dub ? showData.dub + ' dubbed of ' + all.length : 'No dub yet')
+    : all.length + ' episodes' + (showData.resume ? ' · up to ' + showData.resume : '');
+  document.getElementById('episodes').innerHTML = list.map((ep, i) =>
+    '<button class="' + (ep.number === showData.resume ? 'resume ' : '') + (ep.filler ? 'filler' : '')
+    + '" onclick="playOnPc(' + i + ')">' + ep.number + '</button>').join('');
+}
+
+function playOnPc(i) {
+  const ep = (showData.episodes || [])[i];
+  if (!ep || !show) return;
+  cmd('play_episode', {slug_id: show.slug_id, numeric_id: show.numeric_id, title: show.title,
+                       poster_url: show.poster_url || '', episode_id: ep.id, number: ep.number, dub: showDub});
+  toast('Playing episode ' + ep.number + ' on the PC');
+  showTab('player');
+}
+
+// -- Continue on phone --------------------------------------------------------
+// The PC pauses; this plays the same episode from the same second, through
+// the PC (the video host won't serve a phone browser directly). "Back to PC"
+// hands the position back.
+let hls = null;
+async function watchOnPhone() {
+  let info;
+  try {
+    info = (await (await fetch('/stream/info?t=' + encodeURIComponent(token))).json()).stream;
+  } catch (e) { toast('Could not reach PC'); return; }
+  if (!info) { toast('Nothing is playing on the PC'); return; }
+  await cmd('pause');
+  const video = document.getElementById('phoneVideo');
+  video.innerHTML = '';
+  const t = encodeURIComponent(token);
+  if (info.has_subtitle) {
+    const track = document.createElement('track');
+    track.kind = 'subtitles'; track.srclang = 'en'; track.label = 'English'; track.default = true;
+    track.src = '/stream/sub.vtt?t=' + t;
+    video.appendChild(track);
+  }
+  const start = () => { video.currentTime = info.position || 0; video.play().catch(() => {}); };
+  document.getElementById('watch').classList.remove('hidden');
+  if (info.kind === 'file') {
+    video.src = '/stream/file?t=' + t;
+    video.addEventListener('loadedmetadata', start, {once: true});
+  } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+    video.src = '/stream/index.m3u8?t=' + t;
+    video.addEventListener('loadedmetadata', start, {once: true});
+  } else {
+    await loadHlsJs();
+    hls = new Hls({startPosition: info.position || 0});
+    hls.loadSource('/stream/index.m3u8?t=' + t);
+    hls.attachMedia(video);
+    hls.on(Hls.Events.MANIFEST_PARSED, () => video.play().catch(() => {}));
+  }
+  if (video.textTracks.length) video.textTracks[0].mode = 'showing';
+}
+
+function loadHlsJs() {
+  if (window.Hls) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js';
+    s.onload = resolve; s.onerror = () => { toast('Could not load the video player'); reject(); };
+    document.head.appendChild(s);
+  });
+}
+
+function closePhoneVideo() {
+  const video = document.getElementById('phoneVideo');
+  video.pause();
+  if (hls) { hls.destroy(); hls = null; }
+  video.removeAttribute('src'); video.load();
+  document.getElementById('watch').classList.add('hidden');
+}
+
+async function backToPc() {
+  const at = document.getElementById('phoneVideo').currentTime || 0;
+  closePhoneVideo();
+  await cmd('resume_at', at);
+  toast('Back on the PC at ' + fmtTime(at));
+}
+
+function stopPhone() { closePhoneVideo(); }
 
 let toastTimer = null;
 function toast(msg) {
@@ -282,7 +465,19 @@ class RemoteServer:
         apk_path: Path | None = None,
         initial_tokens: set[str] | None = None,
         on_new_token: Callable[[str], None] | None = None,
+        stream_provider: Callable[[], dict[str, Any] | None] | None = None,
+        search_provider: Callable[[str], list[dict[str, Any]]] | None = None,
+        episodes_provider: Callable[[str], dict[str, Any]] | None = None,
     ) -> None:
+        # The "second screen" half: what's playing on the PC (for continue
+        # on phone), and searching / listing episodes from the phone. All
+        # optional, so the server still stands up in tests without them.
+        self._stream_provider = stream_provider
+        self._search_provider = search_provider
+        self._episodes_provider = episodes_provider
+        self._relay_hosts: set[str] = set()
+        self._relay_referer = ""
+        self._relay_client = httpx.Client(timeout=30, follow_redirects=True)
         self._state_provider = state_provider
         self._command_handler = command_handler
         self._port = port
@@ -396,7 +591,147 @@ class RemoteServer:
                     self.send_response(404)
                     self.end_headers()
 
+            def _authorised(self, query: dict) -> bool:
+                token = (query.get("t") or [""])[0]
+                with server._lock:
+                    return token in server._tokens
+
+            def _relay_get(self, url: str, is_playlist: bool, token: str) -> None:
+                if not relay.allowed(url, server._relay_hosts):
+                    self._send_json(403, {"error": "not part of the current episode"})
+                    return
+                headers = {"Referer": server._relay_referer} if server._relay_referer else {}
+                if is_playlist:
+                    resp = server._relay_client.get(url, headers=headers)
+                    body = relay.rewrite_playlist(resp.text, str(resp.url), token,
+                                                  server._relay_hosts).encode()
+                    self.send_response(resp.status_code)
+                    self.send_header("Content-Type", "application/vnd.apple.mpegurl")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                with server._relay_client.stream("GET", url, headers=headers) as resp:
+                    self.send_response(resp.status_code)
+                    for name in ("Content-Type", "Content-Length"):
+                        if resp.headers.get(name):
+                            self.send_header(name, resp.headers[name])
+                    self.end_headers()
+                    try:
+                        for chunk in resp.iter_bytes(64 * 1024):
+                            self.wfile.write(chunk)
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass  # the phone seeked or stopped; nothing to do
+
+            def _serve_file(self, path: Path, content_type: str) -> None:
+                """A saved episode, with Range support: a phone's video
+                player seeks by asking for byte ranges, and won't seek at
+                all without them."""
+                size = path.stat().st_size
+                start, end = 0, size - 1
+                range_header = self.headers.get("Range")
+                if range_header and range_header.startswith("bytes="):
+                    try:
+                        first, last = range_header[6:].split("-", 1)
+                        start = int(first) if first else 0
+                        end = min(int(last), size - 1) if last else size - 1
+                    except ValueError:
+                        start, end = 0, size - 1
+                    self.send_response(206)
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+                else:
+                    self.send_response(200)
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(end - start + 1))
+                self.end_headers()
+                try:
+                    with path.open("rb") as f:
+                        f.seek(start)
+                        remaining = end - start + 1
+                        while remaining > 0:
+                            chunk = f.read(min(256 * 1024, remaining))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            remaining -= len(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def _second_screen(self, route: str, query: dict) -> bool:
+                """Everything under /stream and /api/search|episodes. Returns
+                False for paths it doesn't own."""
+                if not (route.startswith("/stream/") or route in ("/api/search", "/api/episodes")):
+                    return False
+                if not self._authorised(query):
+                    self._send_json(403, {"error": "Not paired -- enter the PIN again"})
+                    return True
+                token = query["t"][0]
+                arg = lambda name: (query.get(name) or [""])[0]  # noqa: E731
+
+                if route == "/api/search" and server._search_provider:
+                    self._send_json(200, {"results": server._search_provider(arg("q"))})
+                elif route == "/api/episodes" and server._episodes_provider:
+                    self._send_json(200, server._episodes_provider(arg("slug")))
+                elif route == "/stream/info":
+                    current = server._stream_provider() if server._stream_provider else None
+                    if current and current.get("kind") == "hls":
+                        # A new episode resets what may be fetched.
+                        server._relay_hosts = {relay.host_of(current["url"])}
+                        server._relay_referer = current.get("referer") or ""
+                    self._send_json(200, {"stream": current and {
+                        "kind": current["kind"], "position": current.get("position", 0),
+                        "title": current.get("title", ""), "episode": current.get("episode", 0),
+                        "has_subtitle": bool(current.get("subtitle_url") or current.get("subtitle_path")),
+                    }})
+                elif route == "/stream/index.m3u8":
+                    current = server._stream_provider() if server._stream_provider else None
+                    if not current or current.get("kind") != "hls":
+                        self._send_json(404, {"error": "nothing streaming"})
+                    else:
+                        server._relay_hosts.add(relay.host_of(current["url"]))
+                        server._relay_referer = current.get("referer") or ""
+                        self._relay_get(current["url"], True, token)
+                elif route in ("/stream/pl", "/stream/seg"):
+                    self._relay_get(arg("u"), route == "/stream/pl", token)
+                elif route == "/stream/file":
+                    current = server._stream_provider() if server._stream_provider else None
+                    if not current or current.get("kind") != "file":
+                        self._send_json(404, {"error": "no saved file playing"})
+                    else:
+                        self._serve_file(Path(current["path"]), "video/mp4")
+                elif route == "/stream/sub.vtt":
+                    current = server._stream_provider() if server._stream_provider else None
+                    if current and current.get("subtitle_path"):
+                        self._serve_file(Path(current["subtitle_path"]), "text/vtt")
+                    elif current and current.get("subtitle_url"):
+                        resp = server._relay_client.get(
+                            current["subtitle_url"],
+                            headers={"Referer": current.get("referer") or ""})
+                        body = resp.content
+                        self.send_response(resp.status_code)
+                        self.send_header("Content-Type", "text/vtt")
+                        self.send_header("Content-Length", str(len(body)))
+                        self.end_headers()
+                        self.wfile.write(body)
+                    else:
+                        self._send_json(404, {"error": "no subtitles"})
+                else:
+                    self._send_json(404, {"error": "not found"})
+                return True
+
             def do_GET(self) -> None:  # noqa: N802 -- required BaseHTTPRequestHandler name
+                parts = urlsplit(self.path)
+                try:
+                    if self._second_screen(parts.path, parse_qs(parts.query)):
+                        return
+                except (httpx.HTTPError, OSError) as e:
+                    try:
+                        self._send_json(502, {"error": str(e)})
+                    except OSError:
+                        pass
+                    return
                 if self.path == "/":
                     body = _REMOTE_PAGE.encode("utf-8")
                     self.send_response(200)

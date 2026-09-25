@@ -73,6 +73,9 @@ Kirigami.ScrollablePage {
         autoFullscreenToggle.checked = backend.getAutoFullscreenEnabled()
         deleteWatchedToggle.checked = backend.getDeleteAfterWatchingEnabled()
         newEpisodeToggle.checked = backend.getNewEpisodeAlertsEnabled()
+        let style = backend.subtitleStyle()
+        subScaleSlider.value = style.scale
+        subPosSlider.value = style.position
         page.themeAccents = backend.themeAccents()
         page.currentAccent = backend.theme.accentName
         page.canDownload = backend.canDownload()
@@ -204,6 +207,31 @@ Kirigami.ScrollablePage {
                 Kirigami.FormData.label: " "
                 text: "Go fullscreen when an episode starts"
                 onToggled: backend.setAutoFullscreenEnabled(checked)
+            }
+
+            RowLayout {
+                Kirigami.FormData.label: "Subtitle size:"
+                Controls.Slider {
+                    id: subScaleSlider
+                    Kirigami.Theme.inherit: true
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                    from: 0.5; to: 2.0; stepSize: 0.05; value: 1.0
+                    onMoved: backend.setSubtitleStyle(value, subPosSlider.value)
+                }
+                Controls.Label { text: Math.round(subScaleSlider.value * 100) + "%" }
+            }
+            RowLayout {
+                Kirigami.FormData.label: "Subtitle height:"
+                Controls.Slider {
+                    id: subPosSlider
+                    Kirigami.Theme.inherit: true
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                    from: 60; to: 100; stepSize: 1; value: 100
+                    onMoved: backend.setSubtitleStyle(subScaleSlider.value, value)
+                }
+                Controls.Label {
+                    text: subPosSlider.value >= 100 ? "bottom" : (100 - subPosSlider.value) + "% up"
+                }
             }
 
             AppCheckBox {

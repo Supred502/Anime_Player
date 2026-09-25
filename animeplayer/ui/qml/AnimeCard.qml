@@ -252,6 +252,10 @@ Item {
             TapHandler {
                 onTapped: card.clicked()
             }
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: applicationWindow().showCardMenu(card.title)
+            }
         }
 
         Controls.Label {

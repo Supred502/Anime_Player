@@ -113,6 +113,15 @@ CREATE TABLE IF NOT EXISTS auto_download (
     dub     INTEGER NOT NULL DEFAULT 0
 );
 
+-- Per-show choices the user made once and shouldn't have to make again:
+-- which audio they watch it in, and whether filler is skipped. Keyed by the
+-- source's slug. dub is NULL until they first pick one.
+CREATE TABLE IF NOT EXISTS show_prefs (
+    slug_id     TEXT PRIMARY KEY,
+    dub         INTEGER,
+    skip_filler INTEGER NOT NULL DEFAULT 0
+);
+
 -- Watch statistics. Seconds actually spent playing, bucketed per day and
 -- show -- a counter rather than a log, so it stays small however much is
 -- watched -- plus one row per episode finished.
@@ -383,6 +392,36 @@ class Database:
                 )
             else:
                 self._conn.execute("DELETE FROM auto_download WHERE slug_id = ?", (slug_id,))
+            self._conn.commit()
+
+    # -- per-show preferences ---------------------------------------------
+
+    def get_show_prefs(self, slug_id: str) -> tuple[bool | None, bool]:
+        """(dub, skip_filler); dub is None until the user has picked one."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT dub, skip_filler FROM show_prefs WHERE slug_id = ?", (slug_id,)
+            ).fetchone()
+        if row is None:
+            return None, False
+        return (None if row["dub"] is None else bool(row["dub"])), bool(row["skip_filler"])
+
+    def set_show_dub(self, slug_id: str, dub: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO show_prefs (slug_id, dub) VALUES (?, ?) "
+                "ON CONFLICT(slug_id) DO UPDATE SET dub=excluded.dub",
+                (slug_id, 1 if dub else 0),
+            )
+            self._conn.commit()
+
+    def set_skip_filler(self, slug_id: str, skip: bool) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO show_prefs (slug_id, skip_filler) VALUES (?, ?) "
+                "ON CONFLICT(slug_id) DO UPDATE SET skip_filler=excluded.skip_filler",
+                (slug_id, 1 if skip else 0),
+            )
             self._conn.commit()
 
     # -- watch statistics ---------------------------------------------------

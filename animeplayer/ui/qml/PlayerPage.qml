@@ -19,6 +19,17 @@ Kirigami.Page {
     padding: 0
     focus: true // needed for Keys.onPressed below to actually receive events
 
+    // Subtitle size and height, saved app-wide (see backend.subtitleStyle)
+    // and pushed to mpv whenever either changes.
+    property real subScale: 1.0
+    property int subPosition: 100
+    onSubScaleChanged: page.applySubtitleStyle()
+    onSubPositionChanged: page.applySubtitleStyle()
+    function applySubtitleStyle() {
+        if (video) video.setSubtitleStyle(page.subScale, page.subPosition)
+    }
+    function saveSubtitleStyle() { backend.setSubtitleStyle(page.subScale, page.subPosition) }
+
     property bool loadingStream: true
     property bool controlsVisible: true
     property bool isFullscreen: false
@@ -59,6 +70,9 @@ Kirigami.Page {
         page.autoNextEnabled = backend.getAutoNextEnabled()
         page.episodeCount = backend.getCurrentEpisodeCount()
         page.firstEpisodeNumber = backend.getFirstEpisodeNumber()
+        let style = backend.subtitleStyle()
+        page.subScale = style.scale
+        page.subPosition = style.position
         page.startLoad()
         // Straight into fullscreen on the way in, unless the user turned that
         // off. Picking an episode is an unambiguous "I am going to watch
@@ -138,6 +152,7 @@ Kirigami.Page {
         }
         page.showingPointerAgain = true
         backend.setKeepScreenAwake(false)
+        backend.playerClosed()
         if (page.isFullscreen) applicationWindow().visibility = Window.Windowed
         // Always, not only when leaving fullscreen: this page is the only
         // thing that hides the window chrome, so it is the only thing that
@@ -212,8 +227,45 @@ Kirigami.Page {
         } else if (event.key === Qt.Key_Escape) {
             page.escapeAction()
             event.accepted = true
+        } else if (event.key === Qt.Key_F) {
+            page.toggleFullscreen()
+            event.accepted = true
+        } else if (event.key === Qt.Key_N) {
+            page.nextEpisode()
+            event.accepted = true
+        } else if (event.key === Qt.Key_P) {
+            page.previousEpisode()
+            event.accepted = true
+        } else if (event.key === Qt.Key_S) {
+            // Whichever of the two the video is in; nothing otherwise.
+            if (page.skipOp && video.position >= page.skipOp.start && video.position < page.skipOp.end) page.skipIntroNow()
+            else if (page.skipEd && video.position >= page.skipEd.start && video.position < page.skipEd.end) page.skipOutroNow()
+            event.accepted = true
+        } else if (event.key === Qt.Key_Up) {
+            page.volumeUp()
+            page.flashVolume()
+            event.accepted = true
+        } else if (event.key === Qt.Key_Down) {
+            page.volumeDown()
+            page.flashVolume()
+            event.accepted = true
+        } else if (event.key === Qt.Key_M) {
+            video.setMuted(!video.muted)
+            page.flashVolume()
+            event.accepted = true
+        } else if (event.key === Qt.Key_Question || event.key === Qt.Key_Slash) {
+            shortcutHelp.visible = !shortcutHelp.visible
+            event.accepted = true
         }
     }
+
+    // Volume keys change something invisible, so they say what they did.
+    property bool volumeShown: false
+    function flashVolume() {
+        page.volumeShown = true
+        volumeFlash.restart()
+    }
+    Timer { id: volumeFlash; interval: 1200; onTriggered: page.volumeShown = false }
 
     Connections {
         target: backend
@@ -318,6 +370,13 @@ Kirigami.Page {
             else if (cmd === "next_episode") page.nextEpisode()
             else if (cmd === "prev_episode") page.previousEpisode()
             else if (cmd === "volume") { if (args > 0) page.volumeUp(); else page.volumeDown() }
+            // Continue on phone: the PC pauses while the phone plays, then
+            // picks up from wherever the phone got to.
+            else if (cmd === "pause") video.setPaused(true)
+            else if (cmd === "resume_at") {
+                page.seekTo(Number(args) || 0)
+                video.setPaused(false)
+            }
         }
     }
 
@@ -447,6 +506,53 @@ Kirigami.Page {
         anchors.right: parent.right
         anchors.margins: Kirigami.Units.largeSpacing
         visible: !page.loadingStream && page.controlsVisible
+
+        Controls.Button {
+            Kirigami.Theme.inherit: true
+            icon.name: "media-view-subtitles-symbolic"
+            onClicked: subtitlePopup.opened ? subtitlePopup.close() : subtitlePopup.open()
+            Controls.ToolTip.visible: hovered
+            Controls.ToolTip.text: "Subtitle size and position"
+
+            Controls.Popup {
+                id: subtitlePopup
+                Kirigami.Theme.inherit: true
+                y: parent.height + Kirigami.Units.smallSpacing
+                x: parent.width - width
+                padding: Kirigami.Units.largeSpacing
+                // Keeps the controls up while the popup is in use.
+                onOpened: { page.controlsVisible = true; hideTimer.stop() }
+                onClosed: { hideTimer.restart(); page.saveSubtitleStyle() }
+
+                ColumnLayout {
+                    spacing: Kirigami.Units.smallSpacing
+                    Controls.Label { text: "Size: " + Math.round(page.subScale * 100) + "%" }
+                    Controls.Slider {
+                        Kirigami.Theme.inherit: true
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        from: 0.5; to: 2.0; stepSize: 0.05
+                        value: page.subScale
+                        onMoved: page.subScale = value
+                    }
+                    Controls.Label {
+                        text: "Height: " + (page.subPosition >= 100 ? "bottom"
+                              : (100 - page.subPosition) + "% up")
+                    }
+                    Controls.Slider {
+                        Kirigami.Theme.inherit: true
+                        Layout.preferredWidth: Kirigami.Units.gridUnit * 14
+                        from: 60; to: 100; stepSize: 1
+                        value: page.subPosition
+                        onMoved: page.subPosition = value
+                    }
+                    Controls.Button {
+                        Kirigami.Theme.inherit: true
+                        text: "Reset"
+                        onClicked: { page.subScale = 1.0; page.subPosition = 100 }
+                    }
+                }
+            }
+        }
 
         Controls.ComboBox {
             Kirigami.Theme.inherit: true
@@ -612,6 +718,58 @@ Kirigami.Page {
                 onClicked: page.seekRelative(30)
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: "Forward 30 seconds (Right arrow: 5s)"
+            }
+        }
+    }
+
+    Rectangle {
+        anchors.centerIn: parent
+        visible: page.volumeShown
+        radius: Kirigami.Units.smallSpacing * 2
+        color: Qt.rgba(0, 0, 0, 0.7)
+        implicitWidth: volumeLabel.implicitWidth + Kirigami.Units.gridUnit * 2
+        implicitHeight: volumeLabel.implicitHeight + Kirigami.Units.gridUnit
+        Controls.Label {
+            id: volumeLabel
+            anchors.centerIn: parent
+            color: "white"
+            font.pixelSize: Kirigami.Units.gridUnit * 1.4
+            text: video.muted ? "Muted" : "Volume " + Math.round(video.volume) + "%"
+        }
+    }
+
+    // "?" toggles this. Keys are the ones every other player uses, so it's
+    // a reminder rather than something to learn.
+    Rectangle {
+        id: shortcutHelp
+        visible: false
+        anchors.centerIn: parent
+        radius: Kirigami.Units.smallSpacing * 2
+        color: Qt.rgba(0, 0, 0, 0.8)
+        implicitWidth: helpGrid.implicitWidth + Kirigami.Units.gridUnit * 2
+        implicitHeight: helpGrid.implicitHeight + Kirigami.Units.gridUnit * 2
+        readonly property var shortcuts: [
+            ["Space", "Play / pause"], ["\u2190 \u2192", "Back / forward 5s"],
+            ["\u2191 \u2193", "Volume"], ["M", "Mute"], ["F", "Fullscreen"],
+            ["S", "Skip intro or outro"], ["N / P", "Next / previous episode"],
+            ["Esc", "Pause and leave fullscreen"], ["?", "This list"]
+        ]
+        GridLayout {
+            id: helpGrid
+            anchors.centerIn: parent
+            columns: 2
+            columnSpacing: Kirigami.Units.gridUnit
+            // Flattened to key, description, key, description... so one
+            // Repeater fills both columns in order.
+            Repeater {
+                model: [].concat(...shortcutHelp.shortcuts)
+                delegate: Controls.Label {
+                    required property var modelData
+                    required property int index
+                    text: modelData
+                    color: "white"
+                    font.bold: index % 2 === 0
+                }
             }
         }
     }

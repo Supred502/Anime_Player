@@ -281,6 +281,11 @@ class Backend(QObject):
         # parking one of the shared pool's threads on it for that long starves
         # the searches and catalog loads the user is waiting on.
         self._downloader = Downloader()
+        # What the player has on screen right now, for "continue on phone".
+        # None when nothing is playing.
+        self._now_playing: dict[str, Any] | None = None
+        # slug -> (subbed, dubbed), as last read from the source.
+        self._audio_counts: dict[str, tuple[int, int]] = {}
         self._playing = False
         self._download_pool = QThreadPool()
         self._download_pool.setMaxThreadCount(1)
@@ -1039,6 +1044,7 @@ class Backend(QObject):
 
         def done(counts: tuple[int, int] | None) -> None:
             if counts is not None:
+                self._audio_counts[slug_id] = counts
                 self.audioCountsReady.emit(slug_id, counts[0], counts[1])
 
         self._pool.start(_Worker(work, done, lambda _msg: None))
@@ -1059,12 +1065,35 @@ class Backend(QObject):
             return
         anime["_filler_fallback_started"] = True
 
+        # Kept for a week: filler is decided once a show airs, and a long
+        # show costs a dozen paced requests to learn it.
+        key = f"filler_{mal_id}"
+        cached = self._db.get_setting(key)
+        stamp = self._db.get_setting(key + "_at")
+        try:
+            if cached is not None and stamp and time.time() - float(stamp) <= self._STATIC_LIST_MAX_AGE:
+                numbers = json.loads(cached)
+                anime["jikan_filler"] = set(numbers)
+                self._db.set_setting(f"filler_slug:{slug_id}", cached)
+                if numbers:
+                    self.fillerEpisodesUpdated.emit(numbers)
+                return
+        except (ValueError, json.JSONDecodeError):
+            pass
+
         def work() -> set[int]:
             return jikan.get_filler_episodes(mal_id, self._http)
 
         def done(filler_numbers: set[int]) -> None:
-            if filler_numbers:
-                self.fillerEpisodesUpdated.emit(sorted(filler_numbers))
+            numbers = sorted(filler_numbers)
+            anime["jikan_filler"] = set(numbers)
+            self._db.set_setting(key, json.dumps(numbers))
+            # Also by source slug, for the background auto-download, which
+            # knows the slug but not the MAL id.
+            self._db.set_setting(f"filler_slug:{slug_id}", json.dumps(numbers))
+            self._db.set_setting(key + "_at", str(time.time()))
+            if numbers:
+                self.fillerEpisodesUpdated.emit(numbers)
 
         self._pool.start(_Worker(work, done, lambda _msg: None))
 
@@ -1083,6 +1112,8 @@ class Backend(QObject):
             self._progressReady.emit(episode_id, episode_number)
             if self._anilist_client is not None and anime_snapshot and anime_snapshot.get("anilist_id"):
                 self._push_anilist_progress(anime_snapshot, episode_number)
+            self._now_playing = {"kind": "file", "path": saved.path,
+                                 "subtitle_path": saved.subtitle_path or ""}
             self.streamReady.emit(
                 Path(saved.path).as_uri(),
                 "",
@@ -1152,6 +1183,8 @@ class Backend(QObject):
         subtitle track can never be accidentally dropped on one of the paths
         (initial load / quality switch) -- without them the stream either
         403s outright or plays with no subtitles. See sources/hianime.py."""
+        self._now_playing = {"kind": "hls", "url": url, "referer": info.referer,
+                             "subtitle_url": info.subtitle_url or ""}
         self.streamReady.emit(url, info.referer, info.subtitle_url or "")
 
     def _adopt_mal_id(self, mal_id: int | None) -> None:
@@ -1222,12 +1255,44 @@ class Backend(QObject):
             self.noNextEpisode.emit()
             return
         candidates = sorted((e for e in episodes if e.number > current_episode_number), key=lambda e: e.number)
+        # Filler is skipped here, on the way to the next episode -- never by
+        # hiding it: clicking a filler episode on purpose still plays it.
+        if self._skips_filler(anime):
+            canon = [e for e in candidates if not self._is_filler(anime, e)]
+            candidates = canon or candidates
         if not candidates:
             self.noNextEpisode.emit()
             return
         next_episode = candidates[0]
         self.nextEpisodeLoading.emit(next_episode.episode_id, next_episode.number)
         self.loadStream(next_episode.episode_id, next_episode.number, dub)
+
+    @staticmethod
+    def _is_filler(anime: dict[str, Any], episode: source.Episode) -> bool:
+        # The source's own flag, or Jikan's list for shows the source leaves
+        # unflagged (One Piece among them).
+        return episode.filler or int(episode.number) in (anime.get("jikan_filler") or ())
+
+    def _skips_filler(self, anime: dict[str, Any] | None) -> bool:
+        return bool(anime) and self._db.get_show_prefs(anime["slug_id"])[1]
+
+    # -- Per-show preferences ---------------------------------------------------
+
+    @Slot(str, result="QVariantMap")
+    def showPrefs(self, slug_id: str) -> dict[str, Any]:
+        dub, skip_filler = self._db.get_show_prefs(slug_id)
+        # -1 for "never chosen": QML has no None to compare a bool against.
+        return {"dub": -1 if dub is None else int(dub), "skip_filler": skip_filler}
+
+    @Slot(str, bool)
+    def setShowDub(self, slug_id: str, dub: bool) -> None:
+        if slug_id:
+            self._db.set_show_dub(slug_id, dub)
+
+    @Slot(str, bool)
+    def setSkipFiller(self, slug_id: str, skip: bool) -> None:
+        if slug_id:
+            self._db.set_skip_filler(slug_id, skip)
 
     @Slot(float, bool)
     def loadPreviousEpisode(self, current_episode_number: float, dub: bool = False) -> None:
@@ -1303,6 +1368,22 @@ class Backend(QObject):
     @Slot(bool)
     def setSkipFinalEpisodeEnabled(self, value: bool) -> None:
         self._db.set_setting("skip_final_episode_enabled", "true" if value else "false")
+
+    @Slot(result="QVariantMap")
+    def subtitleStyle(self) -> dict[str, Any]:
+        """Subtitle size (1.0 = default) and vertical position (100 = bottom
+        edge; smaller moves them up), as last chosen."""
+        try:
+            scale = float(self._db.get_setting("sub_scale") or 1.0)
+            position = int(self._db.get_setting("sub_pos") or 100)
+        except ValueError:
+            scale, position = 1.0, 100
+        return {"scale": scale, "position": position}
+
+    @Slot(float, int)
+    def setSubtitleStyle(self, scale: float, position: int) -> None:
+        self._db.set_setting("sub_scale", f"{scale:.2f}")
+        self._db.set_setting("sub_pos", str(int(position)))
 
     @Slot(result=bool)
     def getAutoNextEnabled(self) -> bool:
@@ -1527,6 +1608,7 @@ class Backend(QObject):
 
         slug_id = anime["slug_id"]
         self._record_watch_event(slug_id, anime.get("title") or "", watched.number)
+        self._maybe_ask_for_rating(anime, watched.number)
 
         if self.getDeleteAfterWatchingEnabled():
             earlier = sorted(e.number for e in episodes if e.number < watched.number)
@@ -1624,6 +1706,7 @@ class Backend(QObject):
                 for n in waiting
             ]
             self.newEpisodesChanged.emit(self._new_episodes)
+            self._check_source_side(followed)
             for n in announce:
                 _notify_desktop(
                     followed[n.state.media.id][2] or n.state.media.title,
@@ -1632,6 +1715,72 @@ class Backend(QObject):
                 )
 
         self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    def _check_source_side(self, followed: dict[int, tuple[int, str, str]]) -> None:
+        """The half of the new-episode check that asks the streaming source
+        rather than AniList: how many episodes are dubbed (AniList doesn't
+        know), and -- for shows with auto-download on -- the fresh episode
+        list, so an episode that just aired is queued without anyone opening
+        the show. One or two small requests per followed show, every half
+        hour."""
+        shows = []
+        for anilist_id, (watched, slug_id, title) in followed.items():
+            if not slug_id:
+                # AniList-only rows (never played here) still have a source
+                # match cached from when they were last opened.
+                mapping = self._db.get_anidb_mapping(anilist_id)
+                slug_id = mapping.slug_id if mapping is not None else ""
+            if slug_id:
+                shows.append((slug_id, title, watched, self._db.get_auto_download(slug_id)))
+        if not shows:
+            return
+
+        def work() -> list[tuple[str, str, int, bool | None, tuple[int, int] | None, list]]:
+            out = []
+            for slug_id, title, watched, auto_dub in shows:
+                try:
+                    counts = source.get_audio_counts(slug_id, self._http)
+                    episodes = (source.get_episodes(slug_id, self._http)
+                                if auto_dub is not None else [])
+                except httpx.HTTPError:
+                    continue
+                out.append((slug_id, title, watched, auto_dub, counts, episodes))
+            return out
+
+        def done(results: list) -> None:
+            for slug_id, title, watched, auto_dub, counts, episodes in results:
+                if counts is not None:
+                    self._audio_counts[slug_id] = counts
+                    self._maybe_announce_dub(slug_id, title, watched, counts[1])
+                if auto_dub is not None and episodes:
+                    meta = self._db.anime_meta().get(slug_id)
+                    progress = self._db.get_progress(slug_id)
+                    anime = {
+                        "slug_id": slug_id,
+                        "numeric_id": slug_id.rsplit("-", 1)[-1],
+                        "title": (progress.anime_title if progress else "") or title
+                                 or (meta[0] if meta else ""),
+                        "poster_url": (progress.poster_url if progress else "") or "",
+                        "episodes": episodes,
+                        "jikan_filler": set(json.loads(
+                            self._db.get_setting(f"filler_slug:{slug_id}") or "[]")),
+                    }
+                    after = progress.episode_number - 1e-6 if progress else float(watched)
+                    self._top_up_auto_download(after=after, dub=auto_dub, anime=anime)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    def _maybe_announce_dub(self, slug_id: str, title: str, watched: int, dubbed: int) -> None:
+        """A dub alert: only when the dub count went up since the last check,
+        and only for an episode not already watched -- a new dub of something
+        seen in sub is not news."""
+        key = f"dub_seen:{slug_id}"
+        previous = self._db.get_setting(key)
+        self._db.set_setting(key, str(dubbed))
+        if previous is None or not previous.isdigit():
+            return  # first sighting: record, don't announce
+        if dubbed > int(previous) and dubbed > watched:
+            _notify_desktop(title, f"Episode {dubbed} dub is out")
 
     # -- "Because you watched" ------------------------------------------------
 
@@ -1661,6 +1810,44 @@ class Backend(QObject):
             self.becauseYouWatchedReady.emit(seed_title, cards)
 
         self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    # -- Saving a poster ------------------------------------------------------
+
+    posterSaved = Signal(str)  # the path it was saved to, or "" on failure
+
+    @staticmethod
+    def full_size_cover(url: str) -> str:
+        """AniList serves each cover at three sizes and the app shows the
+        middle one; this is the biggest, for the enlarged view and saving."""
+        return url.replace("/cover/medium/", "/cover/large/").replace("/cover/small/", "/cover/large/")
+
+    @Slot(str, result=str)
+    def fullSizeCover(self, url: str) -> str:
+        return self.full_size_cover(url)
+
+    @Slot(str, str)
+    def savePoster(self, url: str, title: str) -> None:
+        """Into ~/Pictures/Anime Player, named after the show. The folder is
+        the user's own, unlike downloads: a poster saved on purpose is theirs
+        to keep."""
+        folder = Path.home() / "Pictures" / "Anime Player"
+        url = self.full_size_cover(url)
+
+        def work() -> str:
+            response = self._http.get(url, timeout=30)
+            response.raise_for_status()
+            suffix = Path(url.split("?")[0]).suffix or ".jpg"
+            name = re.sub(r'[\\/:*?"<>|]+', " ", title).strip() or "poster"
+            folder.mkdir(parents=True, exist_ok=True)
+            target = folder / f"{name}{suffix}"
+            n = 2
+            while target.exists():
+                target = folder / f"{name} ({n}){suffix}"
+                n += 1
+            target.write_bytes(response.content)
+            return str(target)
+
+        self._pool.start(_Worker(work, self.posterSaved.emit, lambda _m: self.posterSaved.emit("")))
 
     # -- Watch statistics -----------------------------------------------------
     #
@@ -1704,6 +1891,48 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, self.anilistStatsReady.emit, failed))
 
+    # -- Rating -------------------------------------------------------------------
+
+    askForRating = Signal(int, str, float)   # (anilist id, title, current score out of 10)
+    listScoreChanged = Signal(int, float)    # (anilist id, new score out of 10)
+
+    def _maybe_ask_for_rating(self, anime: dict[str, Any], number: float) -> None:
+        """Just finished the final episode of a show that has finished airing
+        -- the natural moment to rate it. Not for a show still airing (its
+        newest episode isn't its last), not when logged out, and not when the
+        user opted this show out of AniList."""
+        media_id, total = anime.get("anilist_id"), anime.get("total_episodes")
+        if (self._anilist_client is None or not media_id or not total or number < total
+                or self._db.get_ignore_anilist(media_id)):
+            return
+        existing = self._db.get_anilist_status(media_id)
+        self.askForRating.emit(media_id, anime.get("title") or "",
+                               float(existing.score) if existing else 0.0)
+
+    @Slot(int, result=float)
+    def listScore(self, anilist_id: int) -> float:
+        existing = self._db.get_anilist_status(anilist_id)
+        return float(existing.score) if existing else 0.0
+
+    @Slot(int, float)
+    def setListScore(self, anilist_id: int, score: float) -> None:
+        client = self._anilist_client
+        if client is None or not anilist_id:
+            self.listStatusFailed.emit("Log in to AniList in Settings to rate shows.")
+            return
+
+        def work() -> float:
+            client.set_score(anilist_id, score)
+            return score
+
+        def done(new_score: float) -> None:
+            existing = self._db.get_anilist_status(anilist_id)
+            if existing is not None:
+                self._db.upsert_anilist_status(replace(existing, score=new_score))
+            self.listScoreChanged.emit(anilist_id, new_score)
+
+        self._pool.start(_Worker(work, done, self.listStatusFailed.emit))
+
     # -- Auto-download --------------------------------------------------------
     #
     # For long shows: rather than saving all 1,100 episodes of One Piece,
@@ -1731,15 +1960,26 @@ class Backend(QObject):
             self._top_up_auto_download(after=from_number - 1e-6, dub=dub)
         self.downloadsChanged.emit()
 
-    def _top_up_auto_download(self, after: float, dub: bool) -> None:
+    def _top_up_auto_download(self, after: float, dub: bool,
+                              anime: dict[str, Any] | None = None) -> None:
         """Queues the next AUTO_DOWNLOAD_AHEAD episodes after `after` that
         aren't already saved or queued -- nearest first, so the one you'll
-        watch next is always the first to be ready."""
-        anime = self._current_anime
+        watch next is always the first to be ready.
+
+        `anime` defaults to the show open on screen; the new-episode check
+        passes one it fetched itself, for shows nobody has open."""
+        anime = anime if anime is not None else self._current_anime
         episodes = (anime or {}).get("episodes") or []
         if anime is None or not episodes or not ffmpeg_available():
             return
         ahead = sorted((e for e in episodes if e.number > after), key=lambda e: e.number)
+        # A dub trails the sub. Episodes past the dub count would only fail
+        # ("no dubbed version") and sit in the list as errors.
+        counts = self._audio_counts.get(anime["slug_id"])
+        if dub and counts is not None:
+            ahead = ahead[: max(0, counts[1] - sum(1 for e in episodes if e.number <= after))]
+        if self._skips_filler(anime):
+            ahead = [e for e in ahead if not self._is_filler(anime, e)]
         for episode in ahead[: self.AUTO_DOWNLOAD_AHEAD]:
             self._queue_download({
                 "episode_id": episode.episode_id,
@@ -1997,6 +2237,53 @@ class Backend(QObject):
         # two different home-list item shapes and Main.qml's handler.
         self.remoteCommand.emit(cmd, args)
 
+    # -- The phone as a second screen ------------------------------------------
+    #
+    # These three run on the remote server's own threads. They only read:
+    # plain attribute reads, the locked database, and network lookups with
+    # the shared (thread-safe) httpx client.
+
+    @Slot()
+    def playerClosed(self) -> None:
+        self._now_playing = None
+
+    def _phone_stream(self) -> dict[str, Any] | None:
+        playing = self._now_playing
+        if playing is None:
+            return None
+        anime = self._current_anime or {}
+        return {**playing,
+                "position": self._playback_state.get("position", 0),
+                "title": anime.get("title") or "",
+                "episode": anime.get("current_episode_number") or 0}
+
+    def _phone_search(self, query: str) -> list[dict[str, Any]]:
+        if not query.strip():
+            return []
+        return [
+            {"slug_id": r.slug_id, "numeric_id": r.numeric_id, "title": r.title,
+             "poster_url": r.poster_url or "", "kind": r.kind or "",
+             "sub_count": r.sub_count, "dub_count": r.dub_count}
+            for r in source.search(query, self._http)[:30]
+        ]
+
+    def _phone_episodes(self, slug_id: str) -> dict[str, Any]:
+        episodes = source.get_episodes(slug_id, self._http) if slug_id else []
+        try:
+            counts = source.get_audio_counts(slug_id, self._http) if slug_id else None
+        except httpx.HTTPError:
+            counts = None
+        progress = self._db.get_progress(slug_id) if slug_id else None
+        prefer_dub, _skip = self._db.get_show_prefs(slug_id) if slug_id else (None, False)
+        return {
+            "episodes": [{"id": e.episode_id, "number": e.number, "title": e.title,
+                          "filler": e.filler} for e in episodes],
+            "sub": counts[0] if counts else len(episodes),
+            "dub": counts[1] if counts else 0,
+            "resume": progress.episode_number if progress else 0,
+            "prefer_dub": bool(prefer_dub),
+        }
+
     def _load_remote_tokens(self) -> set[str]:
         raw = self._db.get_setting("remote_tokens")
         if not raw:
@@ -2029,6 +2316,9 @@ class Backend(QObject):
                 apk_path=apk_path,
                 initial_tokens=self._load_remote_tokens(),
                 on_new_token=self._persist_remote_token,
+                stream_provider=self._phone_stream,
+                search_provider=self._phone_search,
+                episodes_provider=self._phone_episodes,
             )
         try:
             self._remote_server.start()
@@ -2579,10 +2869,17 @@ class Backend(QObject):
             if self._current_anime is not None and self._current_anime["slug_id"] == slug_id:
                 self._current_anime["anilist_id"] = media_id
                 self._current_anime["mal_id"] = summary.id_mal if summary is not None else None
+                self._current_anime["total_episodes"] = summary.episodes if summary is not None else None
                 self._maybe_fetch_filler_fallback(slug_id)
                 current_episode_number = self._current_anime.get("current_episode_number")
                 if current_episode_number is not None:
                     self._maybe_fetch_skip_times(current_episode_number)
+                    # An episode that started before the AniList match came
+                    # back -- one picked from the phone opens the player
+                    # straight away -- went unsynced. Catch it up now.
+                    if (media_id is not None and self._anilist_client is not None
+                            and self._current_anime.get("_progress_pushed") != current_episode_number):
+                        self._push_anilist_progress(dict(self._current_anime), current_episode_number)
             if status is not None:
                 self.anilistCurrentStatus.emit(
                     _STATUS_LABELS.get(status.status, status.status), status.progress
@@ -2615,12 +2912,20 @@ class Backend(QObject):
         media_id = anime_snapshot.get("anilist_id")
         if client is None or media_id is None:
             return
+        # Marked on the live record, so the catch-up in
+        # _resolve_current_anime_status doesn't push the same episode twice.
+        if self._current_anime is not None and self._current_anime.get("slug_id") == anime_snapshot.get("slug_id"):
+            self._current_anime["_progress_pushed"] = episode_number
         # Opted out on the detail page -- watch it without it showing up on
         # the profile. See isAnilistIgnored.
         if self._db.get_ignore_anilist(media_id):
             return
-        episode_count = anime_snapshot.get("episode_count")
-        status = "COMPLETED" if episode_count and episode_number >= episode_count else "CURRENT"
+        # AniList's own total, not the source's episode count: for a show
+        # still airing the source's count is just the newest episode, and
+        # watching that marked the whole show Completed. No total (still
+        # airing, or unknown) means it can't be finished yet.
+        total = anime_snapshot.get("total_episodes")
+        status = "COMPLETED" if total and episode_number >= total else "CURRENT"
         progress = int(episode_number)
 
         def work() -> None:

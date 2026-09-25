@@ -121,6 +121,12 @@ AppWindow {
                 if (page.skipEd) page.seekTo(page.skipEd.start - 2)
                 else page.seekRelative(1100)
                 root.log("parked before outro, controls pinned")
+                if (testMode === "subs") {
+                    page.subScale = 1.6
+                    page.subPosition = 80
+                    page.seekTo(30)
+                    root.log("subtitles 160%, raised 20%")
+                }
             }
         }
     }

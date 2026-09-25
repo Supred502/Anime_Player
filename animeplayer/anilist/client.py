@@ -38,7 +38,7 @@ query ($userId: Int!) {
       entries {
         status
         progress
-        score
+        score(format: POINT_10_DECIMAL)
         media {
           id
           title { romaji english }
@@ -287,6 +287,17 @@ mutation ($mediaId: Int, $status: MediaListStatus, $progress: Int) {
 _SET_LIST_STATUS_MUTATION = """
 mutation ($mediaId: Int, $status: MediaListStatus) {
   SaveMediaListEntry(mediaId: $mediaId, status: $status) {
+    id
+  }
+}
+"""
+
+
+# scoreRaw is 0-100 whatever scoring system the user's profile is set to;
+# `score` would be read in their format (5 stars, 3 smileys, 100 points...).
+_SET_SCORE_MUTATION = """
+mutation ($mediaId: Int, $scoreRaw: Int) {
+  SaveMediaListEntry(mediaId: $mediaId, scoreRaw: $scoreRaw) {
     id
   }
 }
@@ -968,6 +979,15 @@ class AniListClient:
         self._request(
             _SET_LIST_STATUS_MUTATION,
             {"mediaId": media_id, "status": status},
+            cache=False,
+        )
+        self.clear_cache()
+
+    def set_score(self, media_id: int, score: float) -> None:
+        """Rates an anime out of 10 (halves allowed); 0 clears the rating."""
+        self._request(
+            _SET_SCORE_MUTATION,
+            {"mediaId": media_id, "scoreRaw": int(round(max(0.0, min(10.0, score)) * 10))},
             cache=False,
         )
         self.clear_cache()

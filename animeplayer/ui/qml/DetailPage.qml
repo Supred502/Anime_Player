@@ -20,6 +20,15 @@ Kirigami.ScrollablePage {
     property int anilistProgress: 0
     property var localProgress: null
     property bool dub: false
+    // Remembered per show (see backend.showPrefs), so One Piece opens in sub
+    // and Frieren in dub without being asked. Saved only after the saved
+    // value has been applied, or applying it would count as a choice.
+    property bool prefsLoaded: false
+    onDubChanged: if (page.prefsLoaded) backend.setShowDub(page.anime.slug_id, page.dub)
+    property bool skipFiller: false
+    // Any episode of the show flagged filler, from either source. The
+    // skip-filler switch is only offered when there is something to skip.
+    property bool anyFiller: false
     property var anilistDetails: null // {average_score, genres, format, episodes, description, cover_url}
 
     // Filled in by onAnimeExtrasReady, well after the episode list -- each
@@ -89,6 +98,8 @@ Kirigami.ScrollablePage {
     // the buttons on this page do, so the label matches the press without
     // waiting for a sync.
     property string listStatus: ""
+    // Out of 10; read from the local mirror of the list once matched.
+    property real myScore: 0
     property bool listBusy: false
     readonly property int anilistId: page.anilistDetails ? (page.anilistDetails.anilist_id || 0) : 0
 
@@ -136,6 +147,7 @@ Kirigami.ScrollablePage {
     property bool ignoreAnilist: false
     onAnilistIdChanged: {
         if (page.anilistId !== 0) page.ignoreAnilist = backend.isAnilistIgnored(page.anilistId)
+        if (page.anilistId !== 0) page.myScore = backend.listScore(page.anilistId)
     }
 
     // episode_id -> {status, progress} for this anime, refreshed whenever the
@@ -299,6 +311,10 @@ Kirigami.ScrollablePage {
         backend.loadEpisodes(anime.slug_id, anime.numeric_id, anime.title, anime.poster_url)
         page.localProgress = backend.getLocalProgress(anime.slug_id)
         page.canDownload = backend.canDownload()
+        let prefs = backend.showPrefs(anime.slug_id)
+        if (prefs.dub >= 0) page.dub = prefs.dub === 1
+        page.skipFiller = prefs.skip_filler
+        page.prefsLoaded = true
         page.autoDownload = backend.isAutoDownload(anime.slug_id)
         page.autoDownloadDub = backend.autoDownloadDub(anime.slug_id)
         page.refreshDownloads()
@@ -323,6 +339,7 @@ Kirigami.ScrollablePage {
             page.loading = false
             episodesModel.clear()
             for (let i = 0; i < episodes.length; i++) episodesModel.append(episodes[i])
+            page.anyFiller = episodes.some((ep) => ep.filler)
 
             // Land on the page containing the resume episode, if any.
             let startIndex = 0
@@ -335,6 +352,9 @@ Kirigami.ScrollablePage {
                 }
             }
             page.showPage(Math.floor(startIndex / page.pageSize))
+        }
+        function onListScoreChanged(anilistId, score) {
+            if (anilistId === page.anilistId) page.myScore = score
         }
         function onAudioCountsReady(slug, subbed, dubbed) {
             if (slug !== page.anime.slug_id) return
@@ -389,6 +409,7 @@ Kirigami.ScrollablePage {
             page.nextAiringAt = extras.nextAiringAt || 0
         }
         function onFillerEpisodesUpdated(episodeNumbers) {
+            if (episodeNumbers.length > 0) page.anyFiller = true
             // The streaming source had no filler data for this show; these came from the
             // Jikan (MAL) fallback instead. Mark them in both the full list and
             // whatever page is currently shown.
@@ -489,6 +510,65 @@ Kirigami.ScrollablePage {
     readonly property string coverUrl:
         (anilistDetails && anilistDetails.cover_url) || anime.poster_url || ""
 
+    Controls.Menu {
+        id: posterMenu
+        Kirigami.Theme.inherit: true
+        Controls.MenuItem {
+            text: "Save poster"
+            icon.name: "document-save-symbolic"
+            onTriggered: backend.savePoster(page.coverUrl, page.anime.title || "poster")
+        }
+        Controls.MenuItem {
+            text: "Copy title"
+            icon.name: "edit-copy-symbolic"
+            onTriggered: page.copyText(page.anime.title || "")
+        }
+    }
+
+    function copyText(text) { applicationWindow().copyText(text) }
+
+    Connections {
+        target: backend
+        function onPosterSaved(path) {
+            showPassiveNotification(path ? "Saved to " + path : "Couldn't save the poster")
+        }
+    }
+
+    // The poster at full size, over everything. Click anywhere or Esc to
+    // close; right-click still saves.
+    Controls.Popup {
+        id: posterViewer
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        width: parent ? parent.width : 0
+        height: parent ? parent.height : 0
+        modal: true
+        padding: 0
+        background: Rectangle { color: Qt.rgba(0, 0, 0, 0.85) }
+        Controls.Overlay.modal: Item {}
+
+        Image {
+            id: bigPoster
+            anchors.fill: parent
+            anchors.margins: Kirigami.Units.gridUnit * 2
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            source: posterViewer.opened ? backend.fullSizeCover(page.coverUrl) : ""
+            // The medium one is already loaded; shown until the big one lands.
+            Image {
+                anchors.fill: parent
+                fillMode: Image.PreserveAspectFit
+                source: page.coverUrl
+                visible: bigPoster.status !== Image.Ready
+            }
+        }
+        TapHandler { onTapped: posterViewer.close() }
+        TapHandler {
+            acceptedButtons: Qt.RightButton
+            onTapped: posterMenu.popup()
+        }
+    }
+
     ColumnLayout {
         width: page.width
         spacing: Kirigami.Units.largeSpacing
@@ -566,6 +646,14 @@ Kirigami.ScrollablePage {
                         fillMode: Image.PreserveAspectCrop
                         asynchronous: true
                     }
+
+                    // Click to see it big; right-click to save it.
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                    TapHandler { onTapped: posterViewer.open() }
+                    TapHandler {
+                        acceptedButtons: Qt.RightButton
+                        onTapped: posterMenu.popup()
+                    }
                 }
 
                 ColumnLayout {
@@ -573,12 +661,11 @@ Kirigami.ScrollablePage {
                     Layout.alignment: Qt.AlignTop
                     spacing: Kirigami.Units.smallSpacing
 
-                    Controls.Label {
+                    SelectableText {
                         text: page.anime.title
                         color: "white"
                         font.pointSize: 20
                         font.bold: true
-                        wrapMode: Text.WordWrap
                         Layout.fillWidth: true
                     }
 
@@ -612,16 +699,24 @@ Kirigami.ScrollablePage {
                         }
                     }
 
-                    Controls.Label {
+                    SelectableText {
+                        id: synopsis
                         visible: !!(page.anilistDetails && page.anilistDetails.description)
                         text: page.anilistDetails ? page.anilistDetails.description : ""
                         color: "white"
-                        wrapMode: Text.WordWrap
                         Layout.fillWidth: true
                         Layout.topMargin: Kirigami.Units.smallSpacing
-                        maximumLineCount: 4
-                        elide: Text.ElideRight
+                        maxLines: 4
                         opacity: 0.8
+                    }
+                    Controls.Label {
+                        visible: synopsis.visible && (synopsis.overflowing || synopsis.expanded)
+                        text: synopsis.expanded ? "Less" : "More"
+                        color: "white"
+                        font.bold: true
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: synopsis.expanded = !synopsis.expanded }
                     }
 
                     RowLayout {
@@ -1039,13 +1134,11 @@ Kirigami.ScrollablePage {
                         text: page.resumeEpisode > 0 ? "Episode " + page.resumeEpisode : "--"
                     }
 
-                    Controls.Label {
+                    SelectableText {
                         Layout.fillWidth: true
                         text: page.episodeTitleFor(page.resumeEpisode)
                         visible: text !== ""
-                        wrapMode: Text.WordWrap
-                        maximumLineCount: 2
-                        elide: Text.ElideRight
+                        maxLines: 2
                         opacity: 0.75
                     }
 
@@ -1097,6 +1190,25 @@ Kirigami.ScrollablePage {
                         font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     }
 
+                    // Only for a show on the list: rating something means
+                    // having watched it, and AniList would otherwise add it.
+                    Controls.Label {
+                        Layout.topMargin: Kirigami.Units.largeSpacing
+                        visible: page.anilistId !== 0 && page.listStatus !== ""
+                        text: "Your rating"
+                        font.bold: true
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+                    RatingStars {
+                        visible: page.anilistId !== 0 && page.listStatus !== ""
+                        score: page.myScore
+                        starSize: Kirigami.Units.iconSizes.small
+                        onPicked: (score) => {
+                            page.myScore = score
+                            backend.setListScore(page.anilistId, score)
+                        }
+                    }
+
                     Kirigami.Separator {
                         Layout.fillWidth: true
                         Layout.topMargin: Kirigami.Units.largeSpacing
@@ -1120,6 +1232,34 @@ Kirigami.ScrollablePage {
                         visible: page.anilistId !== 0
                         text: "Watching this won't touch your AniList progress. "
                             + "The buttons above still work."
+                        wrapMode: Text.WordWrap
+                        opacity: 0.6
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                    }
+
+                    Kirigami.Separator {
+                        Layout.fillWidth: true
+                        Layout.topMargin: Kirigami.Units.largeSpacing
+                        Layout.bottomMargin: Kirigami.Units.smallSpacing
+                        visible: page.anyFiller
+                    }
+
+                    AppCheckBox {
+                        Layout.fillWidth: true
+                        visible: page.anyFiller
+                        text: "Skip filler"
+                        checked: page.skipFiller
+                        onToggled: {
+                            page.skipFiller = checked
+                            backend.setSkipFiller(page.anime.slug_id, checked)
+                        }
+                    }
+
+                    Controls.Label {
+                        Layout.fillWidth: true
+                        visible: page.anyFiller
+                        text: "Next episode and auto-play go straight past the orange ones, "
+                            + "and auto-download doesn't save them. Clicking one still plays it."
                         wrapMode: Text.WordWrap
                         opacity: 0.6
                         font.pixelSize: Kirigami.Theme.smallFont.pixelSize
@@ -1371,10 +1511,9 @@ Kirigami.ScrollablePage {
                             }
                         }
 
-                        Controls.Label {
+                        SelectableText {
                             Layout.fillWidth: true
                             text: modelData.summary
-                            wrapMode: Text.WordWrap
                             opacity: 0.85
                         }
                     }

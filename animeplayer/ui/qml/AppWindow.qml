@@ -86,6 +86,93 @@ Kirigami.ApplicationWindow {
         return root.goTo("continue", "BrowsePage.qml", { startCategory: "continue" })
     }
 
+    // Copying text, for anything in the app. A hidden TextEdit is the one
+    // route to the clipboard QML has without a helper object.
+    TextEdit { id: clipboardHelper; visible: false }
+    function copyText(text) {
+        clipboardHelper.text = text
+        clipboardHelper.selectAll()
+        clipboardHelper.copy()
+        root.showPassiveNotification("Copied \"" + text + "\"")
+    }
+
+    // Right-click on any anime card. One menu for the whole app rather than
+    // one per card: a shelf page has hundreds of cards.
+    property string cardMenuTitle: ""
+    function showCardMenu(title) {
+        root.cardMenuTitle = title
+        cardMenu.popup()
+    }
+    Controls.Menu {
+        id: cardMenu
+        Kirigami.Theme.inherit: true
+        Controls.MenuItem {
+            text: "Copy title"
+            icon.name: "edit-copy-symbolic"
+            onTriggered: root.copyText(root.cardMenuTitle)
+        }
+    }
+
+    // An episode picked on the phone: open the show, then play it -- the
+    // same two pages a click on the PC goes through, so Back behaves the
+    // same afterwards.
+    Connections {
+        target: backend
+        function onRemoteCommand(cmd, args) {
+            if (cmd !== "play_episode" || !args) return
+            let anime = {
+                slug_id: args.slug_id, numeric_id: args.numeric_id, title: args.title,
+                poster_url: args.poster_url || "", kind: "", rating: ""
+            }
+            root.goTo("browse", "DetailPage.qml", { anime: anime })
+            root.pageStack.push(Qt.resolvedUrl("PlayerPage.qml"), {
+                anime: anime, episodeId: args.episode_id,
+                episodeNumber: args.number, dub: !!args.dub
+            })
+        }
+    }
+
+    // Asked once, right after the last episode of a finished show (see
+    // backend._maybe_ask_for_rating). On the window, not the player page: the
+    // player may be on its way out by the time the answer comes.
+    property int ratingAnilistId: 0
+    property string ratingTitle: ""
+    property real ratingScore: 0
+    Connections {
+        target: backend
+        function onAskForRating(anilistId, title, score) {
+            root.ratingAnilistId = anilistId
+            root.ratingTitle = title
+            root.ratingScore = score
+            ratingDialog.open()
+        }
+    }
+    Controls.Dialog {
+        id: ratingDialog
+        Kirigami.Theme.inherit: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: "You finished " + root.ratingTitle
+        standardButtons: Controls.Dialog.Close
+        ColumnLayout {
+            spacing: Kirigami.Units.largeSpacing
+            Controls.Label { text: "How would you rate it? It goes straight to your AniList." }
+            RatingStars {
+                Layout.alignment: Qt.AlignHCenter
+                score: root.ratingScore
+                starSize: Kirigami.Units.iconSizes.medium
+                onPicked: (score) => {
+                    root.ratingScore = score
+                    backend.setListScore(root.ratingAnilistId, score)
+                    ratingCloser.restart()
+                }
+            }
+        }
+        // A moment to see the stars land before it goes.
+        Timer { id: ratingCloser; interval: 700; onTriggered: ratingDialog.close() }
+    }
+
     function toggleMaximised() {
         if (root.maximised) root.showNormal()
         else root.showMaximized()

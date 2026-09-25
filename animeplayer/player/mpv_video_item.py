@@ -91,6 +91,7 @@ class MpvVideoItem(QQuickFramebufferObject):
     durationChanged = Signal(float)
     pausedChanged = Signal(bool)
     volumeChanged = Signal(float)
+    mutedChanged = Signal(bool)
     endOfFile = Signal()
     playbackError = Signal(str)  # a real mpv-reported error, e.g. a dead/stalled stream
     # Internal: emitted from mpv's event thread, handled on the GUI thread.
@@ -112,6 +113,7 @@ class MpvVideoItem(QQuickFramebufferObject):
         self._duration = 0.0
         self._paused = True
         self._volume = 100.0
+        self._muted = False
         # Set once close() runs (page popped / item destroyed) so any callback
         # still in flight on mpv's own threads bails out before touching a
         # signal whose underlying QObject Qt may have already deleted -- see
@@ -146,6 +148,7 @@ class MpvVideoItem(QQuickFramebufferObject):
         self.mpv.observe_property("pause", self._on_pause)
         self.mpv.observe_property("eof-reached", self._on_eof)
         self.mpv.observe_property("volume", self._on_volume)
+        self.mpv.observe_property("mute", self._on_mute)
 
         # Set by loadUrl, consumed on the next file-loaded. Attaching the
         # track any earlier doesn't work -- see loadUrl's docstring.
@@ -204,6 +207,11 @@ class MpvVideoItem(QQuickFramebufferObject):
         if not self.closed and value is not None:
             self._volume = float(value)
             self.volumeChanged.emit(self._volume)
+
+    def _on_mute(self, _name: str, value) -> None:
+        if not self.closed and value is not None:
+            self._muted = bool(value)
+            self.mutedChanged.emit(self._muted)
 
     def _on_mpv_log(self, level: str, prefix: str, text: str) -> None:
         # Fires on mpv's own log thread. Only surface real problems (error/fatal)
@@ -276,10 +284,29 @@ class MpvVideoItem(QQuickFramebufferObject):
     paused = Property(bool, getPaused, notify=pausedChanged)
     volume = Property(float, getVolume, notify=volumeChanged)
 
+    def getMuted(self) -> bool:
+        return self._muted
+
+    muted = Property(bool, getMuted, notify=mutedChanged)
+
     @Slot(float)
     def setVolume(self, value: float) -> None:
         if not self.closed:
             self.mpv.volume = max(0.0, min(100.0, value))
+
+    @Slot(bool)
+    def setMuted(self, value: bool) -> None:
+        if not self.closed:
+            self.mpv.mute = value
+
+    @Slot(float, int)
+    def setSubtitleStyle(self, scale: float, position: int) -> None:
+        """Subtitle size (1.0 = mpv's default) and vertical position (100 =
+        the bottom edge, lower numbers move them up the screen). Applied live
+        -- no reload -- and to every subtitle track, external ones included."""
+        if not self.closed:
+            self.mpv.sub_scale = max(0.3, min(3.0, scale))
+            self.mpv.sub_pos = max(0, min(150, position))
 
     @Slot(str, str, str)
     def loadUrl(self, url: str, referer: str = "", subtitle_url: str = "") -> None:

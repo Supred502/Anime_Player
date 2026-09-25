@@ -153,4 +153,8 @@ Item {
 
     HoverHandler { id: hoverHandler; cursorShape: Qt.PointingHandCursor }
     TapHandler { onTapped: resume.clicked() }
+    TapHandler {
+        acceptedButtons: Qt.RightButton
+        onTapped: applicationWindow().showCardMenu(resume.title)
+    }
 }

@@ -177,15 +177,13 @@ Item {
             font.pixelSize: Kirigami.Theme.smallFont.pixelSize
         }
 
-        Controls.Label {
+        SelectableText {
             Layout.fillWidth: true
             text: hero.current ? (hero.current.title || "") : ""
             color: "white"
             font.bold: true
             font.pixelSize: Math.round(Kirigami.Theme.defaultFont.pixelSize * 2.1)
-            wrapMode: Text.WordWrap
-            maximumLineCount: 2
-            elide: Text.ElideRight
+            maxLines: 2
         }
 
         RowLayout {
@@ -213,7 +211,7 @@ Item {
             }
         }
 
-        Controls.Label {
+        SelectableText {
             Layout.fillWidth: true
             Layout.topMargin: Kirigami.Units.smallSpacing
             // Hidden rather than shrunk on a short window: below about this
@@ -222,9 +220,7 @@ Item {
             text: hero.current ? (hero.current.description || "") : ""
             color: "white"
             opacity: 0.8
-            wrapMode: Text.WordWrap
-            maximumLineCount: 3
-            elide: Text.ElideRight
+            maxLines: 3
         }
 
         AppButton {
