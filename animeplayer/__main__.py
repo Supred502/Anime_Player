@@ -11,9 +11,14 @@ from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 from PySide6.QtQuickControls2 import QQuickStyle
 
-from animeplayer.player.mpv_video_item import MpvVideoItem
-from animeplayer.ui.backend import Backend
-from animeplayer.ui.window_chrome import WindowChrome
+from animeplayer import platform_setup
+
+platform_setup.before_imports()
+
+from animeplayer.player.mpv_video_item import MpvVideoItem  # noqa: E402 -- needs the DLL path set up first
+from animeplayer.ui import kirigami_compat  # noqa: E402
+from animeplayer.ui.backend import Backend  # noqa: E402
+from animeplayer.ui.window_chrome import WindowChrome  # noqa: E402
 
 QML_DIR = Path(__file__).parent / "ui" / "qml"
 ASSETS_DIR = Path(__file__).parent / "ui" / "assets"
@@ -60,20 +65,86 @@ def _print_qt_message(_mode, context, message: str) -> None:
 _QML_STYLE = "org.kde.breeze"
 
 
-def _use_themable_style() -> None:
+def _use_themable_style(compat: bool) -> None:
     # QLibraryInfo, not an engine's importPathList: the style has to be chosen
     # before QGuiApplication exists, and constructing a QQmlApplicationEngine
     # that early aborts with "Must construct a QCoreApplication before a
     # QJSEngine".
     qml_root = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.QmlImportsPath))
-    if (qml_root / "org" / "kde" / "breeze" / "qmldir").exists():
+    if not compat and (qml_root / "org" / "kde" / "breeze" / "qmldir").exists():
         QQuickStyle.setStyle(_QML_STYLE)
+    else:
+        # No KDE here (Windows): Fusion, coloured Breeze Dark by
+        # ui/kirigami_compat.py, is the closest stock style.
+        QQuickStyle.setStyle("Fusion")
+
+
+def _selftest(out_path: str) -> int:
+    """`--selftest <file>`: checks the pieces a packaged build bundles --
+    libmpv, ffmpeg, the Japanese tokenizer, the keyring -- and writes what
+    it found to <file> as JSON. Run by the Windows build in CI, where the
+    app has no console to print to."""
+    import json
+    import subprocess
+
+    results: dict[str, str] = {}
+
+    def check(name, fn) -> None:
+        try:
+            results[name] = str(fn())
+        except Exception as exc:  # noqa: BLE001 -- the point is to report it
+            results[name] = f"FAIL: {exc!r}"
+
+    def mpv_version() -> str:
+        import mpv
+        player = mpv.MPV(vo="null", ao="null")
+        try:
+            return player.mpv_version
+        finally:
+            player.terminate()
+
+    def ffmpeg_version() -> str:
+        result = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True, timeout=30,
+                                creationflags=platform_setup.NO_WINDOW)
+        return result.stdout.splitlines()[0]
+
+    def tokenize() -> str:
+        from animeplayer.learn import japanese
+        return japanese.analyse("日本語を勉強します")["romaji"]
+
+    def keyring_backend() -> str:
+        import keyring
+        return type(keyring.get_keyring()).__name__
+
+    from animeplayer import updates
+    from animeplayer.storage.db import DEFAULT_DB_PATH
+
+    check("version", lambda: updates.VERSION)
+    check("mpv", mpv_version)
+    check("ffmpeg", ffmpeg_version)
+    check("japanese", tokenize)
+    check("keyring", keyring_backend)
+    check("data_dir", lambda: DEFAULT_DB_PATH.parent)
+    check("kirigami_compat", kirigami_compat.needed)
+    Path(out_path).write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+    return 1 if any(v.startswith("FAIL") for v in results.values()) else 0
 
 
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--selftest":
+        return _selftest(sys.argv[2])
     qInstallMessageHandler(_print_qt_message)
-    _use_themable_style()
+    platform_setup.before_app()
+    compat = kirigami_compat.needed()
+    if compat:
+        kirigami_compat.register()
+    _use_themable_style(compat)
     app = QGuiApplication(sys.argv)
+    if compat:
+        # Again: Plasma's platform theme swaps its own style in while the
+        # application is constructed, which matters only when previewing
+        # the Windows look on KDE.
+        _use_themable_style(compat)
     app.setApplicationName("Anime Player")
     app.setOrganizationName("animeplayer")
     app.setWindowIcon(QIcon(str(ASSETS_DIR / "images" / "AP.svg")))
@@ -99,6 +170,8 @@ def main() -> int:
     qmlRegisterType(MpvVideoItem, "AnimePlayer", 1, 0, "MpvVideoItem")
 
     engine = QQmlApplicationEngine()
+    if compat:
+        kirigami_compat.install(engine)
     backend = Backend()
     engine.rootContext().setContextProperty("backend", backend)
     # Kept alive by this reference: a context property is not owned by the
@@ -117,6 +190,7 @@ def main() -> int:
         "testHideControls", os.environ.get("ANIMEPLAYER_TEST_HIDECONTROLS", "")
     )
     engine.rootContext().setContextProperty("testMode", os.environ.get("ANIMEPLAYER_TEST_MODE", ""))
+    engine.rootContext().setContextProperty("testShots", os.environ.get("ANIMEPLAYER_TEST_SHOTS", ""))
     root_qml = os.environ.get("ANIMEPLAYER_TEST_QML", "Main.qml")
     engine.load(str(QML_DIR / root_qml))
     if not engine.rootObjects():

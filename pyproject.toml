@@ -1,6 +1,6 @@
 [project]
 name = "animeplayer"
-version = "0.1.0"
+dynamic = ["version"]
 description = "KDE-native anime player with AniList sync, powered by the same public backend ani-cli uses"
 requires-python = ">=3.11"
 dependencies = [
@@ -21,6 +21,9 @@ dev = ["pytest", "respx"]
 
 [project.scripts]
 animeplayer = "animeplayer.__main__:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "animeplayer.version.VERSION"}
 
 [tool.setuptools.packages.find]
 include = ["animeplayer*"]

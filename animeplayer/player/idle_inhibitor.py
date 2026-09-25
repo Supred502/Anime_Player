@@ -35,7 +35,10 @@ dedicated D-Bus connection and released by disconnecting it, not by calling
 
 from __future__ import annotations
 
-from PySide6.QtDBus import QDBusConnection, QDBusInterface
+import sys
+
+if sys.platform != "win32":
+    from PySide6.QtDBus import QDBusConnection, QDBusInterface
 
 _APP_NAME = "Anime Player"
 
@@ -55,6 +58,15 @@ _TARGETS = (
 
 _CONNECTION_NAME = "animeplayer-idle-inhibit"
 
+_ES_CONTINUOUS = 0x80000000
+_ES_SYSTEM_REQUIRED = 0x00000001
+_ES_DISPLAY_REQUIRED = 0x00000002
+
+
+def _set_execution_state(flags: int) -> int:
+    import ctypes
+    return ctypes.windll.kernel32.SetThreadExecutionState(ctypes.c_uint(flags))
+
 
 class IdleInhibitor:
     """Holds a "don't blank the screen" request for as long as it's wanted.
@@ -66,13 +78,22 @@ class IdleInhibitor:
 
     def __init__(self) -> None:
         self._connection_name: str | None = None
+        self._windows_held = False
 
     @property
     def active(self) -> bool:
-        return self._connection_name is not None
+        return self._connection_name is not None or self._windows_held
 
     def inhibit(self, reason: str = "Playing video") -> None:
         if self.active:
+            return
+        if sys.platform == "win32":
+            # Windows has no D-Bus: SetThreadExecutionState is its "a video
+            # is playing" switch. Held by the calling thread (the GUI
+            # thread, which lives as long as the app) and dropped by Windows
+            # if the process dies, so a crash can't leave the PC awake.
+            self._windows_held = bool(_set_execution_state(_ES_CONTINUOUS | _ES_SYSTEM_REQUIRED
+                                                           | _ES_DISPLAY_REQUIRED))
             return
         name = f"{_CONNECTION_NAME}-{id(self)}"
         bus = QDBusConnection.connectToBus(QDBusConnection.BusType.SessionBus, name)
@@ -94,6 +115,10 @@ class IdleInhibitor:
         self._connection_name = name
 
     def release(self) -> None:
+        if self._windows_held:
+            _set_execution_state(_ES_CONTINUOUS)
+            self._windows_held = False
+            return
         if self._connection_name is None:
             return
         # Dropping the connection is the release -- see the module docstring.

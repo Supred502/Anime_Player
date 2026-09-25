@@ -1,0 +1,15 @@
+module org.kde.kirigami
+ApplicationWindow 2.0 ApplicationWindow.qml
+ApplicationHeaderStyle 2.0 ApplicationHeaderStyle.qml
+ColumnView 2.0 ColumnView.qml
+Page 2.0 Page.qml
+ScrollablePage 2.0 ScrollablePage.qml
+Heading 2.0 Heading.qml
+Icon 2.0 Icon.qml
+Separator 2.0 Separator.qml
+PlaceholderMessage 2.0 PlaceholderMessage.qml
+Action 2.0 Action.qml
+FormLayout 2.0 FormLayout.qml
+Dialog 2.0 Dialog.qml
+PromptDialog 2.0 PromptDialog.qml
+PageRow 2.0 PageRow.qml

@@ -79,6 +79,7 @@ Kirigami.ScrollablePage {
         autoFullscreenToggle.checked = backend.getAutoFullscreenEnabled()
         deleteWatchedToggle.checked = backend.getDeleteAfterWatchingEnabled()
         newEpisodeToggle.checked = backend.getNewEpisodeAlertsEnabled()
+        updateChecksToggle.checked = backend.getUpdateChecksEnabled()
         dubEnglishToggle.checked = backend.getDubEnglishEnabled()
         page.hasJimakuKey = backend.hasJimakuKey()
         page.dictionaryState = backend.dictionaryState()
@@ -332,6 +333,41 @@ Kirigami.ScrollablePage {
                 Layout.maximumWidth: Kirigami.Units.gridUnit * 28
                 opacity: 0.7
                 font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
+
+            RowLayout {
+                Kirigami.FormData.label: "Updates:"
+                spacing: Kirigami.Units.largeSpacing
+                Controls.Label { text: "Version " + backend.appVersion() }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    text: "Check now"
+                    icon.name: "view-refresh-symbolic"
+                    onClicked: {
+                        updateStatusLabel.text = "Checking..."
+                        backend.checkForUpdates(true)
+                    }
+                }
+            }
+            AppCheckBox {
+                id: updateChecksToggle
+                Kirigami.FormData.label: " "
+                text: "Tell me when a new version is out"
+                onToggled: backend.setUpdateChecksEnabled(checked)
+            }
+            Controls.Label {
+                id: updateStatusLabel
+                Kirigami.FormData.label: " "
+                visible: text !== ""
+                opacity: 0.7
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                Connections {
+                    target: backend
+                    function onUpdateStatus(message) { updateStatusLabel.text = message }
+                    function onUpdateAvailable(version) {
+                        updateStatusLabel.text = "Version " + version + " is available."
+                    }
+                }
             }
 
             AppCheckBox {

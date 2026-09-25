@@ -9,11 +9,13 @@ safe to call directly from worker threads too -- see storage/db.py.
 from __future__ import annotations
 
 import json
+import os
 import random
 import re
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import webbrowser
@@ -23,8 +25,9 @@ from typing import Any, Callable
 
 import httpx
 import qrcode
-from PySide6.QtCore import Property, QObject, QRunnable, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QCoreApplication, QObject, QProcess, QRunnable, QThreadPool, QTimer, Signal, Slot
 
+from animeplayer import platform_setup, updates
 from animeplayer.alerts import find_new_episodes
 from animeplayer.anilist import matcher
 from animeplayer.anilist.client import (
@@ -127,6 +130,8 @@ def _notify_desktop(title: str, body: str) -> None:
     Notify's typed arguments (uint, string array, variant map) don't
     marshal cleanly through PySide. Missing tool, no notification -- the
     home page row still shows it."""
+    if platform_setup.notify(title, body):
+        return
     if shutil.which("notify-send") is None:
         return
     try:
@@ -312,6 +317,16 @@ class Backend(QObject):
         self._alert_timer.timeout.connect(self.checkNewEpisodes)
         self._alert_timer.start()
         QTimer.singleShot(15_000, self.checkNewEpisodes)
+
+        # Updates: a little after launch, then every few hours for copies
+        # that stay open for days.
+        self._release: updates.Release | None = None
+        self._update_timer = QTimer(self)
+        self._update_timer.setInterval(self.UPDATE_CHECK_MS)
+        self._update_timer.timeout.connect(lambda: self.checkForUpdates(False))
+        self._update_timer.start()
+        self._updateReadyToRun.connect(self._run_update)
+        QTimer.singleShot(8_000, lambda: self.checkForUpdates(False))
 
     def _drop_mappings_from_a_previous_source(self) -> None:
         """One-time cache reset when the streaming backend changes underneath
@@ -3205,3 +3220,116 @@ class Backend(QObject):
             self._emit_anilist_home_lists()
 
         self._pool.start(_Worker(work, done, self.anilistError.emit))
+
+    # -- updates -------------------------------------------------------------
+    # See updates.py. The window shows a bar when updateAvailable fires; the
+    # Settings page has the manual check.
+
+    UPDATE_CHECK_MS = 6 * 60 * 60 * 1000
+
+    updateAvailable = Signal(str, str, str)  # (version, notes, how: installer | git | page)
+    updateStatus = Signal(str)               # answer to a manual check: "You're up to date", errors
+    updateProgress = Signal(float)           # installer download, 0..1
+    updateFailed = Signal(str)
+
+    @Slot(result=str)
+    def appVersion(self) -> str:
+        return updates.VERSION
+
+    @Slot(result=bool)
+    def getUpdateChecksEnabled(self) -> bool:
+        return (self._db.get_setting("update_checks") or "true") == "true"
+
+    @Slot(bool)
+    def setUpdateChecksEnabled(self, value: bool) -> None:
+        self._db.set_setting("update_checks", "true" if value else "false")
+
+    @Slot(bool)
+    def checkForUpdates(self, manual: bool) -> None:
+        """manual: from the Settings button, which wants an answer either
+        way, and which ignores both the off switch and "Later"."""
+        if not manual and (not self.getUpdateChecksEnabled() or os.environ.get("ANIMEPLAYER_DB_PATH")):
+            return
+
+        def work() -> updates.Release | None:
+            return updates.latest_release(self._http)
+
+        def done(release: updates.Release | None) -> None:
+            if release is None or not updates.is_newer(release.version):
+                if manual:
+                    self.updateStatus.emit(f"You're up to date (version {updates.VERSION}).")
+                return
+            if not manual and self._db.get_setting("update_dismissed") == release.version:
+                return
+            self._release = release
+            how = updates.how_to_install()
+            if how == "installer" and not release.installer_url:
+                how = "page"
+            self.updateAvailable.emit(release.version, release.notes, how)
+
+        def failed(message: str) -> None:
+            if manual:
+                self.updateStatus.emit(message)
+
+        self._pool.start(_Worker(work, done, failed))
+
+    @Slot()
+    def dismissUpdate(self) -> None:
+        """"Later": not asked again about this version until the next one,
+        though Settings can still install it."""
+        if self._release is not None:
+            self._db.set_setting("update_dismissed", self._release.version)
+
+    @Slot()
+    def installUpdate(self) -> None:
+        release = self._release
+        if release is None:
+            return
+        how = updates.how_to_install()
+        if how == "installer" and release.installer_url:
+            def work() -> Path:
+                return updates.download_installer(
+                    self._http, release, Path(tempfile.gettempdir()) / "AnimePlayer-update",
+                    self.updateProgress.emit)
+
+            def done(path: Path) -> None:
+                self._updateReadyToRun.emit(str(path))
+
+            self._pool.start(_Worker(work, done, self.updateFailed.emit))
+        elif how == "git":
+            root = updates.source_checkout()
+
+            def work() -> str:
+                return updates.git_pull(root) if root else "Not a git checkout."
+
+            def done(error: str) -> None:
+                if error:
+                    self.updateFailed.emit(error)
+                else:
+                    self._updateReadyToRun.emit("")
+
+            self._pool.start(_Worker(work, done, self.updateFailed.emit))
+        else:
+            webbrowser.open(release.page_url)
+
+    @Slot(result=str)
+    def releasePageUrl(self) -> str:
+        return self._release.page_url if self._release else f"https://github.com/{updates.REPO}/releases"
+
+    # Emitted from the worker, handled on the GUI thread: starting another
+    # process and quitting Qt both belong there.
+    _updateReadyToRun = Signal(str)
+
+    def _run_update(self, installer: str) -> None:
+        if installer:
+            try:
+                updates.run_installer(Path(installer))
+            except OSError as exc:
+                self.updateFailed.emit(f"Couldn't start the installer: {exc}")
+                return
+        else:
+            # A fresh copy of the updated code, started the same way this one was.
+            QProcess.startDetached(sys.executable, ["-m", "animeplayer", *sys.argv[1:]],
+                                   str(updates.source_checkout() or Path.cwd()))
+        QCoreApplication.quit()
+

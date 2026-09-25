@@ -9,17 +9,25 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+def _data_dir() -> Path:
+    """Where the app keeps its database, downloads and dictionary:
+    %LOCALAPPDATA%\\AnimePlayer on Windows, ~/.local/share/animeplayer elsewhere."""
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        return Path(base) / "AnimePlayer"
+    return Path.home() / ".local" / "share" / "animeplayer"
+
+
 # ANIMEPLAYER_DB_PATH lets development/test runs point at a throwaway database
 # instead of the user's real one. Set by the dev test harness only -- never by
-# the installed app, which always uses the real default path below.
-DEFAULT_DB_PATH = Path(
-    os.environ.get("ANIMEPLAYER_DB_PATH", str(Path.home() / ".local" / "share" / "animeplayer" / "animeplayer.db"))
-)
+# the installed app, which always uses the real default path.
+DEFAULT_DB_PATH = Path(os.environ.get("ANIMEPLAYER_DB_PATH", str(_data_dir() / "animeplayer.db")))
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS progress (

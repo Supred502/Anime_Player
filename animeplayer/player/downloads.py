@@ -25,6 +25,7 @@ from pathlib import Path
 
 import httpx
 
+from animeplayer.platform_setup import NO_WINDOW
 from animeplayer.storage.db import DEFAULT_DB_PATH
 
 # Beside the database rather than in the user's Videos folder: these are the
@@ -84,7 +85,7 @@ def probe_duration(url: str, referer: str) -> float:
         result = subprocess.run(
             ["ffprobe", "-v", "error", "-headers", _headers(referer),
              "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", url],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW,
         )
         return float(result.stdout.strip() or 0)
     except (subprocess.SubprocessError, ValueError):
@@ -174,7 +175,8 @@ class Downloader:
             "-progress", "pipe:1", "-nostats",
             str(partial),
         ]
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   creationflags=NO_WINDOW)
         with self._lock:
             self._current = process
 

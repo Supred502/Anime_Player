@@ -188,6 +188,134 @@ Kirigami.ApplicationWindow {
         Timer { id: ratingCloser; interval: 700; onTriggered: ratingDialog.close() }
     }
 
+    // A new version on GitHub (see updates.py). A card in the corner rather
+    // than a dialog: it can wait until the episode is over, and it stays out
+    // of the way of the video (hidden while the player is fullscreen).
+    property string updateVersion: ""
+    property string updateNotes: ""
+    property string updateHow: ""
+    property real updateFraction: -1   // -1: not downloading
+    property string updateError: ""
+    Connections {
+        target: backend
+        function onUpdateAvailable(version, notes, how) {
+            root.updateVersion = version
+            root.updateNotes = notes
+            root.updateHow = how
+            root.updateError = ""
+            root.updateFraction = -1
+            updateCard.open()
+        }
+        function onUpdateProgress(fraction) { root.updateFraction = fraction }
+        function onUpdateFailed(message) {
+            root.updateFraction = -1
+            root.updateError = message
+            updateCard.open()
+        }
+    }
+    Controls.Popup {
+        id: updateCard
+        Kirigami.Theme.inherit: true
+        parent: Controls.Overlay.overlay
+        x: parent ? parent.width - width - Kirigami.Units.gridUnit : 0
+        y: parent ? parent.height - height - Kirigami.Units.gridUnit : 0
+        width: Kirigami.Units.gridUnit * 22
+        modal: false
+        focus: false
+        closePolicy: Controls.Popup.NoAutoClose
+        visible: opened && root.chromeVisible
+        padding: Kirigami.Units.largeSpacing
+
+        background: Rectangle {
+            radius: Kirigami.Units.smallSpacing * 2
+            color: Kirigami.Theme.alternateBackgroundColor
+            border.color: Kirigami.Theme.highlightColor
+            border.width: 1
+        }
+
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+            RowLayout {
+                Layout.fillWidth: true
+                Kirigami.Icon {
+                    source: "update-none-symbolic"
+                    color: Kirigami.Theme.highlightColor
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.smallMedium
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.smallMedium
+                }
+                Kirigami.Heading {
+                    Layout.fillWidth: true
+                    level: 4
+                    text: "Anime Player " + root.updateVersion + " is out"
+                    wrapMode: Text.WordWrap
+                }
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                visible: root.updateError === ""
+                wrapMode: Text.WordWrap
+                opacity: 0.8
+                text: root.updateHow === "installer"
+                      ? "It downloads in the background, then the app restarts on the new version."
+                      : root.updateHow === "git"
+                        ? "Pulls the new code with git, then restarts."
+                        : "Get it from the release page."
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                visible: root.updateError !== ""
+                wrapMode: Text.WordWrap
+                color: Kirigami.Theme.negativeTextColor
+                text: "Update failed: " + root.updateError
+            }
+            Controls.ScrollView {
+                id: notesView
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(notesText.implicitHeight, Kirigami.Units.gridUnit * 10)
+                visible: notesShown && root.updateNotes !== ""
+                property bool notesShown: false
+                Controls.Label {
+                    id: notesText
+                    width: notesView.availableWidth
+                    wrapMode: Text.WordWrap
+                    textFormat: Text.MarkdownText
+                    text: root.updateNotes
+                }
+            }
+            Controls.ProgressBar {
+                Layout.fillWidth: true
+                visible: root.updateFraction >= 0
+                value: Math.max(0, root.updateFraction)
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: root.updateFraction < 0
+                Controls.ToolButton {
+                    Kirigami.Theme.inherit: true
+                    visible: root.updateNotes !== ""
+                    text: notesView.notesShown ? "Hide what's new" : "What's new"
+                    onClicked: notesView.notesShown = !notesView.notesShown
+                }
+                Item { Layout.fillWidth: true }
+                Controls.ToolButton {
+                    Kirigami.Theme.inherit: true
+                    text: "Later"
+                    onClicked: { backend.dismissUpdate(); updateCard.close() }
+                }
+                AppButton {
+                    text: root.updateError !== "" ? "Try again" : (root.updateHow === "page" ? "Open page" : "Update now")
+                    accented: true
+                    onClicked: {
+                        root.updateError = ""
+                        if (root.updateHow === "page") updateCard.close()
+                        else root.updateFraction = 0
+                        backend.installUpdate()
+                    }
+                }
+            }
+        }
+    }
+
     function toggleMaximised() {
         if (root.maximised) root.showNormal()
         else root.showMaximized()

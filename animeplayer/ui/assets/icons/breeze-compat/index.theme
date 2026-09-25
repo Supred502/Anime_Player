@@ -1,0 +1,22 @@
+[Icon Theme]
+Name=breeze-compat
+Comment=Breeze icons used by Anime Player
+Directories=16,22,32
+
+[16]
+Size=16
+Type=Scalable
+MinSize=8
+MaxSize=512
+
+[22]
+Size=22
+Type=Scalable
+MinSize=8
+MaxSize=512
+
+[32]
+Size=32
+Type=Scalable
+MinSize=8
+MaxSize=512

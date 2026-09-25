@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Qt, Slot
 from PySide6.QtGui import QWindow
+from PySide6.QtQuick import QQuickWindow
 
 
 class WindowChrome(QObject):
@@ -48,3 +49,11 @@ class WindowChrome(QObject):
         if edges is None:
             return False
         return window.startSystemResize(edges)
+
+    @Slot(QObject, str, result=bool)
+    def saveScreenshot(self, window: QObject, path: str) -> bool:
+        """The whole window, popups included, as the user would see it. For
+        the test drivers (see _TestTour.qml); works headless as well."""
+        if not isinstance(window, QQuickWindow):
+            return False
+        return window.grabWindow().save(path)

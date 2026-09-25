@@ -32,7 +32,7 @@ Kirigami.ScrollablePage {
         },
         Kirigami.Action {
             text: "Kana chart"
-            icon.name: "format-text-symbolic"
+            icon.name: "character-set-symbolic"
             checkable: true
             checked: page.tab === 1
             onTriggered: page.tab = 1
