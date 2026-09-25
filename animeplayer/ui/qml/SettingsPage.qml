@@ -79,6 +79,7 @@ Kirigami.ScrollablePage {
         autoFullscreenToggle.checked = backend.getAutoFullscreenEnabled()
         deleteWatchedToggle.checked = backend.getDeleteAfterWatchingEnabled()
         newEpisodeToggle.checked = backend.getNewEpisodeAlertsEnabled()
+        dubEnglishToggle.checked = backend.getDubEnglishEnabled()
         page.hasJimakuKey = backend.hasJimakuKey()
         page.dictionaryState = backend.dictionaryState()
         let style = backend.subtitleStyle()
@@ -308,6 +309,13 @@ Kirigami.ScrollablePage {
                 Controls.Label {
                     text: subPosSlider.value >= 100 ? "bottom" : (100 - subPosSlider.value) + "% up"
                 }
+            }
+
+            AppCheckBox {
+                id: dubEnglishToggle
+                Kirigami.FormData.label: " "
+                text: "English subtitles on dubs"
+                onToggled: backend.setDubEnglishEnabled(checked)
             }
 
             AppCheckBox {

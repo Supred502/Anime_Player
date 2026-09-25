@@ -37,6 +37,7 @@ Kirigami.Page {
     property bool learnMode: false
     property bool showEnglish: true
     property bool learnAutoSynced: false
+    property bool dubEnglish: true
     onShowEnglishChanged: if (video) video.setSubtitlesVisible(page.showEnglish)
     onLearnModeChanged: {
         backend.setLearnMode(page.learnMode)
@@ -103,8 +104,13 @@ Kirigami.Page {
         learnOverlay.showFurigana = page.learnFlag("furigana", true)
         learnOverlay.pauseOnHover = page.learnFlag("pause_hover", true)
         learnOverlay.pauseEachLine = page.learnFlag("pause_line", false)
+        learnOverlay.wordGaps = page.learnFlag("gaps", true)
+        learnOverlay.readAlong = page.learnFlag("read_along", true)
+        page.dubEnglish = backend.getDubEnglishEnabled()
         page.showEnglish = page.learnFlag("english", true)
         page.learnMode = backend.getLearnMode()
+        let savedSpeed = parseFloat(backend.learnOption("speed"))
+        if (savedSpeed > 0 && savedSpeed !== 1) page.speed = savedSpeed
         let style = backend.subtitleStyle()
         page.subScale = style.scale
         page.subPosition = style.position
@@ -288,6 +294,12 @@ Kirigami.Page {
             video.setMuted(!video.muted)
             page.flashVolume()
             event.accepted = true
+        } else if (event.key === Qt.Key_BracketLeft) {
+            page.stepSpeed(-1)
+            event.accepted = true
+        } else if (event.key === Qt.Key_BracketRight) {
+            page.stepSpeed(1)
+            event.accepted = true
         } else if (event.key === Qt.Key_L) {
             page.learnMode = !page.learnMode
             event.accepted = true
@@ -302,9 +314,33 @@ Kirigami.Page {
 
     // Volume keys change something invisible, so they say what they did.
     property bool volumeShown: false
+    // What the centre flash says; volume by default.
+    property string flashText: ""
     function flashVolume() {
+        page.flashText = ""
         page.volumeShown = true
         volumeFlash.restart()
+    }
+    function flash(text) {
+        page.flashText = text
+        page.volumeShown = true
+        volumeFlash.restart()
+    }
+
+    // Playback speed. Remembered app-wide: someone who needs 0.75x to read
+    // along needs it every episode, not just this one.
+    readonly property var speeds: [0.5, 0.6, 0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 2.0]
+    property real speed: 1.0
+    onSpeedChanged: {
+        video.setSpeed(page.speed)
+        backend.setLearnOption("speed", String(page.speed))
+    }
+    function speedLabel(value) { return (value === 1 ? "1" : String(value)) + "\u00d7" }
+    function stepSpeed(direction) {
+        let i = page.speeds.indexOf(page.speed)
+        if (i < 0) i = page.speeds.indexOf(1.0)
+        page.speed = page.speeds[Math.max(0, Math.min(page.speeds.length - 1, i + direction))]
+        page.flash("Speed " + page.speedLabel(page.speed))
     }
     Timer { id: volumeFlash; interval: 1200; onTriggered: page.volumeShown = false }
 
@@ -321,6 +357,9 @@ Kirigami.Page {
         function onStreamFailed(message) {
             page.loadingStream = false
             showPassiveNotification("Playback failed: " + message)
+        }
+        function onDubEnglishReady(url) {
+            if (page.dub) video.addSubtitle(url)
         }
         function onJapaneseSubsReady(payload) {
             if (payload.episode !== page.episodeNumber) return
@@ -618,6 +657,18 @@ Kirigami.Page {
                         onToggled: { learnOverlay.showFurigana = checked; page.setLearnFlag("furigana", checked) }
                     }
                     AppCheckBox {
+                        text: "Gaps between words"
+                        enabled: page.learnMode
+                        checked: learnOverlay.wordGaps
+                        onToggled: { learnOverlay.wordGaps = checked; page.setLearnFlag("gaps", checked) }
+                    }
+                    AppCheckBox {
+                        text: "Read along (words light up as they're said)"
+                        enabled: page.learnMode
+                        checked: learnOverlay.readAlong
+                        onToggled: { learnOverlay.readAlong = checked; page.setLearnFlag("read_along", checked) }
+                    }
+                    AppCheckBox {
                         text: "Romaji"
                         enabled: page.learnMode
                         checked: learnOverlay.showRomaji
@@ -640,6 +691,19 @@ Kirigami.Page {
                         enabled: page.learnMode
                         checked: learnOverlay.pauseEachLine
                         onToggled: { learnOverlay.pauseEachLine = checked; page.setLearnFlag("pause_line", checked) }
+                    }
+                    RowLayout {
+                        Controls.Label { text: "Speed" }
+                        Repeater {
+                            model: [0.5, 0.75, 1.0]
+                            AppButton {
+                                required property var modelData
+                                text: page.speedLabel(modelData)
+                                checkable: true
+                                checked: page.speed === modelData
+                                onClicked: page.speed = modelData
+                            }
+                        }
                     }
                     RowLayout {
                         enabled: page.learnMode
@@ -667,7 +731,7 @@ Kirigami.Page {
                         font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     }
                     Controls.Label {
-                        text: "Japanese lines too early? Press \u2212. Too late? Press +.\nR replays the line."
+                        text: "Japanese lines showing too early? Press +. Too late? Press \u2212.\nR replays the line."
                         opacity: 0.6
                         font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     }
@@ -717,6 +781,20 @@ Kirigami.Page {
                         Kirigami.Theme.inherit: true
                         text: "Reset"
                         onClicked: { page.subScale = 1.0; page.subPosition = 100 }
+                    }
+                    Kirigami.Separator { Layout.fillWidth: true }
+                    AppCheckBox {
+                        text: "English subtitles on dubs"
+                        checked: page.dubEnglish
+                        onToggled: {
+                            page.dubEnglish = checked
+                            backend.setDubEnglishEnabled(checked)
+                        }
+                    }
+                    Controls.Label {
+                        text: "From the subbed version, so the wording won't\nalways match what the dub says. Next episode on."
+                        opacity: 0.6
+                        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                     }
                 }
             }
@@ -871,6 +949,33 @@ Kirigami.Page {
             // ordinary seek controls.
             Controls.Button {
                 Kirigami.Theme.inherit: true
+                text: page.speedLabel(page.speed)
+                icon.name: "speedometer"
+                display: Controls.AbstractButton.TextBesideIcon
+                onClicked: speedMenu.popup()
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: "Playback speed ([ and ])"
+                Controls.Menu {
+                    id: speedMenu
+                    Kirigami.Theme.inherit: true
+                    onOpened: { page.controlsVisible = true; hideTimer.stop() }
+                    onClosed: hideTimer.restart()
+                    Instantiator {
+                        model: page.speeds
+                        onObjectAdded: (index, object) => speedMenu.insertItem(index, object)
+                        onObjectRemoved: (index, object) => speedMenu.removeItem(object)
+                        delegate: Controls.MenuItem {
+                            required property var modelData
+                            text: page.speedLabel(modelData) + (modelData === 1 ? "  (normal)" : "")
+                            checkable: true
+                            checked: page.speed === modelData
+                            onTriggered: page.speed = modelData
+                        }
+                    }
+                }
+            }
+            Controls.Button {
+                Kirigami.Theme.inherit: true
                 text: "10s"
                 icon.name: "media-seek-backward-symbolic"
                 display: Controls.AbstractButton.TextBesideIcon
@@ -902,7 +1007,8 @@ Kirigami.Page {
             anchors.centerIn: parent
             color: "white"
             font.pixelSize: Kirigami.Units.gridUnit * 1.4
-            text: video.muted ? "Muted" : "Volume " + Math.round(video.volume) + "%"
+            text: page.flashText !== "" ? page.flashText
+                : video.muted ? "Muted" : "Volume " + Math.round(video.volume) + "%"
         }
     }
 
@@ -920,6 +1026,7 @@ Kirigami.Page {
             ["Space", "Play / pause"], ["\u2190 \u2192", "Back / forward 5s"],
             ["\u2191 \u2193", "Volume"], ["M", "Mute"], ["F", "Fullscreen"],
             ["S", "Skip intro or outro"], ["N / P", "Next / previous episode"],
+            ["[  ]", "Slower / faster"],
             ["L", "Learn Japanese on / off"], ["R", "Replay the Japanese line"],
             ["Esc", "Pause and leave fullscreen"], ["?", "This list"]
         ]

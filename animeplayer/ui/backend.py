@@ -1142,6 +1142,8 @@ class Backend(QObject):
             # is what lets ani-skip and the Jikan filler lookup work logged-out.
             self._adopt_mal_id(info.mal_id)
             self._emit_skip_times(info, episode_number)
+            if dub:
+                self._maybe_add_english_to_dub(episode_id, episode_number, info)
 
         if preferred and preferred.lower() != "auto":
             # A specific quality is remembered: resolve everything up front (3
@@ -1370,6 +1372,55 @@ class Backend(QObject):
     @Slot(bool)
     def setSkipFinalEpisodeEnabled(self, value: bool) -> None:
         self._db.set_setting("skip_final_episode_enabled", "true" if value else "false")
+
+    # -- English subtitles on dubs ------------------------------------------
+    #
+    # A dub stream's own subtitle file is often just songs and signs --
+    # measured: Frieren's has 55 lines (the opening lyrics and on-screen
+    # text), Dorohedoro's has none -- while the subbed version always carries
+    # full English dialogue. They are the same video (sub and dub playlists
+    # matched to 0.04 s), so the subbed version's English lines up. Its
+    # wording follows the Japanese script, not the dub's, so it won't match
+    # the spoken English word for word.
+
+    dubEnglishReady = Signal(str)  # subtitle URL to add to the dub playing
+
+    @Slot(result=bool)
+    def getDubEnglishEnabled(self) -> bool:
+        return (self._db.get_setting("dub_english") or "true") == "true"
+
+    @Slot(bool)
+    def setDubEnglishEnabled(self, value: bool) -> None:
+        self._db.set_setting("dub_english", "true" if value else "false")
+
+    def _maybe_add_english_to_dub(self, episode_id: int, episode_number: float,
+                                  dub_info: source.StreamInfo) -> None:
+        if not self.getDubEnglishEnabled():
+            return
+        from animeplayer.learn import subtitles
+
+        def lines(url: str, referer: str) -> int:
+            response = self._http.get(url, timeout=20, headers={"Referer": referer})
+            response.raise_for_status()
+            return len(subtitles.parse("s.vtt", response.content))
+
+        def work() -> str:
+            sub_info = source.resolve_source(episode_id, self._http, dub=False)
+            if not sub_info.subtitle_url:
+                return ""
+            if dub_info.subtitle_url:
+                # The dub's own track is kept if it's real dialogue (Slime's
+                # is); replaced when it's a fraction of the subbed one.
+                if lines(dub_info.subtitle_url, dub_info.referer) >= 0.6 * lines(sub_info.subtitle_url, sub_info.referer):
+                    return ""
+            return sub_info.subtitle_url
+
+        def done(url: str) -> None:
+            current = self._current_anime or {}
+            if url and current.get("current_episode_number") == episode_number:
+                self.dubEnglishReady.emit(url)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
 
     @Slot(result="QVariantMap")
     def subtitleStyle(self) -> dict[str, Any]:
@@ -1961,8 +2012,10 @@ class Backend(QObject):
     @Slot(str, str, str, result=list)
     def lookupWord(self, lemma: str, surface: str, reading: str) -> list[dict[str, Any]]:
         """Up to three entries: the dictionary form first (食べる for 食べ),
-        then the word as written, then its reading."""
-        results = self._dictionary.lookup(lemma, surface, reading)
+        then the word as written. The reading only when neither is found:
+        looked up by sound, 誰 ("who") also brought in unrelated words that
+        happen to be read だれ."""
+        results = self._dictionary.lookup(lemma, surface) or self._dictionary.lookup(reading)
         return [
             {
                 "word": d.kanji[0] if d.kanji else d.readings[0],

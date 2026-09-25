@@ -67,6 +67,7 @@ AppWindow {
                      " sub=" + (sub ? "yes" : "NONE"))
         }
         function onStreamFailed(message) { root.log("STREAM FAILED: " + message) }
+        function onDubEnglishReady(url) { root.log("dub English added: " + url.substring(0, 60)) }
         function onSkipTimesReady(times) {
             root.log("skipTimes op=" + JSON.stringify(times.op) + " ed=" + JSON.stringify(times.ed))
         }
@@ -121,9 +122,14 @@ AppWindow {
                 if (page.skipEd) page.seekTo(page.skipEd.start - 2)
                 else page.seekRelative(1100)
                 root.log("parked before outro, controls pinned")
+                if (testMode === "dub") {
+                    // Into "There's someone else inside his mouth!" (37.18-40.50).
+                    page.seekTo(37.4)
+                    dubCheck.start()
+                }
                 if (testMode === "learn") {
-                    page.seekTo(30.6)
-                    root.log("learn: seeked to 30.6s")
+                    page.seekTo(37.3)
+                    root.log("learn: seeked to 37.3s, speed " + page.speed)
                     learnTimer.start()
                 }
                 if (testMode === "subs") {
@@ -165,7 +171,7 @@ AppWindow {
     }
     Timer {
         id: learnTimer
-        interval: 2500
+        interval: 1200
         onTriggered: {
             let overlay = root.findByName(root.pageStack.currentItem, "learnOverlay")
             if (!overlay) { root.log("learn: no overlay"); return }
@@ -187,6 +193,15 @@ AppWindow {
         }
     }
 
+    Timer {
+        id: dubCheck
+        interval: 1200
+        onTriggered: {
+            let overlay = root.findByName(root.pageStack.currentItem, "learnOverlay")
+            root.log("dub: English on screen at ~38.6s = " + JSON.stringify(overlay.video.currentSubtitleText()))
+        }
+    }
+
     // Saved a moment later, the way a click would come: right after a
     // seek the English line for the new spot hasn't loaded yet.
     Timer {
@@ -205,7 +220,8 @@ AppWindow {
         id: episodesDone; interval: Number(root.pause) || 1500
         onTriggered: {
             let page = root.pageStack.currentItem
-            root.log("clicking episode 1")
+            root.log("clicking episode 1" + (testMode === "dub" ? " (dub)" : ""))
+            if (testMode === "dub") page.dub = true
             page.playEpisode(page.firstEpisodeNumber())
         }
     }

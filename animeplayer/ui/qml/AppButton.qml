@@ -44,26 +44,37 @@ Controls.Button {
         Behavior on color { ColorAnimation { duration: 100 } }
     }
 
-    contentItem: Row {
-        spacing: Kirigami.Units.smallSpacing
+    // Centred in whatever width the button is given. A bare Row as the
+    // contentItem is laid out from the left, so a button sized wider than
+    // its text (the player's あ button) drew the text off to one side.
+    contentItem: Item {
+        implicitWidth: contentRow.implicitWidth
+        implicitHeight: contentRow.implicitHeight
 
-        Kirigami.Icon {
-            anchors.verticalCenter: parent.verticalCenter
-            visible: button.icon.name !== "" || button.icon.source != ""
-            source: button.icon.name !== "" ? button.icon.name : button.icon.source
-            width: Kirigami.Units.iconSizes.small
-            height: width
-            isMask: true
-            color: button.active ? Kirigami.Theme.highlightedTextColor
-                                 : Kirigami.Theme.textColor
-        }
+        Row {
+            id: contentRow
+            anchors.centerIn: parent
+            spacing: Kirigami.Units.smallSpacing
 
-        Controls.Label {
-            anchors.verticalCenter: parent.verticalCenter
-            text: button.text
-            color: button.active ? Kirigami.Theme.highlightedTextColor
-                                 : Kirigami.Theme.textColor
-            font.bold: button.active
+            Kirigami.Icon {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: button.icon.name !== "" || button.icon.source != ""
+                source: button.icon.name !== "" ? button.icon.name : button.icon.source
+                width: Kirigami.Units.iconSizes.small
+                height: width
+                isMask: true
+                color: button.active ? Kirigami.Theme.highlightedTextColor
+                                     : Kirigami.Theme.textColor
+            }
+
+            Controls.Label {
+                anchors.verticalCenter: parent.verticalCenter
+                visible: button.text !== ""
+                text: button.text
+                color: button.active ? Kirigami.Theme.highlightedTextColor
+                                     : Kirigami.Theme.textColor
+                font.bold: button.active || button.font.bold
+            }
         }
     }
 }

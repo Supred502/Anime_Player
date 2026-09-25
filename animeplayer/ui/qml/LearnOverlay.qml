@@ -24,7 +24,41 @@ Item {
     property bool showFurigana: true
     property bool pauseEachLine: false
     property bool pauseOnHover: true
-    property real offset: 0             // seconds added to the video time before matching lines
+    // Seconds to add to the Japanese file's times to get video time -- the
+    // same sense learn/sync.py reports it in. -9.8 means the Japanese file
+    // runs 9.8 s late, so its 45 s line belongs at 35.2 s in this video.
+    property real offset: 0
+    // Japanese is written without spaces; for a beginner the word
+    // boundaries are the hardest part of reading, so they're shown by
+    // default. Off shows the line as it's normally written.
+    property bool wordGaps: true
+    // Words turn orange as they're said, to read along.
+    property bool readAlong: true
+
+    // Where speech is within the current line, 0..1. Subtitle files time
+    // lines, not words, so this is an estimate: a line's words are spread
+    // across its duration by how long each takes to say (its kana count),
+    // trimming the lead-in and tail a subtitle line usually carries.
+    property real lineProgress: 0
+    readonly property var wordEnds: {
+        let tokens = overlay.cue ? overlay.cue.tokens : []
+        let weights = tokens.map((t) => {
+            if (!t.lookup) return t.surface.indexOf("\u2026") >= 0 ? 1 : 0   // … is a pause
+            return Math.max(1, (t.reading || t.surface).length)
+        })
+        let total = weights.reduce((a, b) => a + b, 0) || 1
+        let running = 0
+        return weights.map((w) => { running += w; return running / total })
+    }
+    function wordState(index) {
+        // 0 not yet said, 1 being said, 2 said
+        if (!overlay.readAlong || !overlay.cue) return 0
+        let end = overlay.wordEnds[index]
+        let start = index > 0 ? overlay.wordEnds[index - 1] : 0
+        if (overlay.lineProgress >= end) return 2
+        if (overlay.lineProgress >= start && end > start) return 1
+        return 0
+    }
 
     property int cueIndex: -1
     readonly property var cue: cueIndex >= 0 && cueIndex < cues.length ? cues[cueIndex] : null
@@ -36,12 +70,19 @@ Item {
     signal wordSaved(string word)
 
     onCuesChanged: { cueIndex = -1; pausedAfter = -1 }
+    onCueIndexChanged: lineProgress = 0
 
     // Called on every position tick. Checks the current and next line first
     // -- nearly always one of them -- before searching.
     function update(position) {
         if (!cues.length) return
-        let t = position + offset
+        // Video time, converted to the Japanese file's own clock.
+        let t = position - offset
+        if (overlay.cue) {
+            let lead = 0.15, tail = 0.35
+            let span = Math.max(0.3, overlay.cue.end - overlay.cue.start - lead - tail)
+            overlay.lineProgress = Math.max(0, Math.min(1, (t - overlay.cue.start - lead) / span))
+        }
         let current = cueIndex >= 0 ? cues[cueIndex] : null
         if (overlay.pauseEachLine && current && overlay.pausedAfter !== cueIndex
                 && t >= current.end - 0.05 && t < current.end + 1.0) {
@@ -68,7 +109,7 @@ Item {
     function replayLine() {
         if (!overlay.cue) return
         overlay.pausedAfter = -1
-        video.seekAbsolute(Math.max(0, overlay.cue.start - overlay.offset - 0.2))
+        video.seekAbsolute(Math.max(0, overlay.cue.start + overlay.offset - 0.2))
         video.setPaused(false)
     }
 
@@ -154,7 +195,8 @@ Item {
                 Layout.maximumWidth: overlay.width - Kirigami.Units.gridUnit * 6
                 Layout.preferredWidth: Math.min(implicitWidth, overlay.width - Kirigami.Units.gridUnit * 6)
                 visible: overlay.cue !== null && overlay.status === ""
-                spacing: 2
+                spacing: overlay.wordGaps ? Math.round(jpSize * 0.4) : 1
+                readonly property int jpSize: Math.max(22, Math.round(overlay.height * 0.045))
 
                 Repeater {
                     id: wordRepeater
@@ -164,6 +206,8 @@ Item {
                     delegate: Item {
                         id: word
                         required property var modelData
+                        required property int index
+                        readonly property int said: overlay.wordState(index)
                         readonly property bool newline: modelData.surface.indexOf("\n") >= 0
                         width: newline ? words.width : column.implicitWidth
                         height: newline ? 0 : column.implicitHeight
@@ -189,8 +233,10 @@ Item {
                             Text {
                                 id: jpText
                                 text: word.modelData.surface
-                                color: "white"
-                                font.pixelSize: Math.max(22, Math.round(overlay.height * 0.045))
+                                // Orange once said, brightest while being said.
+                                color: word.said === 1 ? "#ffb347" : word.said === 2 ? "#ff9a3c" : "white"
+                                font.bold: word.said === 1
+                                font.pixelSize: words.jpSize
                                 font.family: "Noto Sans CJK JP"
                                 style: Text.Outline
                                 styleColor: "black"
@@ -254,7 +300,7 @@ Item {
                 pos: token.pos,
                 sentence: overlay.cue ? overlay.cue.text : "",
                 translation: overlay.video ? overlay.video.currentSubtitleText() : "",
-                position: overlay.cue ? overlay.cue.start - overlay.offset : 0
+                position: overlay.cue ? overlay.cue.start + overlay.offset : 0
             })
             overlay.wordSaved(best ? best.word : token.lemma)
         }

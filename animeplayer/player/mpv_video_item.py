@@ -153,9 +153,15 @@ class MpvVideoItem(QQuickFramebufferObject):
         # Set by loadUrl, consumed on the next file-loaded. Attaching the
         # track any earlier doesn't work -- see loadUrl's docstring.
         self._pending_subtitle = ""
+        # Whether the current file has finished opening. A subtitle added
+        # before then is listed but never selected -- measured: the dub's
+        # English, added 0.15 s after the stream arrived, came up
+        # "selected: False" and never showed.
+        self._file_ready = False
 
         @self.mpv.event_callback("file-loaded")
         def _on_file_loaded(_event) -> None:
+            self._file_ready = True
             if self.closed or not self._pending_subtitle:
                 return
             # Deliberately only *signals* from here. Issuing the sub-add
@@ -299,6 +305,30 @@ class MpvVideoItem(QQuickFramebufferObject):
         if not self.closed:
             self.mpv.mute = value
 
+    @Slot(float)
+    def setSpeed(self, speed: float) -> None:
+        """Playback speed. mpv keeps the pitch natural when slowed down
+        (its default audio filter stretches time, not frequency), so voices
+        at 0.75x sound slower rather than deeper."""
+        if not self.closed:
+            self.mpv.speed = max(0.25, min(2.0, speed))
+
+    @Slot(str)
+    def addSubtitle(self, url: str) -> None:
+        """Adds and selects another subtitle track mid-playback -- the
+        English from the subbed version, on a dub. The referer the stream
+        was loaded with still applies."""
+        if self.closed or not url:
+            return
+        if not self._file_ready:
+            # Attached on file-loaded, like a stream's own subtitle.
+            self._pending_subtitle = url
+            return
+        try:
+            self.mpv.command("sub-add", url, "select", "English")
+        except Exception:  # noqa: BLE001 -- a bad track must never stop playback
+            pass
+
     @Slot(bool)
     def setSubtitlesVisible(self, visible: bool) -> None:
         if not self.closed:
@@ -345,6 +375,7 @@ class MpvVideoItem(QQuickFramebufferObject):
         if self.closed:
             return
         self._pending_subtitle = subtitle_url
+        self._file_ready = False
         # A global option rather than a per-file one so it also covers the
         # variant-playlist and segment fetches mpv makes on its own later.
         self.mpv["referrer"] = referer
