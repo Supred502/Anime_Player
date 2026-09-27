@@ -60,8 +60,14 @@ Kirigami.ScrollablePage {
         return Math.round(bytes / 1e6) + " MB"
     }
 
+    // "al:<id>": a show that came in from AniList (another device added it)
+    // and hasn't been matched to the streaming source here yet.
+    function sourceSlug(card) {
+        return card.slug_id && !card.slug_id.startsWith("al:") ? card.slug_id : ""
+    }
+
     function openShow(card) {
-        if (card.slug_id) {
+        if (page.sourceSlug(card)) {
             applicationWindow().pageStack.push(Qt.resolvedUrl("DetailPage.qml"), {
                 anime: {
                     slug_id: card.slug_id, numeric_id: card.numeric_id || card.slug_id.split("-").pop(),
@@ -381,7 +387,7 @@ Kirigami.ScrollablePage {
                         height: parent.height
                         posterUrl: cell.modelData.poster_url || ""
                         anilistId: cell.modelData.anilist_id || 0
-                        slugId: cell.modelData.slug_id || ""
+                        slugId: page.sourceSlug(cell.modelData)
                         numericId: cell.modelData.numeric_id || ""
                         title: cell.modelData.title
                         subtitle: page.tab === "downloads"
@@ -399,7 +405,8 @@ Kirigami.ScrollablePage {
                         visible: page.currentList !== null && card.hovered
                         icon.name: "dialog-cancel-symbolic"
                         background: Rectangle { radius: height / 2; color: Qt.rgba(0, 0, 0, 0.65) }
-                        onClicked: backend.removeFromLibrary(page.currentList.id, cell.modelData.slug_id)
+                        onClicked: backend.removeShowFromLibrary(page.currentList.id, cell.modelData.slug_id,
+                                                               cell.modelData.anilist_id || 0)
                         Controls.ToolTip.visible: hovered
                         Controls.ToolTip.text: "Remove from " + (page.currentList ? page.currentList.name : "")
                     }

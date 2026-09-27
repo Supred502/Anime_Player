@@ -29,7 +29,7 @@ import httpx
 import qrcode
 from PySide6.QtCore import Property, QCoreApplication, QObject, QProcess, QRunnable, QThreadPool, QTimer, Signal, Slot
 
-from animeplayer import discord_presence, platform_setup, updates
+from animeplayer import discord_presence, library_sync, platform_setup, updates
 from animeplayer.alerts import find_new_episodes
 from animeplayer.version import ANILIST_CLIENT_ID, DISCORD_CLIENT_ID
 from animeplayer.anilist import matcher
@@ -296,6 +296,14 @@ class Backend(QObject):
         # the anilist_list table for entries on the user's own list so it
         # survives a restart.
         self._titles_by_anilist_id: dict[int, tuple[str, ...]] = {}
+        self._library_syncing = False
+        self._library_sync_again = False
+        self._library_sync_warned = False
+        self._library_id_tried: set[str] = set()
+        self._library_sync_timer = QTimer(self)
+        self._library_sync_timer.setSingleShot(True)
+        self._library_sync_timer.setInterval(1500)
+        self._library_sync_timer.timeout.connect(self._sync_library)
         self._try_restore_anilist_session()
         self._emit_anilist_home_lists()
 
@@ -3077,6 +3085,9 @@ class Backend(QObject):
         self._db.delete_setting("anilist_viewer_name")
         self._db.delete_setting("anilist_user_id")
         self._db.clear_anilist_list()
+        # Another account's lists aren't this one's: the next login merges
+        # rather than deleting tabs that account doesn't have.
+        self._db.delete_setting(library_sync.KNOWN_KEY)
         self.anilistLoggedOut.emit()
         self._emit_anilist_home_lists()
 
@@ -3147,6 +3158,7 @@ class Backend(QObject):
             self._anilist_index = None
             self.anilistListRefreshed.emit()
             self._emit_anilist_home_lists()
+            self._sync_library()
 
         self._pool.start(_Worker(work, done, self.anilistError.emit))
 
@@ -3682,34 +3694,126 @@ class Backend(QObject):
             return 0
         list_id = self._db.create_library_list(name)
         self.libraryChanged.emit()
+        self._library_changed()
         return list_id
+
+    def _library_tab(self, list_id: int) -> dict[str, Any] | None:
+        return next((l for l in self._db.library_lists() if l["id"] == list_id), None)
 
     @Slot(int, str)
     def renameLibraryList(self, list_id: int, name: str) -> None:
-        if name.strip():
+        tab = self._library_tab(list_id)
+        if name.strip() and tab is not None and tab["name"] != name.strip():
             self._db.rename_library_list(list_id, name.strip())
             self.libraryChanged.emit()
+            self._library_changed(self._db.library_anilist_ids(list_id),
+                                  renamed=(tab["name"], name.strip()))
 
     @Slot(int)
     def deleteLibraryList(self, list_id: int) -> None:
+        tab = self._library_tab(list_id)
+        media = self._db.library_anilist_ids(list_id)
         self._db.delete_library_list(list_id)
         self.libraryChanged.emit()
+        if tab is not None:
+            self._library_changed(media, deleted=tab["name"])
 
     @Slot(int, "QVariantMap")
     def addToLibrary(self, list_id: int, show: dict[str, Any]) -> None:
         if not show.get("slug_id"):
             return
-        self._db.add_to_library(list_id, show)
+        anilist_id = int(show.get("anilist_id") or 0) or self._db.anilist_id_for_slug(show["slug_id"])
+        self._db.add_to_library(list_id, {**show, "anilist_id": anilist_id})
         self.libraryChanged.emit()
+        self._library_changed({anilist_id} if anilist_id else set())
 
     @Slot(int, str)
     def removeFromLibrary(self, list_id: int, slug_id: str) -> None:
+        self.removeShowFromLibrary(list_id, slug_id, 0)
+
+    @Slot(int, str, int)
+    def removeShowFromLibrary(self, list_id: int, slug_id: str, anilist_id: int) -> None:
+        """By either key: a tab can hold a show from AniList that this PC
+        hasn't matched to the streaming source yet."""
+        item = self._db.library_item(list_id, slug_id)
+        anilist_id = anilist_id or (item or {}).get("anilist_id") or 0
         self._db.remove_from_library(list_id, slug_id)
+        if anilist_id:
+            self._db.remove_from_library_by_anilist(list_id, anilist_id)
         self.libraryChanged.emit()
+        self._library_changed({anilist_id} if anilist_id else set())
 
     @Slot(str, result=list)
     def libraryListsFor(self, slug_id: str) -> list[int]:
         return self._db.lists_containing(slug_id)
+
+    @Slot(str, int, result=list)
+    def libraryListsForShow(self, slug_id: str, anilist_id: int) -> list[int]:
+        return self._db.lists_containing(slug_id, anilist_id)
+
+    # -- Library <-> AniList custom lists (see library_sync) -------------------
+
+    def _library_changed(self, media: set[int] = frozenset(), *, deleted: str = "",
+                         renamed: tuple[str, str] | None = None) -> None:
+        pending = library_sync.Pending.load(self._db)
+        pending.media |= set(media)
+        if deleted:
+            pending.deleted.append(deleted)
+        if renamed:
+            pending.renamed.append(renamed)
+        pending.save(self._db)
+        if self._anilist_client is not None:
+            # A moment's wait, so clicking through several tabs is one sync.
+            self._library_sync_timer.start()
+
+    def _find_anilist_id(self, slug_id: str, title: str) -> int:
+        """For a tab's show added without its AniList id: the match made when
+        it was opened from AniList, else an exact title match. Asked once per
+        show per run."""
+        found = self._db.anilist_id_for_slug(slug_id)
+        if found or slug_id in self._library_id_tried or not title:
+            return found
+        self._library_id_tried.add(slug_id)
+        wanted = title.casefold()
+        media = next((m for m in self._anilist_public.search_media(title)
+                      if any(t.casefold() == wanted for t in m.titles)), None)
+        return media.id if media else 0
+
+    def _sync_library(self) -> None:
+        client, user_id = self._anilist_client, self._anilist_user_id
+        if client is None or user_id is None:
+            return
+        if self._library_syncing:
+            self._library_sync_again = True
+            return
+        self._library_syncing = True
+        self._library_sync_again = False
+        sent = library_sync.Pending.load(self._db)
+        known = library_sync.load_known(self._db)
+
+        def work() -> library_sync.Pushed:
+            return library_sync.push(client, self._db, user_id, sent, known, self._find_anilist_id)
+
+        def done(pushed: library_sync.Pushed) -> None:
+            busy = library_sync.Pending.load(self._db).minus(sent)
+            library_sync.pull(self._db, pushed.lists, known, busy)
+            busy.save(self._db)
+            for anilist_id in pushed.planned:
+                self._db.set_anilist_status(anilist_id, "PLANNING")
+            self._library_syncing = False
+            self.libraryChanged.emit()
+            if pushed.planned:
+                self._emit_anilist_home_lists()
+            if self._library_sync_again or not busy.empty():
+                self._library_sync_timer.start()
+
+        def fail(message: str) -> None:
+            self._library_syncing = False
+            if not self._library_sync_warned:
+                self._library_sync_warned = True
+                self.quickActionDone.emit(f"Couldn't sync your Library with AniList: {message}")
+
+        self._pool.start(_Worker(work, done, fail))
 
     @Slot(int, result=list)
     def libraryItems(self, list_id: int) -> list[dict[str, Any]]:

@@ -763,3 +763,48 @@ def test_get_schedule_pages_through_the_week_and_skips_adult() -> None:
         schedule = AniListClient(http_client).get_schedule(0, 1000)
     assert [(s.media.id, s.episode, s.airing_at) for s in schedule] == [(1, 5, 100), (2, 12, 200)]
     assert route.call_count == 2
+
+
+def _list_entry(status: str, media_id: int, romaji: str, custom: dict | None = None) -> dict:
+    return {"status": status, "progress": 0, "score": 0, "customLists": custom,
+            "media": _media(media_id, romaji)}
+
+
+@respx.mock
+def test_get_list_collection_counts_an_anime_in_a_custom_list_once() -> None:
+    # A custom list repeats entries that are also in a status list.
+    respx.post("https://graphql.anilist.co").mock(return_value=httpx.Response(200, json={"data": {
+        "MediaListCollection": {"lists": [
+            {"entries": [_list_entry("PLANNING", 1, "Frieren")]},
+            {"entries": [_list_entry("PLANNING", 1, "Frieren")]},
+        ]}}}))
+    client = AniListClient(httpx.Client(), token="t")
+    assert [e.media_id for e in client.get_list_collection(7)] == [1]
+
+
+@respx.mock
+def test_get_custom_lists() -> None:
+    respx.post("https://graphql.anilist.co").mock(return_value=httpx.Response(200, json={"data": {
+        "Viewer": {"mediaListOptions": {"animeList": {"customLists": ["Favourites", "Comfy"]}}},
+        "MediaListCollection": {"lists": [
+            {"entries": [_list_entry("PLANNING", 1, "Frieren", {"Favourites": True, "Comfy": False}),
+                         _list_entry("COMPLETED", 2, "Mushishi", None)]},
+            {"entries": [_list_entry("PLANNING", 1, "Frieren", {"Favourites": True, "Comfy": False})]},
+        ]}}}))
+    lists = AniListClient(httpx.Client(), token="t").get_custom_lists(7)
+    assert lists.names == ("Favourites", "Comfy")
+    assert lists.entries[1].lists == {"Favourites"} and lists.entries[1].title == "Frieren"
+    assert lists.entries[2].lists == frozenset() and lists.entries[2].status == "COMPLETED"
+
+
+@respx.mock
+def test_set_entry_custom_lists_sends_status_only_when_given() -> None:
+    route = respx.post("https://graphql.anilist.co").mock(
+        return_value=httpx.Response(200, json={"data": {"SaveMediaListEntry": {"id": 1}}}))
+    client = AniListClient(httpx.Client(), token="t")
+    client.set_entry_custom_lists(5, ["Favourites"], "PLANNING")
+    client.set_entry_custom_lists(5, [])
+    first, second = (json.loads(c.request.content) for c in route.calls)
+    assert first["variables"] == {"mediaId": 5, "names": ["Favourites"], "status": "PLANNING"}
+    assert second["variables"] == {"mediaId": 5, "names": []}
+    assert "status" not in second["query"]

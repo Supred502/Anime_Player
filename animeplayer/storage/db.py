@@ -202,6 +202,12 @@ CREATE TABLE IF NOT EXISTS library_items (
 """
 
 
+def placeholder_slug(anilist_id: int) -> str:
+    """The key of a Library item that arrived from AniList before this PC
+    matched it to the streaming source; opening it does the matching."""
+    return f"al:{anilist_id}"
+
+
 @dataclass(frozen=True, slots=True)
 class ProgressEntry:
     anime_slug_id: str
@@ -509,6 +515,12 @@ class Database:
 
     def add_to_library(self, list_id: int, show: dict) -> None:
         with self._lock:
+            anilist_id = int(show.get("anilist_id") or 0)
+            if anilist_id and show["slug_id"] != placeholder_slug(anilist_id):
+                # It came in from AniList before this PC knew where to stream
+                # it; now it does.
+                self._conn.execute("DELETE FROM library_items WHERE list_id = ? AND slug_id = ?",
+                                   (list_id, placeholder_slug(anilist_id)))
             self._conn.execute(
                 "INSERT OR REPLACE INTO library_items (list_id, slug_id, numeric_id, title, "
                 "poster_url, anilist_id, added_at) VALUES (?,?,?,?,?,?,?)",
@@ -529,11 +541,62 @@ class Database:
                 (list_id,)).fetchall()
         return [dict(r) for r in rows]
 
-    def lists_containing(self, slug_id: str) -> list[int]:
+    def lists_containing(self, slug_id: str, anilist_id: int = 0) -> list[int]:
         with self._lock:
-            rows = self._conn.execute("SELECT list_id FROM library_items WHERE slug_id = ?",
-                                      (slug_id,)).fetchall()
+            rows = self._conn.execute(
+                "SELECT DISTINCT list_id FROM library_items WHERE slug_id = ? "
+                "OR (? != 0 AND anilist_id = ?)", (slug_id, anilist_id, anilist_id)).fetchall()
         return [r[0] for r in rows]
+
+    def library_item(self, list_id: int, slug_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM library_items WHERE list_id = ? AND slug_id = ?",
+                                     (list_id, slug_id)).fetchone()
+        return dict(row) if row else None
+
+    def remove_from_library_by_anilist(self, list_id: int, anilist_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM library_items WHERE list_id = ? AND anilist_id = ?",
+                               (list_id, anilist_id))
+            self._conn.commit()
+
+    def set_library_anilist_id(self, slug_id: str, anilist_id: int) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE library_items SET anilist_id = ? WHERE slug_id = ?",
+                               (anilist_id, slug_id))
+            self._conn.commit()
+
+    def library_names_for(self, anilist_id: int) -> list[str]:
+        """The names of the Library tabs this anime is in."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT l.name FROM library_items i JOIN library_lists l ON l.id = i.list_id "
+                "WHERE i.anilist_id = ? ORDER BY l.position, l.id", (anilist_id,)).fetchall()
+        return [r[0] for r in rows]
+
+    def library_anilist_ids(self, list_id: int | None = None) -> set[int]:
+        with self._lock:
+            if list_id is None:
+                rows = self._conn.execute(
+                    "SELECT DISTINCT anilist_id FROM library_items WHERE anilist_id != 0").fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT anilist_id FROM library_items WHERE list_id = ? AND anilist_id != 0",
+                    (list_id,)).fetchall()
+        return {r[0] for r in rows}
+
+    def library_items_without_anilist(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT slug_id, title FROM library_items WHERE anilist_id = 0").fetchall()
+        return [dict(r) for r in rows]
+
+    def anilist_id_for_slug(self, slug_id: str) -> int:
+        """The AniList id a show was matched to when opened from AniList, or 0."""
+        with self._lock:
+            row = self._conn.execute("SELECT anilist_id FROM anidb_map WHERE slug_id = ? LIMIT 1",
+                                     (slug_id,)).fetchone()
+        return row[0] if row else 0
 
     # -- per-show preferences ---------------------------------------------
 

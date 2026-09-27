@@ -183,6 +183,8 @@ Kirigami.ScrollablePage {
     onAnilistIdChanged: {
         if (page.anilistId !== 0) page.ignoreAnilist = backend.isAnilistIgnored(page.anilistId)
         if (page.anilistId !== 0) page.myScore = backend.listScore(page.anilistId)
+        // A tab may hold this show by its AniList id alone (added on another device).
+        page.refreshLibrary()
     }
 
     // episode_id -> {status, progress} for this anime, refreshed whenever the
@@ -669,7 +671,8 @@ Kirigami.ScrollablePage {
     property var libraryTabs: []   // ids of the tabs this show is in
     function refreshLibrary() {
         page.libraryLists = backend.libraryLists()
-        page.libraryTabs = page.anime && page.anime.slug_id ? backend.libraryListsFor(page.anime.slug_id) : []
+        page.libraryTabs = page.anime && page.anime.slug_id
+                         ? backend.libraryListsForShow(page.anime.slug_id, page.anilistId) : []
     }
     function libraryEntry() {
         return { slug_id: page.anime.slug_id, numeric_id: page.anime.numeric_id || "",
@@ -677,7 +680,7 @@ Kirigami.ScrollablePage {
                  anilist_id: page.anilistId }
     }
     function toggleLibrary(listId) {
-        if (page.libraryTabs.indexOf(listId) >= 0) backend.removeFromLibrary(listId, page.anime.slug_id)
+        if (page.libraryTabs.indexOf(listId) >= 0) backend.removeShowFromLibrary(listId, page.anime.slug_id, page.anilistId)
         else backend.addToLibrary(listId, page.libraryEntry())
     }
     Connections {

@@ -305,6 +305,43 @@ mutation ($mediaId: Int, $scoreRaw: Int) {
 """
 
 
+# The Library tabs are AniList custom lists. Their names live in the user's
+# list settings; which of them an anime is in lives on its list entry.
+_CUSTOM_LISTS_QUERY = """
+query ($userId: Int!) {
+  Viewer { mediaListOptions { animeList { customLists } } }
+  MediaListCollection(userId: $userId, type: ANIME) {
+    lists {
+      entries {
+        status
+        customLists
+        media { id title { romaji english } coverImage { large } }
+      }
+    }
+  }
+}
+"""
+
+_SET_CUSTOM_LIST_NAMES_MUTATION = """
+mutation ($names: [String]) {
+  UpdateUser(animeListOptions: { customLists: $names }) { id }
+}
+"""
+
+# customLists is the entry's whole set: a name left out takes it off that list.
+_SET_ENTRY_CUSTOM_LISTS_MUTATION = """
+mutation ($mediaId: Int, $names: [String]) {
+  SaveMediaListEntry(mediaId: $mediaId, customLists: $names) { id }
+}
+"""
+
+_SET_ENTRY_CUSTOM_LISTS_AND_STATUS_MUTATION = """
+mutation ($mediaId: Int, $names: [String], $status: MediaListStatus) {
+  SaveMediaListEntry(mediaId: $mediaId, customLists: $names, status: $status) { id }
+}
+"""
+
+
 _DELETE_MEDIA_LIST_ENTRY_MUTATION = """
 mutation ($id: Int) {
   DeleteMediaListEntry(id: $id) { deleted }
@@ -349,6 +386,21 @@ class ListEntry:
     titles: tuple[str, ...]  # romaji, english, synonyms -- used for title matching
     genres: tuple[str, ...]
     popularity: int
+
+
+@dataclass(frozen=True, slots=True)
+class CustomListEntry:
+    media_id: int
+    status: str
+    lists: frozenset[str]   # the custom lists it's in
+    title: str
+    cover_url: str
+
+
+@dataclass(frozen=True, slots=True)
+class CustomLists:
+    names: tuple[str, ...]                   # in the user's order
+    entries: dict[int, CustomListEntry]      # every anime on their list, by media id
 
 
 @dataclass(frozen=True, slots=True)
@@ -643,9 +695,15 @@ class AniListClient:
         # answer from a cache is not a refresh.
         data = self._request(_MEDIA_LIST_COLLECTION_QUERY, {"userId": user_id}, cache=False)
         entries: list[ListEntry] = []
+        seen: set[int] = set()
         for lst in data["MediaListCollection"]["lists"]:
             for entry in lst["entries"]:
                 media = entry["media"]
+                # An anime in a custom list (the Library tabs) is also in its
+                # status list: count it once.
+                if media["id"] in seen:
+                    continue
+                seen.add(media["id"])
                 entries.append(
                     ListEntry(
                         media_id=media["id"],
@@ -1072,6 +1130,40 @@ class AniListClient:
             {"mediaId": media_id, "scoreRaw": int(round(max(0.0, min(10.0, score)) * 10))},
             cache=False,
         )
+        self.clear_cache()
+
+    def get_custom_lists(self, user_id: int) -> CustomLists:
+        data = self._request(_CUSTOM_LISTS_QUERY, {"userId": user_id}, cache=False)
+        options = ((data.get("Viewer") or {}).get("mediaListOptions") or {}).get("animeList") or {}
+        entries: dict[int, CustomListEntry] = {}
+        for lst in data["MediaListCollection"]["lists"]:
+            for entry in lst["entries"]:
+                media = entry["media"]
+                # {"name": enabled} -- every list the user has, true or false.
+                flags = entry.get("customLists") or {}
+                entries[media["id"]] = CustomListEntry(
+                    media_id=media["id"],
+                    status=entry.get("status") or "",
+                    lists=frozenset(name for name, on in flags.items() if on),
+                    title=_primary_title(media),
+                    cover_url=(media.get("coverImage") or {}).get("large") or "",
+                )
+        return CustomLists(names=tuple(options.get("customLists") or ()), entries=entries)
+
+    def set_custom_list_names(self, names: list[str]) -> None:
+        """Replaces the user's custom lists: a name left out is deleted."""
+        self._request(_SET_CUSTOM_LIST_NAMES_MUTATION, {"names": names}, cache=False)
+        self.clear_cache()
+
+    def set_entry_custom_lists(self, media_id: int, names: list[str], status: str = "") -> None:
+        """Puts an anime in exactly these custom lists. With a status, it's
+        also put on the user's list with it (a custom list needs an entry)."""
+        if status:
+            self._request(_SET_ENTRY_CUSTOM_LISTS_AND_STATUS_MUTATION,
+                          {"mediaId": media_id, "names": names, "status": status}, cache=False)
+        else:
+            self._request(_SET_ENTRY_CUSTOM_LISTS_MUTATION,
+                          {"mediaId": media_id, "names": names}, cache=False)
         self.clear_cache()
 
     def get_list_entry(self, media_id: int, user_id: int) -> tuple[int, str] | None:
