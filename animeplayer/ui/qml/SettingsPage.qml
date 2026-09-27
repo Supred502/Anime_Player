@@ -323,15 +323,14 @@ Kirigami.ScrollablePage {
             AppCheckBox {
                 id: discordToggle
                 Kirigami.FormData.label: "Discord:"
-                enabled: backend.discordAvailable()
+                visible: backend.discordAvailable()
                 text: "Show what I'm watching on my Discord profile"
                 onToggled: backend.setDiscordEnabled(checked)
             }
             Controls.Label {
                 Kirigami.FormData.label: " "
-                text: backend.discordAvailable()
-                    ? "Title, episode and time left, while an episode plays and Discord is open on this PC."
-                    : "Not set up in this build yet."
+                visible: backend.discordAvailable()
+                text: "Title, episode and time left, while an episode plays and Discord is open on this PC."
                 wrapMode: Text.WordWrap
                 Layout.maximumWidth: Kirigami.Units.gridUnit * 28
                 opacity: 0.7
@@ -368,6 +367,27 @@ Kirigami.ScrollablePage {
                     }
                 }
             }
+            AppCheckBox {
+                id: updateChecksToggle
+                Kirigami.FormData.label: " "
+                text: "Tell me when a new version is out"
+                onToggled: backend.setUpdateChecksEnabled(checked)
+            }
+            Controls.Label {
+                id: updateStatusLabel
+                Kirigami.FormData.label: " "
+                visible: text !== ""
+                opacity: 0.7
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                Connections {
+                    target: backend
+                    function onUpdateStatus(message) { updateStatusLabel.text = message }
+                    function onUpdateAvailable(version) {
+                        updateStatusLabel.text = "Version " + version + " is available."
+                    }
+                }
+            }
+
             RowLayout {
                 Kirigami.FormData.label: "Problems:"
                 spacing: Kirigami.Units.largeSpacing
@@ -393,27 +413,6 @@ Kirigami.ScrollablePage {
                 opacity: 0.7
                 font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
-            AppCheckBox {
-                id: updateChecksToggle
-                Kirigami.FormData.label: " "
-                text: "Tell me when a new version is out"
-                onToggled: backend.setUpdateChecksEnabled(checked)
-            }
-            Controls.Label {
-                id: updateStatusLabel
-                Kirigami.FormData.label: " "
-                visible: text !== ""
-                opacity: 0.7
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                Connections {
-                    target: backend
-                    function onUpdateStatus(message) { updateStatusLabel.text = message }
-                    function onUpdateAvailable(version) {
-                        updateStatusLabel.text = "Version " + version + " is available."
-                    }
-                }
-            }
-
             AppCheckBox {
                 id: deleteWatchedToggle
                 Kirigami.FormData.label: "Downloads:"

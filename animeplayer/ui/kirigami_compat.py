@@ -82,6 +82,14 @@ def install(engine) -> None:
     and the bundled Breeze icons. The types above registered themselves when
     this module was imported. Call after QGuiApplication, before loading QML."""
     engine.addImportPath(str(COMPAT_DIR))
+    # The app is dark whatever the system is set to. On a Windows PC in
+    # light mode, text created after a page had loaded (the Schedule's rows)
+    # came out black on the dark background: stock controls fall back to the
+    # system's light palette wherever the app's own doesn't reach. Saying
+    # the app is dark covers that, and the window's palette is also set
+    # explicitly (see ApplicationWindow.qml).
+    from PySide6.QtCore import Qt
+    QGuiApplication.styleHints().setColorScheme(Qt.ColorScheme.Dark)
 
     QIcon.setThemeSearchPaths([str(ICON_DIR), *QIcon.themeSearchPaths()])
     QIcon.setThemeName("breeze-compat")
