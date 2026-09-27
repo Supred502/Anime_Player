@@ -202,6 +202,12 @@ Kirigami.Page {
         win.chromeVisible = !win.appFullscreen
     }
 
+    // Leaving while fullscreen (the Back button, the mouse's back button,
+    // Alt+Left): out of fullscreen first, while the page is still whole.
+    // Left to Component.onDestruction, it was measured not to happen -- the
+    // window stayed fullscreen with no nav bar over the episode list.
+    onBackRequested: (event) => { if (page.isFullscreen) page.toggleFullscreen() }
+
     function toggleFullscreen() {
         page.isFullscreen = !page.isFullscreen
         let win = applicationWindow()

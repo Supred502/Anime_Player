@@ -28,6 +28,10 @@ Item {
     function clear() { stack.clear(QQC2.StackView.Immediate) }
     function get(index) { return stack.get(index, QQC2.StackView.ForceLoad) }
     function goBack() {
+        // As Kirigami does: the page hears about it first, and can refuse.
+        let event = { accepted: false }
+        if (stack.currentItem && stack.currentItem.backRequested) stack.currentItem.backRequested(event)
+        if (event.accepted) return true
         if (stack.depth > 1) { stack.pop(QQC2.StackView.Immediate); return true }
         return false
     }
