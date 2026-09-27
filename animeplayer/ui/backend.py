@@ -165,6 +165,13 @@ def _strip_html(text: str) -> str:
     return _HTML_TAG_RE.sub(" ", text).strip()
 
 
+
+def _token_rejected(message: str) -> bool:
+    """Whether a failed AniList call means the login itself is no good, as
+    opposed to the network or AniList having a bad moment."""
+    text = message.casefold()
+    return "invalid token" in text or "unauthorized" in text or "401" in text
+
 class _Worker(QRunnable):
     def __init__(
         self,
@@ -3091,9 +3098,9 @@ class Backend(QObject):
         self.anilistLoggedOut.emit()
         self._emit_anilist_home_lists()
 
-    def _try_restore_anilist_session(self) -> None:
+    def _try_restore_anilist_session(self, attempt: int = 0) -> None:
         token = secrets.load_token()
-        if not token:
+        if not token or self._anilist_client is not None:
             return
 
         def work() -> tuple[AniListClient, Any]:
@@ -3106,13 +3113,22 @@ class Backend(QObject):
             self._anilist_client = client
             self._anilist_user_id = viewer.id
             self._db.set_setting("anilist_viewer_name", viewer.name)
+            self._db.set_setting("anilist_user_id", str(viewer.id))
             self.anilistLoggedIn.emit(viewer.name)
             self.refreshAnilistList()
 
-        def fail(_message: str) -> None:
-            # Saved token is expired/invalid -- drop it silently rather than
-            # nagging the user with an error for something they didn't just do.
-            secrets.clear_token()
+        def fail(message: str) -> None:
+            if _token_rejected(message):
+                # Expired or revoked: dropped quietly rather than nagging
+                # about something the user didn't just do.
+                secrets.clear_token()
+                return
+            # Anything else -- no network yet (a Deck just woken, its Wi-Fi
+            # still joining), AniList down or busy -- says nothing about the
+            # login. Dropping it here logged the Deck out for good after one
+            # bad start. Kept, and tried again, less often each time.
+            delay = min(300, 10 * 2 ** attempt)
+            QTimer.singleShot(delay * 1000, lambda: self._try_restore_anilist_session(attempt + 1))
 
         self._pool.start(_Worker(work, done, fail))
 

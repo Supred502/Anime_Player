@@ -6,6 +6,12 @@ Manager) when there is one. When there isn't -- Steam Deck's Gaming Mode
 runs no password store, and neither does a bare window manager -- in a file
 only this user can read, beside the app's database. Either way the rest of
 the app just calls save/load/clear.
+
+In the Flatpak, always in the file as well. On the Steam Deck the same app
+runs in Desktop Mode, which has a password store, and in Gaming Mode, which
+doesn't: a login kept only in the store was gone in Gaming Mode, and the
+Deck asked for it again on every start. A store can also take a login
+without complaint and not give it back, so a save is read back to check.
 """
 
 from __future__ import annotations
@@ -56,21 +62,40 @@ def _field(service: str) -> str:
     return _FIELDS.get(service, _TOKEN_KEY)
 
 
+def _always_file() -> bool:
+    return bool(os.environ.get("FLATPAK_ID"))
+
+
 def _set(service: str, value: str) -> None:
+    kept = False
     try:
         keyring.set_password(service, _field(service), value)
-        return
+        kept = keyring.get_password(service, _field(service)) == value
     except Exception:  # noqa: BLE001 -- no store, a locked one, D-Bus trouble: all mean "use the file"
         pass
+    if kept and not _always_file():
+        return
     data = _read_fallback()
     data[service] = value
     _write_fallback(data)
 
 
 def _get(service: str) -> str:
+    # The file first in the Flatpak: it's always there, and asking a store
+    # that isn't running (Gaming Mode) only costs a D-Bus timeout.
+    if _always_file():
+        value = _read_fallback().get(service, "")
+        if value:
+            return value
     try:
         value = keyring.get_password(service, _field(service))
         if value:
+            if _always_file():
+                # Saved by a version that only used the store: copied, so
+                # Gaming Mode finds it from now on.
+                data = _read_fallback()
+                data[service] = value
+                _write_fallback(data)
             return value
     except Exception:  # noqa: BLE001 -- see _set
         pass
