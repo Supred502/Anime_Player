@@ -293,3 +293,19 @@ def move_episode(files: list[str | None], folder: Path) -> list[str | None]:
         moved.append(str(target))
     delete_files(*(f for f in files if f))  # only tidies the emptied old folder now
     return moved
+
+
+def cut_audio(source: str, referer: str, start: float, seconds: float, out: Path) -> bool:
+    """A few seconds of an episode's sound as an mp3 (for Anki cards):
+    from a saved file or straight from the stream. Seeks before opening, so
+    a stream is only read around the clip, not from the start."""
+    command = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, start):.2f}"]
+    if referer:
+        command += ["-headers", _headers(referer)]
+    command += ["-i", source, "-t", f"{seconds:.2f}", "-vn", "-ac", "1", "-b:a", "96k", str(out)]
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=90, creationflags=NO_WINDOW)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and out.exists() and out.stat().st_size > 0
+

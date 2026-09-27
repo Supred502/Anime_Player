@@ -4,6 +4,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
+import QtQuick.Dialogs
 import org.kde.kirigami as Kirigami
 
 Kirigami.ScrollablePage {
@@ -17,6 +18,77 @@ Kirigami.ScrollablePage {
 
     Component.onCompleted: page.words = backend.savedWords()
 
+    // ---- Anki export -----------------------------------------------------
+    property bool exporting: false
+    property string exportStatus: ""
+    Controls.Dialog {
+        id: ankiDialog
+        Kirigami.Theme.inherit: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(parent ? parent.width - Kirigami.Units.gridUnit * 2 : 500, Kirigami.Units.gridUnit * 26)
+        title: "Export to Anki"
+        standardButtons: Controls.Dialog.Cancel
+        ColumnLayout {
+            width: parent.width
+            spacing: Kirigami.Units.largeSpacing
+            Controls.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: page.words.length + (page.words.length === 1 ? " word" : " words")
+                    + " become flashcards: the word and its line on the front; the reading, meaning "
+                    + "and the English on the back. Open the file with Anki on your PC, or AnkiDroid "
+                    + "or AnkiMobile on your phone. Exporting again later updates the same cards."
+            }
+            AppCheckBox {
+                id: ankiAudio
+                checked: true
+                text: "Include the audio of each line"
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                opacity: 0.7
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                text: "Cut from the episode: quick for episodes saved offline, a few seconds per episode otherwise."
+            }
+            AppButton {
+                Layout.alignment: Qt.AlignRight
+                text: "Choose where to save..."
+                accented: true
+                onClicked: { ankiDialog.close(); ankiFile.open() }
+            }
+        }
+    }
+    FileDialog {
+        id: ankiFile
+        title: "Save Anki deck"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["Anki deck (*.apkg)"]
+        defaultSuffix: "apkg"
+        selectedFile: "file:anime-player-words.apkg"
+        onAccepted: {
+            page.exporting = true
+            page.exportStatus = "Making your deck..."
+            backend.exportAnki(selectedFile.toString(), ankiAudio.checked)
+        }
+    }
+    Connections {
+        target: backend
+        function onAnkiProgress(done, total) { page.exportStatus = "Cutting audio: " + done + " of " + total }
+        function onAnkiExported(path, count) {
+            page.exporting = false
+            page.exportStatus = ""
+            showPassiveNotification("Saved " + count + " cards to " + path + " -- open it with Anki", "long")
+        }
+        function onAnkiFailed(message) {
+            page.exporting = false
+            page.exportStatus = ""
+            showPassiveNotification("Couldn't export: " + message, "long")
+        }
+    }
+
     Connections {
         target: backend
         function onSavedWordsChanged() { page.words = backend.savedWords() }
@@ -29,6 +101,13 @@ Kirigami.ScrollablePage {
             checkable: true
             checked: page.tab === 0
             onTriggered: page.tab = 0
+        },
+        Kirigami.Action {
+            text: "Export to Anki"
+            icon.name: "document-export-symbolic"
+            enabled: page.words.length > 0 && !page.exporting
+            tooltip: "Turn your saved words into flashcards for Anki (PC, AnkiDroid, iPhone)"
+            onTriggered: ankiDialog.open()
         },
         Kirigami.Action {
             text: "Kana chart"
@@ -65,6 +144,7 @@ Kirigami.ScrollablePage {
         Controls.Label {
             visible: page.tab === 0 && page.words.length > 0
             text: page.words.length + (page.words.length === 1 ? " word" : " words")
+                  + (page.exportStatus !== "" ? "  ·  " + page.exportStatus : "")
             opacity: 0.7
         }
 

@@ -4068,3 +4068,60 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, done, lambda _msg: None))
 
+    # -- Anki export -------------------------------------------------------------
+
+    ankiProgress = Signal(int, int)    # (clips done, clips wanted)
+    ankiExported = Signal(str, int)    # (file, cards)
+    ankiFailed = Signal(str)
+
+    @Slot(str, bool)
+    def exportAnki(self, file_url: str, include_audio: bool) -> None:
+        """Every saved word as an Anki deck at `file_url` (a path or file://
+        URL). With include_audio, each card gets its line's sound, cut from
+        the saved episode if there is one, from the stream if not."""
+        from PySide6.QtCore import QUrl
+        from animeplayer.learn import anki
+        from animeplayer.player.downloads import cut_audio
+
+        path = Path(QUrl(file_url).toLocalFile() if file_url.startswith("file:") else file_url)
+        if path.suffix.lower() != ".apkg":
+            path = path.with_suffix(".apkg")
+        words = self.savedWords()
+
+        def work() -> tuple[str, int]:
+            clips: dict[int, Path] = {}
+            if include_audio:
+                folder = Path(tempfile.mkdtemp(prefix="animeplayer-anki-"))
+                streams: dict[tuple[str, float], tuple[str, str] | None] = {}
+                wanted = [w for w in words if w.get("slug_id") and w.get("episode")]
+                for done, w in enumerate(wanted, 1):
+                    key = (w["slug_id"], float(w["episode"]))
+                    if key not in streams:
+                        streams[key] = self._episode_media(*key)
+                    media = streams[key]
+                    if media is not None:
+                        clip = folder / f"animeplayer-{w['id']}.mp3"
+                        if cut_audio(media[0], media[1], float(w["position"]) - 0.3, 4.5, clip):
+                            clips[w["id"]] = clip
+                    self.ankiProgress.emit(done, len(wanted))
+            count = anki.build_deck(words, path, clips)
+            return str(path), count
+
+        self._pool.start(_Worker(work, lambda r: self.ankiExported.emit(*r), self.ankiFailed.emit))
+
+    def _episode_media(self, slug_id: str, episode_number: float) -> tuple[str, str] | None:
+        """(file or stream URL, referer) for an episode: the saved copy if
+        there is one, otherwise a fresh stream. None if it can't be had."""
+        for entry in self._db.downloads_for(slug_id):
+            if entry.status == "ready" and entry.episode_number == episode_number and Path(entry.path).exists():
+                return entry.path, ""
+        try:
+            episodes = source.get_episodes(slug_id, self._http)
+            match = next((e for e in episodes if e.number == episode_number), None)
+            if match is None:
+                return None
+            info = source.resolve_source(match.episode_id, self._http)
+            return info.master_url, info.referer
+        except Exception:  # noqa: BLE001 -- no clip for this one, the card still goes in
+            return None
+

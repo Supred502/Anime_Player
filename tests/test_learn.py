@@ -154,3 +154,36 @@ def test_saving_the_same_word_from_the_same_line_twice_is_one_save(tmp_path) -> 
     assert len(db.saved_words()) == 2
     db.delete_saved_word(first)
     assert [w["sentence"] for w in db.saved_words()] == ["放してくれ"]
+
+
+def test_anki_deck_has_the_words_and_their_audio(tmp_path):
+    import sqlite3
+    import zipfile
+    from animeplayer.learn import anki
+
+    clip = tmp_path / "line-1.mp3"
+    clip.write_bytes(b"ID3fake")
+    words = [
+        {"id": 1, "word": "魔法", "reading": "まほう", "meaning": "magic", "pos": "noun",
+         "sentence": "魔法は好きだ", "translation": "I like magic", "title": "Frieren", "episode": 2.0},
+        {"id": 2, "word": "旅", "reading": "たび", "meaning": "journey", "pos": "noun",
+         "sentence": "旅は終わった", "translation": "", "title": "Frieren", "episode": 1.0},
+    ]
+    out = tmp_path / "deck.apkg"
+    assert anki.build_deck(words, out, audio={1: clip}) == 2
+
+    with zipfile.ZipFile(out) as z:
+        names = z.namelist()
+        z.extract("collection.anki2", tmp_path)
+        media_map = z.read("media").decode()
+    assert "line-1.mp3" in media_map
+    fields = [r[0] for r in sqlite3.connect(tmp_path / "collection.anki2").execute("select flds from notes")]
+    first = next(f for f in fields if f.startswith("魔法"))
+    assert "<b>魔法</b>は好きだ" in first and "[sound:line-1.mp3]" in first and "Frieren · episode 2" in first
+
+
+def test_exporting_again_keeps_the_same_notes(tmp_path):
+    from animeplayer.learn import anki
+    import genanki
+    w = {"id": 1, "word": "旅", "reading": "たび", "meaning": "journey", "sentence": "旅は終わった"}
+    assert genanki.guid_for(w["word"], w["sentence"]) == genanki.guid_for("旅", "旅は終わった")

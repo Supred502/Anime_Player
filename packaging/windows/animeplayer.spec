@@ -18,6 +18,7 @@ datas = [
 datas += collect_data_files("unidic_lite")
 datas += collect_data_files("cutlet")
 datas += collect_data_files("fugashi")
+datas += collect_data_files("genanki")
 
 binaries = [
     (str(VENDOR / "libmpv-2.dll"), "."),
@@ -40,6 +41,7 @@ a = Analysis(
         "unidic_lite",
         "fugashi",
         *collect_submodules("cutlet"),
+        *collect_submodules("genanki"),
     ],
     excludes=["tkinter", "pytest", "respx"],
 )
