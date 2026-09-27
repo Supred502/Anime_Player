@@ -32,7 +32,16 @@ from animeplayer.storage.db import DEFAULT_DB_PATH
 # app's own cache of something re-downloadable, and they get deleted
 # automatically once watched. Putting self-deleting files in a folder the user
 # curates themselves is how you eventually delete something they meant to keep.
-DOWNLOAD_DIR = DEFAULT_DB_PATH.parent / "downloads"
+DEFAULT_DOWNLOAD_DIR = DEFAULT_DB_PATH.parent / "downloads"
+# Where new downloads go. Settings can point it elsewhere (a bigger drive);
+# episodes already saved keep the path they were saved to, which the
+# database holds, so changing it never loses anything.
+DOWNLOAD_DIR = DEFAULT_DOWNLOAD_DIR
+
+
+def set_download_dir(path: str | Path | None) -> None:
+    global DOWNLOAD_DIR
+    DOWNLOAD_DIR = Path(path) if path else DEFAULT_DOWNLOAD_DIR
 
 # ffmpeg reports progress as key=value lines on stdout with -progress. This is
 # the one that matters: microseconds of output written so far.
@@ -250,8 +259,37 @@ def delete_files(*paths: str | Path | None) -> None:
             pass
 
 
-def disk_usage() -> int:
-    """Total bytes currently held by downloads, for the Settings page."""
+def disk_usage(paths: list[str] | None = None) -> int:
+    """Total bytes held by downloads, for the Settings page: the files
+    listed (every saved episode, wherever it was saved), or else whatever is
+    in the download folder."""
+    if paths is not None:
+        total = 0
+        for path in paths:
+            try:
+                total += Path(path).stat().st_size
+            except OSError:
+                pass
+        return total
     if not DOWNLOAD_DIR.exists():
         return 0
     return sum(f.stat().st_size for f in DOWNLOAD_DIR.rglob("*") if f.is_file())
+
+
+def move_episode(files: list[str | None], folder: Path) -> list[str | None]:
+    """Moves one saved episode's files (video, subtitles, skip times) into
+    `folder`/<its show's folder name>, returning the new paths in the same
+    order. Copies then deletes, so it works across drives."""
+    moved: list[str | None] = []
+    for path in files:
+        if not path or not Path(path).exists():
+            moved.append(None if not path else str(folder / Path(path).parent.name / Path(path).name))
+            continue
+        source = Path(path)
+        target = folder / source.parent.name / source.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target != source:
+            shutil.move(str(source), str(target))
+        moved.append(str(target))
+    delete_files(*(f for f in files if f))  # only tidies the emptied old folder now
+    return moved

@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
+import QtQuick.Dialogs
 import org.kde.kirigami as Kirigami
 
 Kirigami.ScrollablePage {
@@ -14,6 +15,25 @@ Kirigami.ScrollablePage {
     property string currentAccent: ""
     property bool canDownload: false
     property int downloadBytes: 0
+    property string downloadFolder: ""
+    property string downloadFolderUrl: ""
+    property bool defaultFolder: true
+    property string pendingFolder: ""
+    function refreshFolder() {
+        page.downloadFolder = backend.downloadFolder()
+        page.downloadFolderUrl = backend.downloadFolderUrl()
+        page.defaultFolder = backend.isDefaultDownloadFolder()
+    }
+    // With episodes already saved, ask whether they come along.
+    function chooseFolder(folder) {
+        if (page.downloadBytes > 0) {
+            page.pendingFolder = folder
+            moveDialog.open()
+        } else {
+            backend.setDownloadFolder(folder, false)
+            page.refreshFolder()
+        }
+    }
 
     function refreshDownloadSize() { page.downloadBytes = backend.downloadBytes() }
 
@@ -58,6 +78,46 @@ Kirigami.ScrollablePage {
             }
         ]
     }
+    FolderDialog {
+        id: folderDialog
+        title: "Where should episodes be saved?"
+        currentFolder: page.downloadFolderUrl
+        onAccepted: page.chooseFolder(selectedFolder.toString())
+    }
+    Kirigami.PromptDialog {
+        id: moveDialog
+        title: "Move your saved episodes too?"
+        subtitle: page.formatSize(page.downloadBytes) + " is saved in the current folder. "
+                + "New downloads will go to the new one either way."
+        standardButtons: Kirigami.Dialog.NoButton
+        customFooterActions: [
+            Kirigami.Action {
+                text: "Move them"
+                icon.name: "go-next-symbolic"
+                onTriggered: {
+                    backend.setDownloadFolder(page.pendingFolder, true)
+                    page.refreshFolder()
+                    moveDialog.close()
+                }
+            },
+            Kirigami.Action {
+                text: "Leave them where they are"
+                icon.name: "dialog-cancel-symbolic"
+                onTriggered: {
+                    backend.setDownloadFolder(page.pendingFolder, false)
+                    page.refreshFolder()
+                    moveDialog.close()
+                }
+            }
+        ]
+    }
+    Connections {
+        target: backend
+        function onDownloadFolderMoved(message) {
+            folderStatus.text = message
+            page.refreshDownloadSize()
+        }
+    }
     title: "Settings"
 
     property bool loggedIn: false
@@ -92,6 +152,7 @@ Kirigami.ScrollablePage {
         page.themeAccents = backend.themeAccents()
         page.currentAccent = backend.theme.accentName
         page.canDownload = backend.canDownload()
+        page.refreshFolder()
         page.refreshDownloadSize()
         page.remoteRunning = backend.isRemoteServerRunning()
         page.remoteUrl = backend.getRemoteUrl()
@@ -501,6 +562,47 @@ Kirigami.ScrollablePage {
                 enabled: page.downloadBytes > 0
                 icon.name: "edit-delete-symbolic"
                 onClicked: clearDownloadsPrompt.open()
+            }
+            RowLayout {
+                Kirigami.FormData.label: "Save to:"
+                enabled: page.canDownload
+                spacing: Kirigami.Units.smallSpacing
+                Controls.Label {
+                    Layout.maximumWidth: Kirigami.Units.gridUnit * 16
+                    elide: Text.ElideMiddle
+                    text: page.downloadFolder
+                    Controls.ToolTip.visible: folderHover.hovered && truncated
+                    Controls.ToolTip.text: page.downloadFolder
+                    HoverHandler { id: folderHover }
+                }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    text: "Change..."
+                    icon.name: "document-open-folder-symbolic"
+                    onClicked: folderDialog.open()
+                }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    icon.name: "folder-open-symbolic"
+                    onClicked: backend.openDownloadFolder()
+                    Controls.ToolTip.visible: hovered
+                    Controls.ToolTip.text: "Open the folder"
+                }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    visible: !page.defaultFolder
+                    text: "Default"
+                    onClicked: page.chooseFolder("")
+                }
+            }
+            Controls.Label {
+                id: folderStatus
+                Kirigami.FormData.label: " "
+                visible: text !== ""
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                opacity: 0.7
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
         }
 

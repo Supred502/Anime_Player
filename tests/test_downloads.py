@@ -175,3 +175,32 @@ def test_a_subtitle_is_fetched_with_the_referer(tmp_path) -> None:
     saved = downloads.download_subtitle("https://cdn.example/s.vtt", tmp_path / "s.vtt", client,
                                         referer="https://embed.example/")
     assert saved is not None and saved.read_text() == "WEBVTT"
+
+
+def test_new_downloads_follow_the_chosen_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(downloads, "DOWNLOAD_DIR", downloads.DEFAULT_DOWNLOAD_DIR)
+    downloads.set_download_dir(tmp_path / "big-drive")
+    assert target_path(_request()).is_relative_to(tmp_path / "big-drive")
+    downloads.set_download_dir("")
+    assert downloads.DOWNLOAD_DIR == downloads.DEFAULT_DOWNLOAD_DIR
+
+
+def test_moving_a_saved_episode_takes_its_extras_and_tidies_up(tmp_path):
+    old = tmp_path / "old" / "Frieren-frieren-1"
+    old.mkdir(parents=True)
+    video, subs, skip = old / "episode-1-sub.mp4", old / "episode-1-sub.vtt", old / "episode-1-sub.skip.json"
+    for f in (video, subs, skip):
+        f.write_text(f.name)
+    new_video, new_subs, new_skip = downloads.move_episode([str(video), str(subs), str(skip)], tmp_path / "new")
+    assert Path(new_video).read_text() == "episode-1-sub.mp4"
+    assert Path(new_subs).parent == tmp_path / "new" / "Frieren-frieren-1"
+    assert Path(new_skip).exists()
+    assert not old.exists()  # the emptied show folder is gone
+
+
+def test_disk_usage_counts_listed_files_wherever_they_are(tmp_path):
+    a, b = tmp_path / "a.mp4", tmp_path / "x" / "b.mp4"
+    b.parent.mkdir()
+    a.write_bytes(b"1" * 10)
+    b.write_bytes(b"1" * 5)
+    assert downloads.disk_usage([str(a), str(b), str(tmp_path / "gone.mp4")]) == 15

@@ -41,6 +41,7 @@ from animeplayer.anilist.client import (
     build_authorize_url,
 )
 from animeplayer.aniskip import client as aniskip
+from animeplayer.player import downloads as downloads_module
 from animeplayer.player.downloads import (
     DownloadRequest,
     Downloader,
@@ -299,6 +300,7 @@ class Backend(QObject):
         # slug -> (subbed, dubbed), as last read from the source.
         self._audio_counts: dict[str, tuple[int, int]] = {}
         self._playing = False
+        downloads_module.set_download_dir(self._db.get_setting("download_dir"))
         self._download_pool = QThreadPool()
         self._download_pool.setMaxThreadCount(1)
         # The line of episodes waiting to download, in the order they'll run,
@@ -1523,7 +1525,87 @@ class Backend(QObject):
 
     @Slot(result=int)
     def downloadBytes(self) -> int:
-        return disk_usage()
+        files: list[str] = []
+        for e in self._db.all_downloads():
+            if e.status == "ready":
+                files += [e.path, *([e.subtitle_path] if e.subtitle_path else [])]
+        return disk_usage(files)
+
+    # -- where downloads go --------------------------------------------------
+
+    downloadFolderMoved = Signal(str)  # a message for the Settings page
+
+    @Slot(result=str)
+    def downloadFolder(self) -> str:
+        return str(downloads_module.DOWNLOAD_DIR)
+
+    @Slot(result=str)
+    def downloadFolderUrl(self) -> str:
+        from PySide6.QtCore import QUrl
+        return QUrl.fromLocalFile(str(downloads_module.DOWNLOAD_DIR)).toString()
+
+    @Slot(result=bool)
+    def isDefaultDownloadFolder(self) -> bool:
+        return downloads_module.DOWNLOAD_DIR == downloads_module.DEFAULT_DOWNLOAD_DIR
+
+    @Slot(str, bool)
+    def setDownloadFolder(self, folder: str, move_existing: bool) -> None:
+        """folder: a path or a file:// URL (from the folder picker); "" goes
+        back to the default. With move_existing, episodes already saved move
+        there too, in the background."""
+        if folder.startswith("file:"):
+            from PySide6.QtCore import QUrl
+            folder = QUrl(folder).toLocalFile()
+        target = Path(folder) if folder else downloads_module.DEFAULT_DOWNLOAD_DIR
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            probe = target / ".animeplayer-write-test"
+            probe.write_text("")
+            probe.unlink()
+        except OSError as exc:
+            self.downloadFolderMoved.emit(f"Can't save there: {exc.strerror or exc}")
+            return
+        if folder and target != downloads_module.DEFAULT_DOWNLOAD_DIR:
+            self._db.set_setting("download_dir", str(target))
+        else:
+            self._db.delete_setting("download_dir")
+        downloads_module.set_download_dir(target)
+        if not move_existing:
+            self.downloadFolderMoved.emit(f"New downloads go to {target}")
+            return
+
+        def work() -> tuple[int, int]:
+            moved = failed = 0
+            for entry in self._db.all_downloads():
+                if entry.status != "ready" or Path(entry.path).parent.parent == target:
+                    continue
+                try:
+                    video, subtitle, _skip = downloads_module.move_episode(
+                        [entry.path, entry.subtitle_path, str(skip_times_path(entry.path))], target)
+                    self._db.upsert_download(replace(entry, path=video, subtitle_path=subtitle))
+                    moved += 1
+                except OSError:
+                    failed += 1
+            return moved, failed
+
+        def done(result: tuple[int, int]) -> None:
+            moved, failed = result
+            text = (f"Moved {moved} episode{'s' if moved != 1 else ''} to {target}" if moved
+                    else f"Everything saved is already in {target}")
+            if failed:
+                text += f" ({failed} couldn't be moved and stayed where they were)"
+            self.downloadFolderMoved.emit(text)
+            self.downloadsChanged.emit()
+
+        self.downloadFolderMoved.emit("Moving your saved episodes...")
+        self._pool.start(_Worker(work, done, self.downloadFolderMoved.emit))
+
+    @Slot()
+    def openDownloadFolder(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        downloads_module.DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(downloads_module.DOWNLOAD_DIR)))
 
     @Slot(int, bool, result=bool)
     def isDownloaded(self, episode_id: int, dub: bool) -> bool:
