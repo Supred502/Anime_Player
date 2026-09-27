@@ -11,6 +11,8 @@ Item {
 
     property var initialPage
     readonly property int depth: stack.depth
+    // Always the last page: this row pops on back instead of scrolling.
+    readonly property int currentIndex: stack.depth - 1
     readonly property Item currentItem: stack.currentItem
     readonly property Item lastItem: stack.currentItem
     component ColumnViewSettings: QtObject { property int columnResizeMode: K.ColumnView.SingleColumn }

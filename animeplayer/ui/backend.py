@@ -364,13 +364,21 @@ class Backend(QObject):
         # needed (and then kept for a week).
         QTimer.singleShot(45_000, self._warm_title_catalog)
 
+    # Bumped when the title matcher changes in a way that could have saved
+    # wrong AniList -> source matches: they're all dropped once, and rebuilt
+    # as shows are opened. 2: the word-overlap rule (matcher._word_overlap).
+    _MATCHER_VERSION = "2"
+
     def _drop_mappings_from_a_previous_source(self) -> None:
         """One-time cache reset when the streaming backend changes underneath
-        an existing install -- see Database.clear_anidb_mappings."""
-        if self._db.get_setting("stream_source") == source.BASE_URL:
+        an existing install, or the matcher gets stricter -- see
+        Database.clear_anidb_mappings."""
+        if (self._db.get_setting("stream_source") == source.BASE_URL
+                and self._db.get_setting("matcher_version") == self._MATCHER_VERSION):
             return
         self._db.clear_anidb_mappings()
         self._db.set_setting("stream_source", source.BASE_URL)
+        self._db.set_setting("matcher_version", self._MATCHER_VERSION)
 
     def _remember_titles(self, summaries: list[MediaSummary]) -> None:
         for m in summaries:
@@ -4200,4 +4208,76 @@ class Backend(QObject):
                 self.whatsNew.emit(version, notes)
 
         self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    # -- quick actions from any card or the spotlight ------------------------------
+    # Plan to Watch and "add to a Library tab" without opening the show. A
+    # card may only know its AniList id (the spotlight, AniList rows) or only
+    # its place on the streaming source (search results); each is looked up
+    # from the other as needed, with the same cached matching that opening a
+    # show uses.
+
+    quickActionDone = Signal(str)   # a sentence for the passive notification
+
+    @Slot(int, str)
+    def quickAddToPlanning(self, anilist_id: int, title: str) -> None:
+        if self._anilist_client is None:
+            self.quickActionDone.emit("Log in to AniList (Settings) to use Plan to Watch.")
+            return
+        if anilist_id:
+            self.setListStatus(anilist_id, "PLANNING")
+            self.quickActionDone.emit(f"Added {title} to Planning")
+            return
+        client = self._anilist_public
+
+        def work() -> int:
+            found = client.search_media(title)
+            wanted = title.casefold()
+            media = next((m for m in found if any(t.casefold() == wanted for t in m.titles)),
+                         found[0] if found else None)
+            return media.id if media else 0
+
+        def done(media_id: int) -> None:
+            if not media_id:
+                self.quickActionDone.emit(f"Couldn't find {title} on AniList")
+                return
+            self.setListStatus(media_id, "PLANNING")
+            self.quickActionDone.emit(f"Added {title} to Planning")
+
+        self._pool.start(_Worker(work, done, self.quickActionDone.emit))
+
+    @Slot(int, "QVariantMap")
+    def quickAddToLibrary(self, list_id: int, show: dict[str, Any]) -> None:
+        tab = next((l["name"] for l in self._db.library_lists() if l["id"] == list_id), "your library")
+        title = show.get("title") or ""
+        if show.get("slug_id"):
+            self.addToLibrary(list_id, show)
+            self.quickActionDone.emit(f"Added {title} to {tab}")
+            return
+        anilist_id = int(show.get("anilist_id") or 0)
+
+        def work() -> dict[str, Any] | None:
+            cached = self._db.get_anidb_mapping(anilist_id) if anilist_id else None
+            if cached is not None:
+                return {"slug_id": cached.slug_id, "numeric_id": cached.numeric_id,
+                        "title": cached.title, "poster_url": cached.poster_url}
+            titles = self._titles_for(anilist_id, title) if anilist_id else (title,)
+            result = matcher.find_source_result(titles, lambda q: source.search(q, self._http))
+            if result is None:
+                return None
+            if anilist_id:
+                self._db.save_anidb_mapping(anilist_id, AniDBMapping(
+                    anilist_id=anilist_id, slug_id=result.slug_id, numeric_id=result.numeric_id,
+                    title=result.title, poster_url=result.poster_url, kind=result.kind))
+            return {"slug_id": result.slug_id, "numeric_id": result.numeric_id,
+                    "title": result.title, "poster_url": result.poster_url}
+
+        def done(found: dict[str, Any] | None) -> None:
+            if found is None:
+                self.quickActionDone.emit(f"{title} isn't on the streaming source yet")
+                return
+            self.addToLibrary(list_id, {**found, "anilist_id": anilist_id,
+                                        "poster_url": show.get("poster_url") or found["poster_url"]})
+            self.quickActionDone.emit(f"Added {title} to {tab}")
+
+        self._pool.start(_Worker(work, done, self.quickActionDone.emit))
 

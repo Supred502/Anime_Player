@@ -323,3 +323,12 @@ def test_title_index_accepts_a_single_title_string() -> None:
     index = matcher.TitleIndex([("aot", "Attack on Titan")])
 
     assert index.match("Attack on Titan") == "aot"
+
+
+def test_a_shared_particle_phrase_is_not_a_match():
+    from animeplayer.anilist.matcher import title_score, _MATCH_THRESHOLD
+    # Overgeared isn't on the source; this is what its romaji title turned up.
+    assert title_score(("Temppal: Item no Chikara", "Overgeared"), ("Namida no Chikara",)) < _MATCH_THRESHOLD
+    # ...while the real thing still matches under its other spellings.
+    assert title_score(("Sousou no Frieren", "Frieren: Beyond Journey's End"), ("Frieren: Beyond Journey's End",)) >= _MATCH_THRESHOLD
+    assert title_score(("Naruto: Shippuuden",), ("Naruto: Shippuden",)) >= _MATCH_THRESHOLD

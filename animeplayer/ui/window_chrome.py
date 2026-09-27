@@ -96,3 +96,11 @@ class WindowChrome(QObject):
             return
         for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
             QGuiApplication.sendEvent(window, QKeyEvent(kind, key, Qt.KeyboardModifier.NoModifier))
+
+    @Slot(QObject, int, int)
+    def testKey(self, window: QObject, key: int, modifiers: int) -> None:
+        """A key press through the same path a real keyboard takes,
+        shortcuts included. For the test drivers only."""
+        from PySide6.QtTest import QTest
+        if isinstance(window, QQuickWindow):
+            QTest.keyClick(window, Qt.Key(key), Qt.KeyboardModifier(modifiers))

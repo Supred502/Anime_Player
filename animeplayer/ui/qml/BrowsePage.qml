@@ -1161,6 +1161,8 @@ Kirigami.ScrollablePage {
                 anchors.margins: Kirigami.Units.smallSpacing
                 posterUrl: modelData.poster_url
                 anilistId: modelData.anilist_id || 0
+                slugId: modelData.slug_id || ""
+                numericId: modelData.numeric_id || ""
                 title: modelData.title
                 // A recommendation says why it's here; anything else describes
                 // itself.

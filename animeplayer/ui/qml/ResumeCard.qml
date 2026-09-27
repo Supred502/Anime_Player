@@ -157,9 +157,10 @@ Item {
     // signal; otherwise it's the app's usual "Copy title" menu.
     signal contextMenuRequested()
     property bool customMenu: false
+    property var info: ({})   // passed to the card menu: anilist_id, slug_id...
     TapHandler {
         acceptedButtons: Qt.RightButton
         onTapped: resume.customMenu ? resume.contextMenuRequested()
-                                    : applicationWindow().showCardMenu(resume.title)
+                                    : applicationWindow().showCardMenu(resume.title, resume.info, resume)
     }
 }

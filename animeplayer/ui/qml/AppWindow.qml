@@ -100,17 +100,122 @@ Kirigami.ApplicationWindow {
     // Right-click on any anime card. One menu for the whole app rather than
     // one per card: a shelf page has hundreds of cards.
     property string cardMenuTitle: ""
-    function showCardMenu(title) {
+    // info (optional): { anilist_id, slug_id, numeric_id, poster_url } --
+    // whatever the card knows; the rest is looked up (see quickAddToLibrary).
+    // source (optional): the card, so the menu closes if it scrolls away.
+    property var cardMenuInfo: ({})
+    property Item cardMenuSource: null
+    property point cardMenuSourceAt: Qt.point(0, 0)
+    property var libraryTabs: []
+    function showCardMenu(title, info, source) {
         root.cardMenuTitle = title
+        root.cardMenuInfo = Object.assign({ title: title }, info || {})
+        root.cardMenuSource = source || null
+        if (source) root.cardMenuSourceAt = source.mapToItem(null, 0, 0)
+        root.libraryTabs = backend.libraryLists()
+        root.hidePreview()
         cardMenu.popup()
+    }
+    // A menu open over a card stays with the card: scrolling the card away
+    // closes it, rather than leaving it floating over something else until
+    // the next click.
+    Timer {
+        interval: 80
+        repeat: true
+        running: cardMenu.opened && root.cardMenuSource !== null
+        onTriggered: {
+            let card = root.cardMenuSource
+            let at = card && card.visible ? card.mapToItem(null, 0, 0) : null
+            if (!at || Math.abs(at.x - root.cardMenuSourceAt.x) > 2 || Math.abs(at.y - root.cardMenuSourceAt.y) > 2)
+                cardMenu.close()
+        }
+    }
+    Connections {
+        target: backend
+        function onQuickActionDone(message) { root.showPassiveNotification(message) }
     }
     Controls.Menu {
         id: cardMenu
         Kirigami.Theme.inherit: true
         Controls.MenuItem {
+            text: "Add to Planning"
+            icon.name: "list-add-symbolic"
+            onTriggered: backend.quickAddToPlanning(root.cardMenuInfo.anilist_id || 0, root.cardMenuTitle)
+        }
+        Controls.Menu {
+            id: libraryMenu
+            title: "Add to Library"
+            Kirigami.Theme.inherit: true
+            Instantiator {
+                model: root.libraryTabs
+                delegate: Controls.MenuItem {
+                    required property var modelData
+                    text: modelData.name
+                    onTriggered: backend.quickAddToLibrary(modelData.id, root.cardMenuInfo)
+                }
+                onObjectAdded: (index, object) => libraryMenu.insertItem(index, object)
+                onObjectRemoved: (index, object) => libraryMenu.removeItem(object)
+            }
+            Controls.MenuSeparator { visible: root.libraryTabs.length > 0 }
+            Controls.MenuItem {
+                text: "New tab..."
+                icon.name: "list-add-symbolic"
+                onTriggered: { newTabField.text = ""; newTabDialog.open() }
+            }
+        }
+        Controls.MenuSeparator {}
+        Controls.MenuItem {
             text: "Copy title"
             icon.name: "edit-copy-symbolic"
             onTriggered: root.copyText(root.cardMenuTitle)
+        }
+    }
+    // The same tabs on their own, under a button (the spotlight's Library).
+    function showLibraryMenu(title, info, button) {
+        root.cardMenuTitle = title
+        root.cardMenuInfo = Object.assign({ title: title }, info || {})
+        root.libraryTabs = backend.libraryLists()
+        root.hidePreview()
+        libraryOnlyMenu.popup(button, 0, button.height)
+    }
+    Controls.Menu {
+        id: libraryOnlyMenu
+        Kirigami.Theme.inherit: true
+        Instantiator {
+            model: root.libraryTabs
+            delegate: Controls.MenuItem {
+                required property var modelData
+                text: modelData.name
+                onTriggered: backend.quickAddToLibrary(modelData.id, root.cardMenuInfo)
+            }
+            onObjectAdded: (index, object) => libraryOnlyMenu.insertItem(index, object)
+            onObjectRemoved: (index, object) => libraryOnlyMenu.removeItem(object)
+        }
+        Controls.MenuSeparator { visible: root.libraryTabs.length > 0 }
+        Controls.MenuItem {
+            text: "New tab..."
+            icon.name: "list-add-symbolic"
+            onTriggered: { newTabField.text = ""; newTabDialog.open() }
+        }
+    }
+    Controls.Dialog {
+        id: newTabDialog
+        Kirigami.Theme.inherit: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: "New library tab"
+        standardButtons: Controls.Dialog.Ok | Controls.Dialog.Cancel
+        onOpened: newTabField.forceActiveFocus()
+        onAccepted: {
+            let id = backend.createLibraryList(newTabField.text)
+            if (id) backend.quickAddToLibrary(id, root.cardMenuInfo)
+        }
+        Controls.TextField {
+            id: newTabField
+            implicitWidth: Kirigami.Units.gridUnit * 18
+            placeholderText: "e.g. Next 30 days"
+            onAccepted: newTabDialog.accept()
         }
     }
 
@@ -389,7 +494,8 @@ Kirigami.ApplicationWindow {
     property string previewKey: ""
     property bool previewsOn: true
     function showPreview(card, poster) {
-        if (!root.previewsOn || !card.title) return
+        // Not over an open menu.
+        if (!root.previewsOn || !card.title || cardMenu.opened || libraryOnlyMenu.opened) return
         root.previewCard = card
         root.previewKey = card.anilistId > 0 ? "id:" + card.anilistId : "title:" + card.title
         root.previewInfo = { title: card.title }
@@ -516,6 +622,23 @@ Kirigami.ApplicationWindow {
     // Game controllers: see GamepadNav.qml and gamepad.py.
     GamepadNav { id: gamepadNav; window: root }
     readonly property alias gamepadNav: gamepadNav
+
+    // Going back really closes the page. Kirigami's "back" (Alt+Left, the
+    // mouse's back button, its toolbar arrow -- and our own Back buttons,
+    // which call it) only scrolls the page row one step left: the player
+    // stayed loaded out of sight -- measured: depth 2 after going back --
+    // still holding its stream, still saving progress and showing on
+    // Discord. Whenever the current page moves left, whatever is to the
+    // right of it is removed (and destroyed).
+    Connections {
+        target: root.pageStack
+        function onCurrentIndexChanged() { Qt.callLater(root.trimForwardPages) }
+    }
+    function trimForwardPages() {
+        let stack = root.pageStack
+        if (stack.currentIndex === undefined) return
+        while (stack.depth - 1 > stack.currentIndex) stack.pop()
+    }
 
     function toggleMaximised() {
         if (root.maximised) root.showNormal()

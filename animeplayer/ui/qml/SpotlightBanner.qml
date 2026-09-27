@@ -226,12 +226,30 @@ Item {
             maxLines: 3
         }
 
-        AppButton {
+        RowLayout {
             Layout.topMargin: Kirigami.Units.smallSpacing
-            text: "Watch Now"
-            icon.name: "media-playback-start-symbolic"
-            accented: true
-            onClicked: hero.watchClicked(hero.index)
+            spacing: Kirigami.Units.smallSpacing
+            AppButton {
+                text: "Watch Now"
+                icon.name: "media-playback-start-symbolic"
+                accented: true
+                onClicked: hero.watchClicked(hero.index)
+            }
+            AppButton {
+                text: "Plan to Watch"
+                icon.name: "list-add-symbolic"
+                onClicked: if (hero.current)
+                    backend.quickAddToPlanning(hero.current.anilist_id || 0, hero.current.title)
+            }
+            AppButton {
+                id: libraryButton
+                text: "Library"
+                icon.name: "view-media-playlist-symbolic"
+                onClicked: if (hero.current) applicationWindow().showLibraryMenu(hero.current.title, {
+                    anilist_id: hero.current.anilist_id || 0, slug_id: hero.current.slug_id || "",
+                    numeric_id: hero.current.numeric_id || "",
+                    poster_url: hero.current.poster_url || hero.current.banner_url || "" }, libraryButton)
+            }
         }
     }
 

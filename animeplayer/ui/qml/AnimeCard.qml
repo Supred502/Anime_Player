@@ -20,6 +20,10 @@ Item {
     property string posterUrl: ""
     // For the hover preview's lookup; without it the title is searched.
     property int anilistId: 0
+    // Where the card's show is on the streaming source, if the card knows:
+    // lets its right-click menu add it to a Library tab without a lookup.
+    property string slugId: ""
+    property string numericId: ""
     property string title: ""
     property string subtitle: ""
     property string badgeText: ""        // top-right pill, e.g. an AniList status
@@ -268,7 +272,9 @@ Item {
             }
             TapHandler {
                 acceptedButtons: Qt.RightButton
-                onTapped: applicationWindow().showCardMenu(card.title)
+                onTapped: applicationWindow().showCardMenu(card.title,
+                    { anilist_id: card.anilistId, slug_id: card.slugId, numeric_id: card.numericId,
+                      poster_url: card.posterUrl }, card)
             }
         }
 

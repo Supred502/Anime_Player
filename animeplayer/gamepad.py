@@ -23,7 +23,7 @@ from __future__ import annotations
 import os
 import time
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 try:  # pragma: no cover - depends on the platform's SDL
@@ -90,9 +90,15 @@ class Gamepad(QObject):
         return bool(self._controllers)
 
     def _emit(self, name: str) -> None:
+        # Not while another app is in front. Compared with the enum itself:
+        # against the number 4 it never matched in PySide6 6.11 (its enums
+        # aren't ints), so every action was dropped as "in the background"
+        # -- the controller did nothing in the app, while the test drivers,
+        # which skip this check, worked.
         app = QGuiApplication.instance()
-        if app is not None and app.applicationState() != 4 and not os.environ.get("ANIMEPLAYER_DB_PATH"):
-            return  # Qt.ApplicationActive is 4: not while another app is in front
+        if (app is not None and app.applicationState() != Qt.ApplicationState.ApplicationActive
+                and not os.environ.get("ANIMEPLAYER_DB_PATH")):
+            return
         self.action.emit(name)
 
     def _press(self, name: str) -> None:

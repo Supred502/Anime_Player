@@ -130,6 +130,8 @@ ColumnLayout {
                 height: shelf.height - Kirigami.Units.smallSpacing
                 posterUrl: model.poster_url || ""
                 anilistId: model.anilist_id || 0
+                slugId: model.slug_id || ""
+                numericId: model.numeric_id || ""
                 title: model.title
                 subtitle: row.subtitleFor(model)
                 badgeText: row.badgeFor(model)

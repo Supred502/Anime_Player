@@ -136,6 +136,29 @@ def _pair_score(left: str, right: str) -> float:
     return ratio
 
 
+# Below this, spelling similarity alone doesn't decide: the titles must
+# also share most of their meaningful words. "Temppal: Item no Chikara"
+# (Overgeared) and "Namida no Chikara" score 0.63 on letters -- mostly the
+# shared " no chikara" -- and share one word of two. Found live: the
+# spotlight's Overgeared opened as Namida no Chikara.
+_CONFIDENT = 0.8
+_MIN_WORD_OVERLAP = 0.6
+_FILLER_WORDS = frozenset({"no", "wa", "ga", "ni", "wo", "to", "de", "na", "the", "a", "an", "of",
+                           "and", "in", "season", "part", "movie", "tv", "wo", "e"})
+
+
+def _content_words(title: str) -> set[str]:
+    return {w for w in _normalize(title).split() if w not in _FILLER_WORDS and len(w) > 1}
+
+
+def _word_overlap(left: str, right: str) -> float:
+    a, b = _content_words(left), _content_words(right)
+    if not a or not b:
+        return 1.0
+    shorter = a if len(a) <= len(b) else b
+    return len(a & b) / len(shorter)
+
+
 def _as_titles(titles: str | Sequence[str]) -> Sequence[str]:
     """Guards the one mistake this module's API invites: a plain string IS a
     Sequence[str] in Python, so passing a single title where a list of them is
@@ -163,6 +186,8 @@ def title_score(left: str | Sequence[str], right: str | Sequence[str]) -> float:
         season_a, part_a = _season_of(a), _part_of(a)
         for b in right:
             score = _pair_score(a, b)
+            if score < _CONFIDENT and _word_overlap(a, b) < _MIN_WORD_OVERLAP:
+                score = min(score, _MATCH_THRESHOLD - 0.1)
             if (season_a or 1) != (_season_of(b) or 1):
                 score -= _SEASON_PENALTY
             part_b = _part_of(b)

@@ -65,12 +65,21 @@ Item {
         for (let i = popups.length - 1; i >= 0; i--) {
             let p = popups[i]
             if (p.visible && p.width > 0 && String(p).indexOf("PopupItem") >= 0
-                    && nav.takesController(p)) return p
+                    && nav.takesController(p) && nav.hasSomethingToPress(p)) return p
         }
         return nav.window.contentItem.parent
     }
     // The update card sits in a corner without blocking anything; it
     // mustn't trap the highlight either. It's reached like anything else.
+    // A tooltip is a popup too. Resting the highlight on an episode showed
+    // its tooltip, which then counted as an open dialog with nothing in it
+    // to move to -- and the controller was stuck. Only popups with
+    // something to press take over.
+    function hasSomethingToPress(item) {
+        let found = []
+        nav.collect(item, found, 0)
+        return found.length > 0
+    }
     function takesController(popupItem) {
         for (let i = 0; i < popupItem.children.length; i++)
             if (popupItem.children[i].objectName === "updateCard") return false

@@ -76,3 +76,27 @@ def test_holding_a_direction_repeats(pad, monkeypatch):
     count = len(got)
     g.poll()
     assert got[0] == "down" and count >= 3 and len(got) == count
+
+
+def test_actions_reach_the_app_when_it_is_in_front(monkeypatch):
+    """Without the test drivers' bypass. The check used to compare the
+    app's state with the number 4, which never matched PySide6's enum, so
+    the real app dropped every action."""
+    from PySide6.QtCore import Qt
+    monkeypatch.delenv("ANIMEPLAYER_DB_PATH", raising=False)
+
+    class FakeApp:
+        state = Qt.ApplicationState.ApplicationActive
+        def applicationState(self):
+            return self.state
+
+    fake = FakeApp()
+    monkeypatch.setattr(gp.QGuiApplication, "instance", staticmethod(lambda: fake))
+    g = gp.Gamepad.__new__(gp.Gamepad)
+    gp.QObject.__init__(g)
+    got = []
+    g.action.connect(got.append)
+    g._emit("accept")
+    fake.state = Qt.ApplicationState.ApplicationInactive
+    g._emit("back")
+    assert got == ["accept"]

@@ -248,6 +248,7 @@ Kirigami.ScrollablePage {
                     delegate: ResumeCard {
                         required property var modelData
                         required property int index
+                        info: modelData
 
                         width: Math.min(Kirigami.Units.gridUnit * 22,
                                         Math.max(Kirigami.Units.gridUnit * 15,
