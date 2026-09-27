@@ -29,8 +29,9 @@ import httpx
 import qrcode
 from PySide6.QtCore import Property, QCoreApplication, QObject, QProcess, QRunnable, QThreadPool, QTimer, Signal, Slot
 
-from animeplayer import platform_setup, updates
+from animeplayer import discord_presence, platform_setup, updates
 from animeplayer.alerts import find_new_episodes
+from animeplayer.version import DISCORD_CLIENT_ID
 from animeplayer.anilist import matcher
 from animeplayer.anilist.client import (
     AiringState,
@@ -253,6 +254,8 @@ class Backend(QObject):
         self._current_stream_info: source.StreamInfo | None = None
         self._progressReady.connect(self._save_progress_on_gui_thread)
         self._idle_inhibitor = IdleInhibitor()
+        self._discord = discord_presence.DiscordPresence(DISCORD_CLIENT_ID)
+        self._discord.set_enabled(self.getDiscordEnabled())
         self._drop_mappings_from_a_previous_source()
 
         self._anilist_client: AniListClient | None = None
@@ -2533,6 +2536,11 @@ class Backend(QObject):
         self._playback_state["position"] = position
         self._playback_state["duration"] = duration
         self._playback_state["paused"] = paused
+        anime = self._current_anime or {}
+        if anime.get("title") and duration > 0:
+            self._discord.update(discord_presence.activity_for(
+                anime["title"], float(anime.get("current_episode_number") or 0), position, duration,
+                paused, anime.get("poster_url") or ""))
 
     def _remote_state(self) -> dict[str, Any]:
         anime = self._current_anime
@@ -2592,6 +2600,7 @@ class Backend(QObject):
     @Slot()
     def playerClosed(self) -> None:
         self._now_playing = None
+        self._discord.update(None)
 
     def _phone_stream(self) -> dict[str, Any] | None:
         playing = self._now_playing
@@ -3550,4 +3559,19 @@ class Backend(QObject):
             } for i in items]
 
         self._pool.start(_Worker(work, self.scheduleReady.emit, self.scheduleFailed.emit))
+
+    # -- Discord status ------------------------------------------------------
+
+    @Slot(result=bool)
+    def discordAvailable(self) -> bool:
+        return bool(DISCORD_CLIENT_ID)
+
+    @Slot(result=bool)
+    def getDiscordEnabled(self) -> bool:
+        return (self._db.get_setting("discord_status") or "true") == "true"
+
+    @Slot(bool)
+    def setDiscordEnabled(self, value: bool) -> None:
+        self._db.set_setting("discord_status", "true" if value else "false")
+        self._discord.set_enabled(value)
 

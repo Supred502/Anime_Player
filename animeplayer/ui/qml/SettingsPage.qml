@@ -80,6 +80,7 @@ Kirigami.ScrollablePage {
         deleteWatchedToggle.checked = backend.getDeleteAfterWatchingEnabled()
         newEpisodeToggle.checked = backend.getNewEpisodeAlertsEnabled()
         updateChecksToggle.checked = backend.getUpdateChecksEnabled()
+        discordToggle.checked = backend.getDiscordEnabled()
         dubEnglishToggle.checked = backend.getDubEnglishEnabled()
         page.hasJimakuKey = backend.hasJimakuKey()
         page.dictionaryState = backend.dictionaryState()
@@ -317,6 +318,24 @@ Kirigami.ScrollablePage {
                 Kirigami.FormData.label: " "
                 text: "English subtitles on dubs"
                 onToggled: backend.setDubEnglishEnabled(checked)
+            }
+
+            AppCheckBox {
+                id: discordToggle
+                Kirigami.FormData.label: "Discord:"
+                enabled: backend.discordAvailable()
+                text: "Show what I'm watching on my Discord profile"
+                onToggled: backend.setDiscordEnabled(checked)
+            }
+            Controls.Label {
+                Kirigami.FormData.label: " "
+                text: backend.discordAvailable()
+                    ? "Title, episode and time left, while an episode plays and Discord is open on this PC."
+                    : "Not set up in this build yet."
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                opacity: 0.7
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
 
             AppCheckBox {
