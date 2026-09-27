@@ -373,11 +373,12 @@ Kirigami.ScrollablePage {
                     // show in it drew that one card the width of the page.
                     Layout.preferredWidth: page.cellWidth
                     Layout.maximumWidth: page.cellWidth
-                    Layout.preferredHeight: card.implicitHeight
+                    Layout.preferredHeight: card.heightForWidth(page.cellWidth)
 
                     AnimeCard {
                         id: card
                         width: parent.width
+                        height: parent.height
                         posterUrl: cell.modelData.poster_url || ""
                         title: cell.modelData.title
                         subtitle: page.tab === "downloads"

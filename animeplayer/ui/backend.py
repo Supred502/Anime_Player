@@ -3864,3 +3864,39 @@ class Backend(QObject):
             "rank": rank,
             "reason": reason,
         }
+
+    # -- the Seasonal page -----------------------------------------------------
+
+    seasonReady = Signal(str, int, list)   # (season, year, cards)
+    seasonFailed = Signal(str)
+
+    @Slot(result="QVariantMap")
+    def currentSeason(self) -> dict[str, Any]:
+        season, year = self._current_season()
+        return {"season": season, "year": year}
+
+    @Slot(str, int)
+    def loadSeason(self, season: str, year: int) -> None:
+        statuses = {e.anilist_id: e.status for status in ("CURRENT", "PLANNING", "COMPLETED", "PAUSED", "DROPPED")
+                    for e in self._db.get_anilist_by_status(status)}
+
+        def work() -> list[dict[str, Any]]:
+            entries = self._anilist_public.get_season(season, year)
+            self._remember_titles([e.media for e in entries])
+            return [{
+                "anilist_id": e.media.id,
+                "title": e.media.title,
+                "poster_url": e.media.cover_url or "",
+                "format": e.media.format or "",
+                "genres": list(e.media.genres[:3]),
+                "score": e.media.average_score or 0,
+                "episodes": e.media.episodes or 0,
+                "status": e.status,
+                "next_episode": e.next_episode or 0,
+                "next_airing_at": e.next_airing_at or 0,
+                "list_status": statuses.get(e.media.id, ""),
+            } for e in entries]
+
+        self._pool.start(_Worker(work, lambda cards: self.seasonReady.emit(season, year, cards),
+                                 self.seasonFailed.emit))
+

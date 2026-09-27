@@ -61,6 +61,7 @@ AppWindow {
         ["1-home", function() { backend.search("Frieren") }],
         ["1b-continue", function() { root.goContinue() }],
         ["2-browse", function() { root.goBrowse() }],
+        ["2b-seasonal", function() { root.goTo("seasonal", "SeasonalPage.qml") }],
         ["3-settings", function() { root.goSettings() }],
         ["4-detail", function() { if (root.found) root.goTo("browse", "DetailPage.qml", { anime: root.found }) }],
         ["5-stats", function() { root.goTo("stats", "StatsPage.qml") }],

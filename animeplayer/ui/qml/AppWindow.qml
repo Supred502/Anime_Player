@@ -498,6 +498,13 @@ Kirigami.ApplicationWindow {
             }
 
             NavButton {
+                text: "Seasonal"
+                iconName: "view-calendar-month-symbolic"
+                current: root.section === "seasonal"
+                onClicked: root.goTo("seasonal", "SeasonalPage.qml")
+            }
+
+            NavButton {
                 text: "Continue"
                 iconName: "media-playback-start-symbolic"
                 current: root.section === "continue"

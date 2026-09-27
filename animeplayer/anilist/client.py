@@ -886,6 +886,28 @@ class AniListClient:
             ))
         return out
 
+    def get_season(self, season: str, year: int, max_pages: int = 4) -> list["SeasonEntry"]:
+        """Everything in one anime season (WINTER/SPRING/SUMMER/FALL), most
+        popular first. A season is ~100-200 entries once shorts and ONAs are
+        counted; four pages of 50 covers it."""
+        out: list[SeasonEntry] = []
+        for page in range(1, max_pages + 1):
+            data = self._request(_SEASON_QUERY, {"season": season, "year": year, "page": page})
+            block = data.get("Page") or {}
+            for media in block.get("media") or []:
+                if media.get("isAdult"):
+                    continue
+                upcoming = media.get("nextAiringEpisode") or {}
+                out.append(SeasonEntry(
+                    media=_media_summary_of(media),
+                    status=media.get("status") or "",
+                    next_episode=upcoming.get("episode"),
+                    next_airing_at=upcoming.get("airingAt"),
+                ))
+            if not (block.get("pageInfo") or {}).get("hasNextPage"):
+                break
+        return out
+
     def get_media_extras(self, media_id: int) -> "MediaExtras":
         """Everything the detail page shows beside the episode list: related
         entries, what the community recommends next, and reviews."""
@@ -1201,6 +1223,29 @@ class AiringState:
     latest_aired: int           # 0 when nothing has aired, or it can't be told
     next_episode: int | None
     next_airing_at: int | None  # unix seconds
+
+
+@dataclass(frozen=True, slots=True)
+class SeasonEntry:
+    media: MediaSummary
+    status: str                 # RELEASING, FINISHED, NOT_YET_RELEASED...
+    next_episode: int | None
+    next_airing_at: int | None  # unix seconds
+
+
+_SEASON_QUERY = f"""
+query ($season: MediaSeason, $year: Int, $page: Int) {{
+  Page(page: $page, perPage: 50) {{
+    pageInfo {{ hasNextPage }}
+    media(type: ANIME, season: $season, seasonYear: $year, sort: POPULARITY_DESC, isAdult: false) {{
+      {_MEDIA_FIELDS}
+      isAdult
+      status
+      nextAiringEpisode {{ episode airingAt }}
+    }}
+  }}
+}}
+"""
 
 
 @dataclass(frozen=True, slots=True)
