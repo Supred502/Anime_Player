@@ -514,7 +514,8 @@ Kirigami.ApplicationWindow {
     }
 
     // Game controllers: see GamepadNav.qml and gamepad.py.
-    GamepadNav { window: root }
+    GamepadNav { id: gamepadNav; window: root }
+    readonly property alias gamepadNav: gamepadNav
 
     function toggleMaximised() {
         if (root.maximised) root.showNormal()

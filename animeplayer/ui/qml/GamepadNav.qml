@@ -17,6 +17,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
+import QtQuick.Templates as T
 import org.kde.kirigami as Kirigami
 
 Item {
@@ -27,7 +28,6 @@ Item {
     property bool active: false
     property Item target: null
     property bool playerMenu: false
-    property real quietUntil: 0     // our own synthetic pointer moves don't count as the mouse
 
     readonly property Item overlay: Controls.Overlay.overlay
     readonly property var page: nav.window.pageStack.currentItem
@@ -35,9 +35,12 @@ Item {
 
     // ---- What can be pressed ------------------------------------------------
 
+    // T.*, not Controls.*: a style's own Button (Fusion's, Breeze's) derives
+    // from the template type, not from the Controls one, and failed the
+    // check -- so no plain button could be reached, only cards.
     function isClickable(item) {
-        if (item instanceof Controls.AbstractButton || item instanceof Controls.TextField
-                || item instanceof Controls.ComboBox || item instanceof Controls.Slider)
+        if (item instanceof T.AbstractButton || item instanceof T.TextField
+                || item instanceof T.ComboBox || item instanceof T.Slider)
             return true
         let data = item.data
         for (let i = 0; i < data.length; i++) {
@@ -150,8 +153,8 @@ Item {
     function pointAt(item) {
         if (!nav.alive(item)) return
         let r = nav.rectOf(item)
-        nav.quietUntil = Date.now() + 200
-        windowChrome.hover(nav.window, r.x + r.width / 2, r.y + r.height / 2)
+        nav.lastPointer = Qt.point(r.x + r.width / 2, r.y + r.height / 2)
+        windowChrome.hover(nav.window, nav.lastPointer.x, nav.lastPointer.y)
     }
 
     function scrollIntoView(item) {
@@ -176,11 +179,11 @@ Item {
 
     function press(right) {
         if (!nav.alive(nav.target)) { nav.move("down"); return }
-        if (!right && (nav.target instanceof Controls.TextField)) { keyboard.openFor(nav.target); return }
-        if (nav.target instanceof Controls.Slider) return
+        if (!right && (nav.target instanceof T.TextField)) { keyboard.openFor(nav.target); return }
+        if (nav.target instanceof T.Slider) return
         let r = nav.rectOf(nav.target)
-        nav.quietUntil = Date.now() + 300
-        windowChrome.click(nav.window, r.x + r.width / 2, r.y + r.height / 2, !!right)
+        nav.lastPointer = Qt.point(r.x + r.width / 2, r.y + r.height / 2)
+        windowChrome.click(nav.window, nav.lastPointer.x, nav.lastPointer.y, !!right)
         // A click that opened or closed something moves the scene; the
         // highlight re-finds its footing on the next move.
         Qt.callLater(function() { if (!nav.alive(nav.target)) nav.target = null })
@@ -215,7 +218,6 @@ Item {
     }
 
     function handle(action) {
-        if (Date.now() < nav.quietUntil && action === "mouse") return
         nav.active = true
         if (keyboard.opened && keyboard.handle(action)) return
         if (nav.onPlayer && !nav.playerMenu) {
@@ -226,7 +228,7 @@ Item {
         switch (action) {
         case "left": case "right":
             // A highlighted slider moves rather than handing the highlight on.
-            if (nav.alive(nav.target) && nav.target instanceof Controls.Slider) {
+            if (nav.alive(nav.target) && nav.target instanceof T.Slider) {
                 if (action === "left") nav.target.decrease(); else nav.target.increase()
                 nav.target.moved()
                 break
@@ -251,9 +253,11 @@ Item {
         case "view": if (nav.onPlayer) { nav.playerMenu = false; nav.target = null } break
         }
     }
+    function keyboardText() { return keyboard.field ? keyboard.field.text : "" }
+    function keyboardOpen() { return keyboard.opened }
     function findField(item) {
         if (!item) return null
-        if (item instanceof Controls.TextField && item.visible) return item
+        if (item instanceof T.TextField && item.visible) return item
         let parts = item.children
         for (let i = 0; i < parts.length; i++) { let f = nav.findField(parts[i]); if (f) return f }
         if (item.header) return nav.findField(item.header)
@@ -272,10 +276,16 @@ Item {
         target: nav.window.pageStack
         function onCurrentItemChanged() { nav.target = null; nav.playerMenu = false }
     }
-    // The real mouse takes over again.
+    // The real mouse takes over again -- told apart from the pointer moves
+    // made here by where the pointer is: the scene re-sends hover whenever
+    // things move under a still pointer, so timing alone got it wrong.
+    property point lastPointer: Qt.point(-1, -1)
     HoverHandler {
         parent: nav.window.contentItem.parent
-        onPointChanged: if (Date.now() > nav.quietUntil) nav.active = false
+        onPointChanged: {
+            let p = point.scenePosition
+            if (Math.abs(p.x - nav.lastPointer.x) > 3 || Math.abs(p.y - nav.lastPointer.y) > 3) nav.active = false
+        }
     }
 
     // ---- The highlight ------------------------------------------------------
@@ -287,7 +297,8 @@ Item {
         color: "transparent"
         radius: Kirigami.Units.smallSpacing * 2
         border.width: 3
-        border.color: Kirigami.Theme.highlightColor
+        // The app's accent: the overlay sits outside every themed page.
+        border.color: backend && backend.theme.accent ? backend.theme.accent : Kirigami.Theme.highlightColor
         // Follows its target through scrolling and layout changes.
         Timer {
             interval: 16; repeat: true
