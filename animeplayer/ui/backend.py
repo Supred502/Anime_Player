@@ -3519,3 +3519,35 @@ class Backend(QObject):
         return [{"anilist_id": e.anilist_id, "title": e.title, "poster_url": e.cover_url or ""}
                 for e in self._db.get_anilist_by_status("PLANNING")]
 
+    # -- airing schedule -----------------------------------------------------
+
+    scheduleReady = Signal(list)
+    scheduleFailed = Signal(str)
+
+    @Slot()
+    def loadSchedule(self) -> None:
+        """The next seven days of airing episodes, from AniList. Shows being
+        watched (Continue Watching) or on the Planning list are marked, so
+        the page can show just those."""
+        followed = set(self._followed_shows())
+        planning = {e.anilist_id for e in self._db.get_anilist_by_status("PLANNING")}
+        watching = {e.anilist_id for e in self._db.get_anilist_by_status("CURRENT")}
+
+        def work() -> list[dict[str, Any]]:
+            now = int(time.time())
+            # From the start of today, so this morning's episodes still show.
+            start = int(time.mktime(time.localtime(now)[:3] + (0, 0, 0, 0, 0, -1)))
+            items = self._anilist_public.get_schedule(start, start + 7 * 86400)
+            self._remember_titles([i.media for i in items])
+            return [{
+                "anilist_id": i.media.id,
+                "title": i.media.title,
+                "poster_url": i.media.cover_url or "",
+                "episode": i.episode,
+                "airing_at": i.airing_at,
+                "following": i.media.id in followed or i.media.id in watching,
+                "planning": i.media.id in planning,
+            } for i in items]
+
+        self._pool.start(_Worker(work, self.scheduleReady.emit, self.scheduleFailed.emit))
+

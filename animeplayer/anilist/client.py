@@ -835,6 +835,23 @@ class AniListClient:
             ))
         return out
 
+    def get_schedule(self, start: int, end: int, max_pages: int = 6) -> list["ScheduledEpisode"]:
+        """Every episode airing between two unix times (a week is ~100-200),
+        soonest first. Adult entries are left out."""
+        out: list[ScheduledEpisode] = []
+        for page in range(1, max_pages + 1):
+            data = self._request(_SCHEDULE_QUERY, {"start": start, "end": end, "page": page}, cache=False)
+            block = data.get("Page") or {}
+            for item in block.get("airingSchedules") or []:
+                media = item.get("media") or {}
+                if not media.get("id") or media.get("isAdult"):
+                    continue
+                out.append(ScheduledEpisode(media=_media_summary_of(media), episode=int(item["episode"]),
+                                            airing_at=int(item["airingAt"])))
+            if not (block.get("pageInfo") or {}).get("hasNextPage"):
+                break
+        return out
+
     def get_media_extras(self, media_id: int) -> "MediaExtras":
         """Everything the detail page shows beside the episode list: related
         entries, what the community recommends next, and reviews."""
@@ -1134,6 +1151,30 @@ class AiringState:
     latest_aired: int           # 0 when nothing has aired, or it can't be told
     next_episode: int | None
     next_airing_at: int | None  # unix seconds
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledEpisode:
+    media: MediaSummary
+    episode: int
+    airing_at: int  # unix seconds
+
+
+_SCHEDULE_QUERY = f"""
+query ($start: Int, $end: Int, $page: Int) {{
+  Page(page: $page, perPage: 50) {{
+    pageInfo {{ hasNextPage }}
+    airingSchedules(airingAt_greater: $start, airingAt_lesser: $end, sort: TIME) {{
+      episode
+      airingAt
+      media {{
+        {_MEDIA_FIELDS}
+        isAdult
+      }}
+    }}
+  }}
+}}
+"""
 
 
 _AIRING_QUERY = f"""

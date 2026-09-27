@@ -64,6 +64,8 @@ AppWindow {
         ["4-detail", function() { if (root.found) root.goTo("browse", "DetailPage.qml", { anime: root.found }) }],
         ["5-stats", function() { root.goTo("stats", "StatsPage.qml") }],
         ["6-words", function() { root.goTo("words", "WordsPage.qml") }],
+        ["6b-library", function() { root.goTo("library", "LibraryPage.qml") }],
+        ["6c-schedule", function() { root.goTo("schedule", "SchedulePage.qml") }],
         ["7-update", function() {
             root.goHome()
             backend.updateAvailable("9.9.9", "- A test update\n- With notes", "installer")

@@ -745,3 +745,21 @@ def test_a_rejected_request_says_why() -> None:
     }))
     with pytest.raises(AniListError, match="progress must be an integer"):
         AniListClient(httpx.Client(), "t").set_list_status(21, "PLANNING")
+
+
+@respx.mock
+def test_get_schedule_pages_through_the_week_and_skips_adult() -> None:
+    def page(n, items, more):
+        return {"data": {"Page": {"pageInfo": {"hasNextPage": more}, "airingSchedules": items}}}
+
+    adult = dict(_media(3, "Adult"), isAdult=True)
+    responses = iter([
+        httpx.Response(200, json=page(1, [{"episode": 5, "airingAt": 100, "media": dict(_media(1, "A"), isAdult=False)},
+                                          {"episode": 1, "airingAt": 110, "media": adult}], True)),
+        httpx.Response(200, json=page(2, [{"episode": 12, "airingAt": 200, "media": dict(_media(2, "B"), isAdult=False)}], False)),
+    ])
+    route = respx.post("https://graphql.anilist.co").mock(side_effect=lambda request: next(responses))
+    with httpx.Client() as http_client:
+        schedule = AniListClient(http_client).get_schedule(0, 1000)
+    assert [(s.media.id, s.episode, s.airing_at) for s in schedule] == [(1, 5, 100), (2, 12, 200)]
+    assert route.call_count == 2

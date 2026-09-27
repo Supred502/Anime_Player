@@ -475,6 +475,13 @@ Kirigami.ApplicationWindow {
             }
 
             NavButton {
+                text: "Schedule"
+                iconName: "view-calendar-symbolic"
+                current: root.section === "schedule"
+                onClicked: root.goTo("schedule", "SchedulePage.qml")
+            }
+
+            NavButton {
                 text: "Words"
                 iconName: "bookmarks-symbolic"
                 current: root.section === "words"
