@@ -55,3 +55,26 @@ def clear_jimaku_key() -> None:
         keyring.delete_password(_JIMAKU_SERVICE, "api_key")
     except keyring.errors.PasswordDeleteError:
         pass
+
+
+# A friend's AniList login during Watch Together (see Backend's watch
+# together section): held only for one show, deleted when it ends.
+_GUEST_SERVICE = "animeplayer-anilist-guest-test" if os.environ.get("ANIMEPLAYER_DB_PATH") else "animeplayer-anilist-guest"
+
+
+def save_guest_token(token: str) -> None:
+    keyring.set_password(_GUEST_SERVICE, _TOKEN_KEY, token)
+
+
+def load_guest_token() -> str:
+    try:
+        return keyring.get_password(_GUEST_SERVICE, _TOKEN_KEY) or ""
+    except keyring.errors.KeyringError:
+        return ""
+
+
+def clear_guest_token() -> None:
+    try:
+        keyring.delete_password(_GUEST_SERVICE, _TOKEN_KEY)
+    except keyring.errors.PasswordDeleteError:
+        pass

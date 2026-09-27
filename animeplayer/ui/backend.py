@@ -3267,6 +3267,8 @@ class Backend(QObject):
     def _push_anilist_progress(self, anime_snapshot: dict[str, Any], episode_number: float) -> None:
         client = self._anilist_client
         media_id = anime_snapshot.get("anilist_id")
+        if media_id is not None:
+            self._push_guest_progress(media_id, anime_snapshot.get("total_episodes"), episode_number)
         if client is None or media_id is None:
             return
         # Marked on the live record, so the catch-up in
@@ -3574,4 +3576,81 @@ class Backend(QObject):
     def setDiscordEnabled(self, value: bool) -> None:
         self._db.set_setting("discord_status", "true" if value else "false")
         self._discord.set_enabled(value)
+
+    # -- watch together --------------------------------------------------------
+    # A friend watching with you logs into their own AniList for one show;
+    # every episode finished then counts on their account as well as yours.
+    # Their login lives in the keyring only while it's needed: it is deleted
+    # when the show is finished, or when either of you ends it.
+
+    watchTogetherChanged = Signal()
+    watchTogetherNotice = Signal(str)
+
+    def _watch_together(self) -> dict[str, Any] | None:
+        raw = self._db.get_setting("watch_together")
+        return json.loads(raw) if raw else None
+
+    @Slot(result="QVariantMap")
+    def watchTogether(self) -> dict[str, Any]:
+        """{anilist_id, title, name} of the session running, or {}."""
+        return self._watch_together() or {}
+
+    @Slot(result=str)
+    def watchTogetherLoginUrl(self) -> str:
+        client_id = self.anilistClientId()
+        return build_authorize_url(client_id) if client_id else ""
+
+    @Slot(int, str, str)
+    def startWatchTogether(self, anilist_id: int, title: str, token: str) -> None:
+        token = token.strip()
+        if not token or not anilist_id:
+            self.watchTogetherNotice.emit("Paste your friend's AniList token first.")
+            return
+
+        def work() -> Any:
+            return AniListClient(self._http, token).get_viewer()
+
+        def done(viewer: Any) -> None:
+            if self._anilist_user_id is not None and viewer.id == self._anilist_user_id:
+                self.watchTogetherNotice.emit(
+                    "That's your own AniList account -- the login page used the account your browser "
+                    "is signed in to. Open the link in a private window and have your friend log in there.")
+                return
+            secrets.save_guest_token(token)
+            self._db.set_setting("watch_together", json.dumps(
+                {"anilist_id": anilist_id, "title": title, "name": viewer.name, "user_id": viewer.id}))
+            self.watchTogetherChanged.emit()
+
+        self._pool.start(_Worker(work, done, self.watchTogetherNotice.emit))
+
+    @Slot()
+    def endWatchTogether(self) -> None:
+        secrets.clear_guest_token()
+        self._db.delete_setting("watch_together")
+        self.watchTogetherChanged.emit()
+
+    def _push_guest_progress(self, media_id: int, total: int | None, episode_number: float) -> None:
+        session = self._watch_together()
+        if not session or session.get("anilist_id") != media_id:
+            return
+        token = secrets.load_guest_token()
+        if not token:
+            self.endWatchTogether()
+            return
+        finished = bool(total) and episode_number >= total
+        status = "COMPLETED" if finished else "CURRENT"
+
+        def work() -> None:
+            AniListClient(self._http, token).save_progress(media_id, status, int(episode_number))
+
+        def done(_result: None) -> None:
+            if finished:
+                # The show is done, and so is the reason to keep their login.
+                self.endWatchTogether()
+                self.watchTogetherNotice.emit(
+                    f"Finished {session['title']} -- {session['name']}'s AniList is up to date, "
+                    "and their login has been removed from this PC.")
+
+        self._pool.start(_Worker(work, done, lambda message: self.watchTogetherNotice.emit(
+            f"Couldn't update {session['name']}'s AniList: {message}")))
 

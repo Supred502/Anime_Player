@@ -542,6 +542,85 @@ Kirigami.ScrollablePage {
 
     function copyText(text) { applicationWindow().copyText(text) }
 
+    // ---- Watch together ------------------------------------------------------
+    property var together: backend.watchTogether()
+    Connections {
+        target: backend
+        function onWatchTogetherChanged() {
+            page.together = backend.watchTogether()
+            if (page.together.anilist_id === page.anilistId) togetherDialog.close()
+        }
+        function onWatchTogetherNotice(message) {
+            togetherError.text = togetherDialog.opened ? message : ""
+            if (!togetherDialog.opened) showPassiveNotification(message)
+        }
+    }
+    Controls.Dialog {
+        id: togetherDialog
+        Kirigami.Theme.inherit: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(parent ? parent.width - Kirigami.Units.gridUnit * 2 : 600, Kirigami.Units.gridUnit * 30)
+        modal: true
+        title: "Watch together"
+        onOpened: { togetherToken.text = ""; togetherError.text = "" }
+        standardButtons: Controls.Dialog.Cancel
+
+        ColumnLayout {
+            width: parent.width
+            spacing: Kirigami.Units.largeSpacing
+            Controls.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: "Episodes of " + (page.anime.title || "this show") + " you watch will count on your "
+                    + "friend's AniList as well as yours. Only this show -- and their login is deleted "
+                    + "from this PC when it's finished, or when you end it."
+                    + (page.together.name && page.together.anilist_id !== page.anilistId
+                       ? "\n\nThis ends watching " + page.together.title + " with " + page.together.name + "." : "")
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                opacity: 0.8
+                text: "1. Copy the login link, open it in a private (incognito) browser window, and have your "
+                    + "friend log in there. A normal window would log in as you.\n"
+                    + "2. Copy the token AniList shows and paste it below."
+            }
+            RowLayout {
+                AppButton {
+                    text: "Copy login link"
+                    icon.name: "edit-copy-symbolic"
+                    enabled: backend.watchTogetherLoginUrl() !== ""
+                    onClicked: applicationWindow().copyText(backend.watchTogetherLoginUrl())
+                }
+            }
+            Controls.TextField {
+                id: togetherToken
+                Kirigami.Theme.inherit: true
+                Layout.fillWidth: true
+                placeholderText: "Paste your friend's token"
+                echoMode: TextInput.Password
+            }
+            Controls.Label {
+                id: togetherError
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                visible: text !== ""
+                color: Kirigami.Theme.negativeTextColor
+            }
+            AppButton {
+                Layout.alignment: Qt.AlignRight
+                text: "Start watching together"
+                accented: true
+                enabled: togetherToken.text.trim() !== ""
+                onClicked: {
+                    togetherError.text = ""
+                    backend.startWatchTogether(page.anilistId, page.anime.title || "", togetherToken.text)
+                }
+            }
+        }
+    }
+
     // ---- Library tabs ------------------------------------------------------
     property var libraryLists: []
     property var libraryTabs: []   // ids of the tabs this show is in
@@ -831,6 +910,28 @@ Kirigami.ScrollablePage {
                                     text: "New tab..."
                                     icon.name: "list-add-symbolic"
                                     onTriggered: { newLibraryField.text = ""; newLibraryDialog.open() }
+                                }
+                            }
+                        }
+
+                        AppButton {
+                            id: togetherButton
+                            readonly property bool active: page.together.anilist_id === page.anilistId && page.anilistId !== 0
+                            visible: page.anilistId !== 0 && backend.isAnilistLoggedIn()
+                            text: active ? "With " + page.together.name : "Watch together"
+                            icon.name: "im-user-symbolic"
+                            checked: active
+                            onClicked: active ? togetherMenu.popup(togetherButton, 0, togetherButton.height)
+                                              : togetherDialog.open()
+                            Controls.ToolTip.visible: hovered && !active
+                            Controls.ToolTip.text: "Count the episodes on a friend's AniList too"
+                            Controls.Menu {
+                                id: togetherMenu
+                                Kirigami.Theme.inherit: true
+                                Controls.MenuItem {
+                                    text: "End watch together"
+                                    icon.name: "dialog-cancel-symbolic"
+                                    onTriggered: backend.endWatchTogether()
                                 }
                             }
                         }
