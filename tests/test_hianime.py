@@ -267,7 +267,8 @@ def test_resolve_source_picks_the_requested_audio_track(client) -> None:
     _mock_stream()
 
     assert src.resolve_source(35826, client, dub=True).mal_id == 38668
-    assert respx.calls.last.request.url == DUB_EMBED
+    requested = [str(call.request.url) for call in respx.calls]
+    assert DUB_EMBED in requested and SUB_EMBED not in requested
 
 
 @respx.mock
@@ -345,3 +346,48 @@ def test_a_show_with_no_dub_tick_has_no_dub() -> None:
     )))
     with httpx.Client() as client:
         assert src.get_audio_counts("sub-only-5", client) == (13, 0)
+
+
+@pytest.fixture
+def stream_hosts(monkeypatch):
+    monkeypatch.setattr(src, "STREAM_HOSTS", ["hls2.example.uk", "hls.old.example"])
+    return src.STREAM_HOSTS
+
+
+@respx.mock
+def test_a_refusing_video_host_is_swapped_for_one_that_works(client, stream_hosts) -> None:
+    # Seen live: after the site moved its videos, links on the old host got
+    # 403 from everything while the same path on the new host played fine.
+    dead = "https://hls.old.example/v/abc/def/master.m3u8"
+    respx.get(dead).mock(return_value=httpx.Response(403, text="Forbidden"))
+    respx.get(MASTER_URL).mock(return_value=httpx.Response(200, text=MASTER_PLAYLIST))
+
+    assert src.working_master_url(dead, client, "https://zokoanime.video/") == MASTER_URL
+    assert stream_hosts[0] == "hls2.example.uk"
+
+
+@respx.mock
+def test_a_working_link_is_left_alone(client, stream_hosts) -> None:
+    respx.get(MASTER_URL).mock(return_value=httpx.Response(200, text=MASTER_PLAYLIST))
+
+    assert src.working_master_url(MASTER_URL, client, "https://zokoanime.video/") == MASTER_URL
+    assert len(respx.calls) == 1
+
+
+@respx.mock
+def test_when_no_host_works_the_original_link_is_kept(client, stream_hosts) -> None:
+    other = "https://hls.old.example/v/abc/def/master.m3u8"
+    respx.get(MASTER_URL).mock(return_value=httpx.Response(403))
+    respx.get(other).mock(return_value=httpx.Response(403))
+
+    # So the player's own error names the link the site actually gave.
+    assert src.working_master_url(MASTER_URL, client, "https://zokoanime.video/") == MASTER_URL
+
+
+@respx.mock
+def test_a_new_host_from_the_site_is_remembered(client, stream_hosts) -> None:
+    new = "https://hls3.new.example/v/abc/def/master.m3u8"
+    respx.get(new).mock(return_value=httpx.Response(200, text=MASTER_PLAYLIST))
+
+    src.working_master_url(new, client, "https://zokoanime.video/")
+    assert "hls3.new.example" in stream_hosts

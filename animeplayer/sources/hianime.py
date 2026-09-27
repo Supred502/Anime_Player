@@ -542,6 +542,48 @@ def _skip_range(skip: dict, key: str) -> tuple[float, float] | None:
     return (float(start), float(end))
 
 
+# Video hosts. The site moves its videos between these, keeping the same
+# path on each (/v/<id>/.../master.m3u8, with everything inside relative to
+# it). Seen live: for a while after a move, the site kept handing out links
+# on the old host, which Cloudflare then answered with 403 for every request
+# -- to the player and to downloads alike -- until the site caught up. The
+# same path on the new host worked the whole time. So a link whose host
+# refuses is retried on the others before giving up. Any new host the site
+# hands out is added at runtime.
+STREAM_HOSTS: list[str] = ["hls2.aniwatchtv.uk", "hls.1embed.buzz"]
+_URL_HOST_RE = re.compile(r"^(https?://)([^/]+)(/.*)$")
+
+
+def _playlist_ok(url: str, client: httpx.Client, referer: str) -> bool:
+    try:
+        resp = client.get(url, headers={"Referer": referer, "User-Agent": USER_AGENT}, timeout=10)
+    except httpx.HTTPError:
+        return False
+    return resp.status_code == 200 and resp.text.lstrip().startswith("#EXTM3U")
+
+
+def working_master_url(master_url: str, client: httpx.Client, referer: str) -> str:
+    """master_url, or the same video on another host if its own refuses.
+    Returns master_url unchanged when no host works, so the caller's error
+    is the real one."""
+    match = _URL_HOST_RE.match(master_url)
+    if match is None:
+        return master_url
+    scheme, host, path = match.groups()
+    if host not in STREAM_HOSTS:
+        STREAM_HOSTS.insert(0, host)
+    if _playlist_ok(master_url, client, referer):
+        return master_url
+    for other in [h for h in STREAM_HOSTS if h != host]:
+        candidate = f"{scheme}{other}{path}"
+        if _playlist_ok(candidate, client, referer):
+            # Tried first from now on.
+            STREAM_HOSTS.remove(other)
+            STREAM_HOSTS.insert(0, other)
+            return candidate
+    return master_url
+
+
 def resolve_source(episode_id: int, client: httpx.Client, dub: bool = False) -> StreamInfo:
     """Resolve an episode id to its master playlist and everything that comes
     with it (referer, subtitle track, MAL id, intro/outro timings).
@@ -571,10 +613,11 @@ def resolve_source(episode_id: int, client: httpx.Client, dub: bool = False) -> 
     mal_match = _MAL_ID_RE.search(embed_url)
     skip = config.get("skip") or {}
 
+    # The stream host wants the embed *site*, not the full embed path.
+    referer = re.sub(r"^(https?://[^/]+).*", r"\1/", embed_url)
     return StreamInfo(
-        master_url=master_url,
-        # The stream host wants the embed *site*, not the full embed path.
-        referer=re.sub(r"^(https?://[^/]+).*", r"\1/", embed_url),
+        master_url=working_master_url(master_url, client, referer),
+        referer=referer,
         subtitle_url=(default_sub or {}).get("src") or None,
         mal_id=int(mal_match.group(1)) if mal_match else None,
         skip_intro=_skip_range(skip, "intro"),
