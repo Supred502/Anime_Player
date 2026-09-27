@@ -121,6 +121,10 @@ modules:
           - type: archive
             url: https://xorg.freedesktop.org/archive/individual/lib/libXpresent-1.0.2.tar.xz
             sha256: 4e5b21b4812206a4b223013606ae31170502c1043038777a1ef8f70c09d37602
+            # freedesktop.org turns GitHub's build machines away (HTTP 418).
+            mirror-urls:
+              - https://www.x.org/archive/individual/lib/libXpresent-1.0.2.tar.xz
+              - https://mirrors.kernel.org/slackware/slackware64-current/source/x/x11/src/lib/libXpresent-1.0.2.tar.xz
             x-checker-data:
               type: anitya
               project-id: 17166
@@ -152,6 +156,9 @@ modules:
           - type: archive
             url: https://www.freedesktop.org/software/uchardet/releases/uchardet-0.0.8.tar.xz
             sha256: e97a60cfc00a1c147a674b097bb1422abd9fa78a2d9ce3f3fdcc2e78a34ac5f0
+            # freedesktop.org turns GitHub's build machines away (HTTP 418).
+            mirror-urls:
+              - https://deb.debian.org/debian/pool/main/u/uchardet/uchardet_0.0.8.orig.tar.xz
             x-checker-data:
               type: anitya
               project-id: 9265
