@@ -4,7 +4,7 @@
 // the nearest clickable thing in that direction -- any button, card, episode
 // cell or chip, found by looking at what's on screen rather than by every
 // page listing its own -- and A clicks it, with a real click, so nothing in
-// the pages needed to change. Scroll areas follow the highlight. B goes back
+// the pages needed to change. Scroll areas glide after the highlight. B goes back
 // (or closes whatever is open), LB/RB step through the nav bar, X
 // right-clicks (save an episode, a card's menu), Y goes to search, Start is
 // fullscreen.
@@ -103,36 +103,94 @@ Item {
     }
     function alive(item) {
         try { return !!item && item.visible && item.width > 0 && nav.window.contentItem !== null
-                    && item.mapToItem(null, 0, 0) !== undefined } catch (e) { return false }
+                    && nav.inScene(item) } catch (e) { return false }
     }
+    // Still on screen, not a delegate a list has thrown away or put aside
+    // for reuse: those keep their size and visibility, off in no-man's land.
+    function inScene(item) {
+        let root = nav.window.contentItem.parent
+        for (let p = item; p; p = p.parent) if (p === root) return true
+        return false
+    }
+    // Where the highlight last was, on screen. A list that rebuilds itself
+    // (Browse loading its next page reassigns every card) takes the
+    // highlighted card with it; the one now in its place carries on.
+    property var lastSpot: null
+    function standIn(all) {
+        if (!nav.lastSpot) return null
+        let cx = nav.lastSpot.x + nav.lastSpot.width / 2, cy = nav.lastSpot.y + nav.lastSpot.height / 2
+        let best = null, bestDistance = Math.max(nav.lastSpot.width, nav.lastSpot.height)
+        for (let item of all) {
+            let r = nav.rectOf(item)
+            let d = Math.hypot(r.x + r.width / 2 - cx, r.y + r.height / 2 - cy)
+            if (d < bestDistance) { best = item; bestDistance = d }
+        }
+        return best
+    }
+    function forget() { nav.target = null; nav.lastSpot = null }
 
     // ---- Moving ---------------------------------------------------------------
 
+    // Left and right stay in the row: past its end the highlight stays put,
+    // rather than leaping to whatever lies that way (a header button, the
+    // next row) and scrolling the page after it. Up and down go to what's
+    // above or below, the nearest row first.
     function move(direction) {
         let all = nav.candidates()
         if (all.length === 0) return
         if (!nav.alive(nav.target) || all.indexOf(nav.target) < 0) {
-            nav.focusOn(nav.first(all))
-            return
+            let replacement = nav.standIn(all)
+            if (!replacement) { nav.focusOn(nav.first(all)); return }
+            nav.target = replacement
         }
+        // Within the list or shelf it's in first; out of it only past its end.
+        // A row scrolled out of the grid is still the grid's, and up goes
+        // there, not to the search box that's nearer on screen.
+        let area = nav.scrollAreaOf(nav.target)
+        let best = area ? nav.pick(direction, all.filter((i) => nav.contains(area, i))) : null
+        if (!best) best = nav.pick(direction, all)
+        if (best) nav.focusOn(best)
+    }
+    function scrollAreaOf(item) {
+        for (let p = item.parent; p; p = p.parent) if (p instanceof Flickable) return p
+        return null
+    }
+    function pick(direction, all) {
         let from = nav.rectOf(nav.target)
-        let cx = from.x + from.width / 2, cy = from.y + from.height / 2
-        let best = null, bestScore = Infinity
+        let horizontal = direction === "left" || direction === "right"
+        let inLine = null, inLineScore = Infinity, cone = null, coneScore = Infinity
         for (let item of all) {
             if (item === nav.target || nav.contains(nav.target, item)) continue
             let r = nav.rectOf(item)
-            let x = r.x + r.width / 2, y = r.y + r.height / 2
-            let along, across
-            if (direction === "left")  { along = from.x - (r.x + r.width); across = y - cy }
-            if (direction === "right") { along = r.x - (from.x + from.width); across = y - cy }
-            if (direction === "up")    { along = from.y - (r.y + r.height); across = x - cx }
-            if (direction === "down")  { along = r.y - (from.y + from.height); across = x - cx }
-            // Overlapping edges count as zero distance, not as behind.
-            if (along < -Math.min(from.width, from.height) / 2) continue
-            let score = Math.max(0, along) + Math.abs(across) * 2.2
-            if (score < bestScore) { best = item; bestScore = score }
+            let along
+            if (direction === "left")  along = from.x - (r.x + r.width)
+            if (direction === "right") along = r.x - (from.x + from.width)
+            if (direction === "up")    along = from.y - (r.y + r.height)
+            if (direction === "down")  along = r.y - (from.y + from.height)
+            // A little overlap is still "that way"; more is beside it.
+            if (along < -Math.min(from.width, from.height, r.width, r.height) / 4) continue
+            along = Math.max(0, along)
+            // In line: the two share part of a row (left/right) or a column.
+            let overlap = horizontal
+                ? Math.min(from.y + from.height, r.y + r.height) - Math.max(from.y, r.y)
+                : Math.min(from.x + from.width, r.x + r.width) - Math.max(from.x, r.x)
+            if (overlap > 0) {
+                // Among a row's worth: from a wide thing (the search box)
+                // down onto cards, the one under its start, not its middle.
+                let offset = horizontal ? Math.abs((r.y + r.height / 2) - (from.y + from.height / 2))
+                           : from.width > r.width * 2 ? Math.abs(r.x - from.x)
+                           : Math.abs((r.x + r.width / 2) - (from.x + from.width / 2))
+                let score = along * 4 + offset
+                if (score < inLineScore) { inLine = item; inLineScore = score }
+            } else if (!horizontal) {
+                // Nothing straight above/below: the nearest within 45 degrees.
+                let across = Math.abs((r.x + r.width / 2) - (from.x + from.width / 2)) - (from.width + r.width) / 2
+                if (across > along) continue
+                let score = along + across * 2
+                if (score < coneScore) { cone = item; coneScore = score }
+            }
         }
-        if (best) nav.focusOn(best)
+        return inLine || cone
     }
     function contains(outer, inner) {
         for (let p = inner.parent; p; p = p.parent) if (p === outer) return true
@@ -153,49 +211,81 @@ Item {
 
     function focusOn(item) {
         nav.target = item
+        nav.lastSpot = nav.rectOf(item)
         nav.active = true
         nav.scrollIntoView(item)
-        Qt.callLater(nav.pointAt, item)
-    }
-    // The pointer follows, so the highlighted card shows its hover state
-    // (and, if left there, its preview).
-    function pointAt(item) {
-        if (!nav.alive(item)) return
-        let r = nav.rectOf(item)
-        nav.lastPointer = Qt.point(r.x + r.width / 2, r.y + r.height / 2)
-        windowChrome.hover(nav.window, nav.lastPointer.x, nav.lastPointer.y)
     }
 
+    // Scrolls just enough to show the highlight, and glides there: a card
+    // row is half the Deck's screen, and the page jumping by that much on
+    // every press is impossible to follow.
     function scrollIntoView(item) {
+        let didY = false, didX = false
         for (let p = item.parent; p; p = p.parent) {
             if (!(p instanceof Flickable)) continue
             let r = item.mapToItem(p.contentItem, 0, 0)
             let margin = Kirigami.Units.gridUnit
+            // Where it's going, not where it is mid-glide.
+            let atY = scrollY.running && scrollY.target === p ? scrollY.to : p.contentY
+            let atX = scrollX.running && scrollX.target === p ? scrollX.to : p.contentX
             if (p.contentHeight > p.height) {
-                let top = p.contentY, bottom = p.contentY + p.height
-                if (r.y < top + margin) p.contentY = Math.max(p.originY, r.y - margin * 3)
-                else if (r.y + item.height > bottom - margin)
-                    p.contentY = Math.min(p.originY + p.contentHeight - p.height, r.y + item.height - p.height + margin * 3)
+                let to = atY
+                if (r.y < atY + margin) to = Math.max(p.originY, r.y - margin * 3)
+                else if (r.y + item.height > atY + p.height - margin)
+                    to = Math.min(p.originY + p.contentHeight - p.height, r.y + item.height - p.height + margin * 3)
+                if (to !== atY) { didY = nav.glide(scrollY, p, "contentY", to, didY) }
             }
             if (p.contentWidth > p.width) {
-                let left = p.contentX, right = p.contentX + p.width
-                if (r.x < left + margin) p.contentX = Math.max(p.originX, r.x - margin * 2)
-                else if (r.x + item.width > right - margin)
-                    p.contentX = Math.min(p.originX + p.contentWidth - p.width, r.x + item.width - p.width + margin * 2)
+                let to = atX
+                if (r.x < atX + margin) to = Math.max(p.originX, r.x - margin * 2)
+                else if (r.x + item.width > atX + p.width - margin)
+                    to = Math.min(p.originX + p.contentWidth - p.width, r.x + item.width - p.width + margin * 2)
+                if (to !== atX) { didX = nav.glide(scrollX, p, "contentX", to, didX) }
             }
         }
     }
+    // One glide per direction at a time; a second scroll area the same way
+    // (rare) just jumps.
+    function glide(animation, flickable, property, to, busy) {
+        if (busy) { flickable[property] = to; return true }
+        if (animation.running && animation.target !== flickable) animation.complete()
+        animation.stop()
+        animation.target = flickable
+        animation.property = property
+        animation.to = to
+        animation.start()
+        return true
+    }
+    NumberAnimation { id: scrollY; duration: 170; easing.type: Easing.OutCubic }
+    NumberAnimation { id: scrollX; duration: 170; easing.type: Easing.OutCubic }
 
     function press(right) {
-        if (!nav.alive(nav.target)) { nav.move("down"); return }
+        if (!nav.alive(nav.target)) {
+            // The card went with a rebuilt list: A presses the one in its place.
+            let replacement = nav.standIn(nav.candidates())
+            if (!replacement) { nav.move("down"); return }
+            nav.target = replacement
+        }
         if (!right && (nav.target instanceof T.TextField)) { keyboard.openFor(nav.target); return }
         if (nav.target instanceof T.Slider) return
         let r = nav.rectOf(nav.target)
         nav.lastPointer = Qt.point(r.x + r.width / 2, r.y + r.height / 2)
         windowChrome.click(nav.window, nav.lastPointer.x, nav.lastPointer.y, !!right)
-        // A click that opened or closed something moves the scene; the
-        // highlight re-finds its footing on the next move.
-        Qt.callLater(function() { if (!nav.alive(nav.target)) nav.target = null })
+        Qt.callLater(function() {
+            // A click that opened or closed something moves the scene; the
+            // highlight re-finds its footing on the next move.
+            if (!nav.alive(nav.target)) nav.target = null
+            // Not in the player: its controls stay up while the pointer is
+            // over them, and nothing scrolls there.
+            if (!nav.onPlayer) nav.parkPointer()
+        })
+    }
+    // The pointer out of the way once a click is done: left over the card
+    // it clicked, whatever scrolled under it next looked hovered (a second
+    // highlight) and opened its preview.
+    function parkPointer() {
+        nav.lastPointer = Qt.point(-20, -20)
+        windowChrome.hover(nav.window, -20, -20)
     }
 
     function back() {
@@ -204,10 +294,10 @@ Item {
         if (s !== nav.window.contentItem.parent) {
             // A popup (menu, dialog): Escape closes it, as on a keyboard.
             windowChrome.key(nav.window, Qt.Key_Escape)
-            nav.target = null
+            nav.forget()
             return
         }
-        nav.target = null
+        nav.forget()
         nav.window.pageStack.goBack()
     }
 
@@ -222,7 +312,7 @@ Item {
                      ["settings", function() { nav.window.goSettings() }]]
         let i = order.findIndex((e) => e[0] === nav.window.section)
         i = (Math.max(0, i) + delta + order.length) % order.length
-        nav.target = null
+        nav.forget()
         order[i][1]()
     }
 
@@ -247,7 +337,7 @@ Item {
         case "accept": nav.press(false); break
         case "x": nav.press(true); break
         case "back":
-            if (nav.onPlayer && nav.playerMenu) { nav.playerMenu = false; nav.target = null; return }
+            if (nav.onPlayer && nav.playerMenu) { nav.playerMenu = false; nav.forget(); return }
             nav.back(); break
         case "lb": nav.stepSection(-1); break
         case "rb": nav.stepSection(1); break
@@ -259,7 +349,7 @@ Item {
             })
             break
         case "menu": nav.window.toggleAppFullscreen(); break
-        case "view": if (nav.onPlayer) { nav.playerMenu = false; nav.target = null } break
+        case "view": if (nav.onPlayer) { nav.playerMenu = false; nav.forget() } break
         }
     }
     function keyboardText() { return keyboard.field ? keyboard.field.text : "" }
@@ -283,7 +373,7 @@ Item {
     // A page change leaves the old highlight behind.
     Connections {
         target: nav.window.pageStack
-        function onCurrentItemChanged() { nav.target = null; nav.playerMenu = false }
+        function onCurrentItemChanged() { nav.forget(); nav.playerMenu = false }
     }
     // The real mouse takes over again -- told apart from the pointer moves
     // made here by where the pointer is: the scene re-sends hover whenever
@@ -314,11 +404,22 @@ Item {
             running: focusRing.visible || nav.active
             onTriggered: {
                 if (!nav.alive(nav.target)) return
+                nav.lastSpot = nav.rectOf(nav.target)
                 let r = nav.target.mapToItem(nav.overlay, 0, 0)
-                focusRing.x = r.x - 4
-                focusRing.y = r.y - 4
-                focusRing.width = nav.target.width + 8
-                focusRing.height = nav.target.height + 8
+                let x1 = r.x - 4, y1 = r.y - 4
+                let x2 = r.x + nav.target.width + 4, y2 = r.y + nav.target.height + 4
+                // Only the part of it showing: mid-scroll, a card half under
+                // the header mustn't have its ring drawn over the header.
+                let area = nav.scrollAreaOf(nav.target)
+                if (area) {
+                    let a = area.mapToItem(nav.overlay, 0, 0)
+                    x1 = Math.max(x1, a.x); y1 = Math.max(y1, a.y)
+                    x2 = Math.min(x2, a.x + area.width); y2 = Math.min(y2, a.y + area.height)
+                }
+                focusRing.x = x1
+                focusRing.y = y1
+                focusRing.width = Math.max(0, x2 - x1)
+                focusRing.height = Math.max(0, y2 - y1)
             }
         }
     }

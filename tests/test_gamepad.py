@@ -100,3 +100,41 @@ def test_actions_reach_the_app_when_it_is_in_front(monkeypatch):
     fake.state = Qt.ApplicationState.ApplicationInactive
     g._emit("back")
     assert got == ["accept"]
+
+
+def test_in_use_while_held_and_for_a_moment_after(pad, monkeypatch):
+    g, _ = pad
+    g._controllers[1] = None           # a controller is connected (not opened here)
+    monkeypatch.setattr(gp.sdl2, "SDL_GameControllerUpdate", lambda: None)
+    assert not g.in_use()
+    push_button(sdl2.SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+    g.poll()
+    assert g.in_use()                  # held
+    push_button(sdl2.SDL_CONTROLLER_BUTTON_DPAD_DOWN, down=False)
+    g.poll()
+    assert g.in_use()                  # just let go: Steam's key may still be on its way
+    g._last_used -= gp.IN_USE_WINDOW + 0.1
+    assert not g.in_use()
+    g._controllers.clear()
+
+
+def test_steam_keys_are_dropped_only_while_the_controller_is_in_use(pad, monkeypatch):
+    from PySide6.QtCore import QEvent, Qt
+
+    g, _ = pad
+
+    class Key:
+        def __init__(self, key, spontaneous=True):
+            self._key, self._spontaneous = key, spontaneous
+        def type(self): return QEvent.Type.KeyPress
+        def key(self): return self._key
+        def spontaneous(self): return self._spontaneous
+
+    busy = {"now": True}
+    monkeypatch.setattr(g, "in_use", lambda: busy["now"])
+    assert g.eventFilter(None, Key(Qt.Key.Key_Down))                 # Steam's double
+    assert g.eventFilter(None, Key(Qt.Key.Key_Escape))
+    assert not g.eventFilter(None, Key(Qt.Key.Key_A))                 # typing still works
+    assert not g.eventFilter(None, Key(Qt.Key.Key_Escape, False))     # the app's own Escape (B)
+    busy["now"] = False
+    assert not g.eventFilter(None, Key(Qt.Key.Key_Down))              # a real keyboard

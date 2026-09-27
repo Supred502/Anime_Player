@@ -38,6 +38,21 @@ Kirigami.ScrollablePage {
     // preset and a filter can never disagree about what is being asked for.
     property string presetLabel: startLabel
     property var results: []
+    // The grid's model: one row per result, only ever appended to while more
+    // pages load. Given the array itself, every page that loaded was a new
+    // model -- every card rebuilt and the grid back at the top, under the
+    // reader and a controller's highlight alike.
+    ListModel { id: resultRows }
+    property string rowsFirst: ""
+    // By what it is: results from the backend come back as new objects on
+    // every read, so comparing the objects themselves never matches.
+    function rowKey(r) { return r ? (r.slug_id || "") + "|" + (r.anilist_id || 0) + "|" + (r.title || "") : "" }
+    onResultsChanged: {
+        let first = page.rowKey(page.results[0])
+        if (page.results.length < resultRows.count || first !== page.rowsFirst) resultRows.clear()
+        page.rowsFirst = first
+        while (resultRows.count < page.results.length) resultRows.append({ n: resultRows.count })
+    }
     property int resultPage: 1
     property bool hasMore: false
     property bool loading: false
@@ -1138,7 +1153,7 @@ Kirigami.ScrollablePage {
         // whichever page you're looking at.
         readonly property int idealCellWidth: Kirigami.Units.gridUnit * 11
         readonly property int columns: Math.max(1, Math.floor(width / idealCellWidth))
-        model: page.results
+        model: resultRows
         cellWidth: width / columns
         cellHeight: Math.round((cellWidth - Kirigami.Units.smallSpacing * 2) * 1.5)
                     + Kirigami.Units.gridUnit * 4
@@ -1150,8 +1165,8 @@ Kirigami.ScrollablePage {
         }
 
         delegate: Item {
-            required property var modelData
             required property int index
+            readonly property var modelData: page.results[index] || ({})
 
             width: grid.cellWidth
             height: grid.cellHeight

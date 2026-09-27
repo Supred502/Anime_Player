@@ -212,6 +212,7 @@ def main() -> int:
     engine.load(str(QML_DIR / root_qml))
     if not engine.rootObjects():
         return 1
+    game_controller.filter_window(engine.rootObjects()[0])
 
     # Qt runs no shutdown of its own for SIGTERM/SIGINT, so a plain `kill` (or
     # a Ctrl-C in the terminal) used to tear the process down mid-frame. That

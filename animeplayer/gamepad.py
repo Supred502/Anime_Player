@@ -16,6 +16,13 @@ each action does is up to the QML (see GamepadNav.qml).
 
 SDL is polled from a timer on the GUI thread. If it isn't installed, or no
 controller is ever plugged in, none of this does anything.
+
+Steam's desktop layout -- the Deck in Desktop Mode, or any controller while
+Steam runs, for an app Steam didn't start -- also turns the D-pad into arrow
+keys, A into Enter, B into Escape and the stick into a scroll wheel. The app
+would get every press twice: the highlight moves and the page scrolls on
+its own, B goes back twice. `filter_window` drops those keys and wheel
+turns while the controller is in use.
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from __future__ import annotations
 import os
 import time
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 try:  # pragma: no cover - depends on the platform's SDL
@@ -58,6 +65,14 @@ if sdl2 is not None:
     }
 _REPEATING = {"up", "down", "left", "right", "lt", "rt"}
 
+# What Steam types for the controller, and how long after the controller's
+# last use a key or wheel turn is still taken to be Steam's. Holding a
+# direction repeats well within it.
+_STEAM_KEYS = {Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Left, Qt.Key.Key_Right,
+               Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Escape, Qt.Key.Key_Space,
+               Qt.Key.Key_Tab, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown}
+IN_USE_WINDOW = 0.6
+
 
 class Gamepad(QObject):
     """Exposed to QML as `gamepad`."""
@@ -71,6 +86,8 @@ class Gamepad(QObject):
         self._controllers: dict[int, object] = {}
         self._held: dict[str, float] = {}      # action -> when it next repeats
         self._stick: dict[str, bool] = {}      # which stick/trigger directions are past threshold
+        self._last_used = 0.0                   # time.monotonic() of the last action
+        self._simulated = False
         self.available = False
         if sdl2 is None or os.environ.get("ANIMEPLAYER_NO_GAMEPAD"):
             return
@@ -102,6 +119,7 @@ class Gamepad(QObject):
         self.action.emit(name)
 
     def _press(self, name: str) -> None:
+        self._last_used = time.monotonic()
         self._emit(name)
         if name in _REPEATING:
             self._held[name] = time.monotonic() + REPEAT_DELAY
@@ -164,8 +182,54 @@ class Gamepad(QObject):
         now = time.monotonic()
         for name, due in list(self._held.items()):
             if now >= due:
+                self._last_used = now
                 self._emit(name)
                 self._held[name] = now + REPEAT_INTERVAL
+
+    @Slot(str)
+    def simulate(self, name: str) -> None:
+        """A press and release of `name`, as if from a controller. For the
+        test drivers."""
+        self._simulated = True
+        self._press(name)
+        self._release(name)
+
+    def in_use(self) -> bool:
+        """Being pressed now, or a moment ago. Asks SDL for the buttons' state
+        as it is right now: Steam's key can arrive before this app's next
+        poll has seen the press it came from."""
+        if not self._controllers and not self._simulated:
+            return False
+        if self._held or any(self._stick.values()):
+            return True
+        if time.monotonic() - self._last_used < IN_USE_WINDOW:
+            return True
+        sdl2.SDL_GameControllerUpdate()
+        for pad in self._controllers.values():
+            for button in _BUTTONS:
+                if sdl2.SDL_GameControllerGetButton(pad, button):
+                    return True
+            for axis in (sdl2.SDL_CONTROLLER_AXIS_LEFTX, sdl2.SDL_CONTROLLER_AXIS_LEFTY):
+                if abs(sdl2.SDL_GameControllerGetAxis(pad, axis)) / 32767.0 > STICK_THRESHOLD:
+                    return True
+        return False
+
+    def filter_window(self, window: QObject) -> None:
+        """Drops Steam's doubles of controller presses (see the top)."""
+        if self.available:
+            window.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802 -- Qt's name
+        kind = event.type()
+        if kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease, QEvent.Type.ShortcutOverride):
+            # spontaneous(): from a device. The app's own keys (B closing a
+            # menu with Escape) are sent directly, and pass.
+            if event.spontaneous() and event.key() in _STEAM_KEYS and self.in_use():
+                return True
+        elif kind == QEvent.Type.Wheel:
+            if event.spontaneous() and self.in_use():
+                return True
+        return False
 
     def shutdown(self) -> None:
         if sdl2 is not None and self.available:
