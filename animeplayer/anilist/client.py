@@ -852,6 +852,39 @@ class AniListClient:
                 break
         return out
 
+    def get_spotlight_pool(self, kind: str, *, season: str = "", year: int = 0,
+                           ids: list[int] | None = None) -> list["SpotlightMedia"]:
+        """Candidates for the home page's hero, all with wide banner art.
+        kind: "trending" (right now), "season" (most popular this season),
+        "gems" (well rated, not widely known, from the last few years), or
+        "ids" (these particular shows, e.g. the Planning list)."""
+        variables: dict = {"page": 1}
+        if kind == "trending":
+            variables.update(sort=["TRENDING_DESC"])
+        elif kind == "season":
+            variables.update(sort=["POPULARITY_DESC"], season=season, seasonYear=year)
+        elif kind == "gems":
+            variables.update(sort=["SCORE_DESC"], scoreGreater=78, popularityLesser=60000,
+                             startAfter=(year - 8) * 10000)
+        elif kind == "ids":
+            if not ids:
+                return []
+            variables.update(ids=list(ids)[:50])
+        else:
+            raise ValueError(kind)
+        data = self._request(_SPOTLIGHT_QUERY, variables)
+        out = []
+        for media in (data.get("Page") or {}).get("media") or []:
+            if not media.get("bannerImage") or media.get("isAdult"):
+                continue
+            out.append(SpotlightMedia(
+                media=_media_summary_of(media),
+                duration=int(media.get("duration") or 0),
+                season=media.get("season") or "",
+                season_year=int(media.get("seasonYear") or 0),
+            ))
+        return out
+
     def get_media_extras(self, media_id: int) -> "MediaExtras":
         """Everything the detail page shows beside the episode list: related
         entries, what the community recommends next, and reviews."""
@@ -1151,6 +1184,32 @@ class AiringState:
     latest_aired: int           # 0 when nothing has aired, or it can't be told
     next_episode: int | None
     next_airing_at: int | None  # unix seconds
+
+
+@dataclass(frozen=True, slots=True)
+class SpotlightMedia:
+    media: MediaSummary
+    duration: int      # minutes per episode, 0 if unknown
+    season: str        # WINTER / SPRING / SUMMER / FALL, or ""
+    season_year: int
+
+
+_SPOTLIGHT_QUERY = f"""
+query ($page: Int, $sort: [MediaSort], $season: MediaSeason, $seasonYear: Int,
+       $scoreGreater: Int, $popularityLesser: Int, $startAfter: FuzzyDateInt, $ids: [Int]) {{
+  Page(page: $page, perPage: 40) {{
+    media(type: ANIME, isAdult: false, sort: $sort, season: $season, seasonYear: $seasonYear,
+          averageScore_greater: $scoreGreater, popularity_lesser: $popularityLesser,
+          startDate_greater: $startAfter, id_in: $ids, format_in: [TV, MOVIE, ONA, OVA, TV_SHORT]) {{
+      {_MEDIA_FIELDS}
+      isAdult
+      duration
+      season
+      seasonYear
+    }}
+  }}
+}}
+"""
 
 
 @dataclass(frozen=True, slots=True)

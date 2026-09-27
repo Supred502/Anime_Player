@@ -171,7 +171,9 @@ Item {
         // Watch button up or down by a few pixels.
 
         Controls.Label {
-            text: hero.current ? "#" + hero.current.rank + " Spotlight" : ""
+            // Why this one is here (AniList-built spotlight), or the site's
+            // own numbering for its fallback carousel.
+            text: hero.current ? (hero.current.reason || ("#" + hero.current.rank + " Spotlight")) : ""
             color: Kirigami.Theme.highlightColor
             font.bold: true
             font.pixelSize: Kirigami.Theme.smallFont.pixelSize
@@ -198,7 +200,8 @@ Item {
                     hero.current.duration || "",
                     hero.current.released || "",
                     hero.current.sub_count > 0 ? "SUB " + hero.current.sub_count : "",
-                    hero.current.dub_count > 0 ? "DUB " + hero.current.dub_count : ""
+                    hero.current.dub_count > 0 ? "DUB " + hero.current.dub_count : "",
+                    hero.current.score > 0 ? "\u2605 " + (hero.current.score / 10).toFixed(1) : ""
                 ].filter((part) => part !== "") : []
 
                 Controls.Label {

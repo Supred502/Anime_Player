@@ -196,7 +196,7 @@ Kirigami.ScrollablePage {
         SpotlightBanner {
             Layout.fillWidth: true
             model: page.spotlight
-            onWatchClicked: (index) => page.openSourceEntry(page.spotlight[index])
+            onWatchClicked: (index) => page.openContinueEntry(page.spotlight[index])
         }
 
         // One inset applied to everything below the hero, rather than page

@@ -255,6 +255,7 @@ class Backend(QObject):
         self._current_stream_info: source.StreamInfo | None = None
         self._progressReady.connect(self._save_progress_on_gui_thread)
         self._idle_inhibitor = IdleInhibitor()
+        self._spotlight_built = False
         self._discord = discord_presence.DiscordPresence(DISCORD_CLIENT_ID)
         self._discord.set_enabled(self.getDiscordEnabled())
         self._drop_mappings_from_a_previous_source()
@@ -740,7 +741,10 @@ class Backend(QObject):
             feed: tuple[list[source.Spotlight], list[source.SearchResult]]
         ) -> None:
             spotlight, trending = feed
-            self.homeSpotlightReady.emit([self._spotlight_to_card(s) for s in spotlight])
+            # The site's own carousel is only the fallback now -- see
+            # _build_spotlight -- so it's shown only if that hasn't landed.
+            if not self._spotlight_built:
+                self.homeSpotlightReady.emit([self._spotlight_to_card(s) for s in spotlight])
             self.homeRowReady.emit(
                 "trending", [self._search_result_to_card(r) for r in trending]
             )
@@ -749,6 +753,7 @@ class Backend(QObject):
             self.homeRowFailed.emit("trending", message)
 
         self._pool.start(_Worker(highlights, highlights_done, highlights_failed))
+        self._build_spotlight()
 
         for key in self._HOME_ROWS:
             if key != self._HOME_ONLY_ROW:
@@ -3776,3 +3781,84 @@ class Backend(QObject):
             self._db.delete_progress(slug_id)
             self._emit_continue_watching()
 
+
+
+    # -- the home page's spotlight -------------------------------------------
+    # It used to be the streaming site's own carousel, which hardly changes
+    # and leans old. Now it's a fresh mix every launch, each with the reason
+    # it's there: what's trending, this season's big shows, something from
+    # your Planning list, and a hidden gem. The site's carousel stays as the
+    # fallback if AniList can't be reached.
+
+    _SEQUEL_RE = re.compile(
+        r"\b(season|part|cour)\s*\d|\b\d+(st|nd|rd|th)\s+season|\b(ii|iii|iv)\b|\bmovie\b|"
+        r"\bfinal\b|\s[2-9]$|:\s.*\barc\b", re.IGNORECASE)
+
+    @staticmethod
+    def _current_season() -> tuple[str, int]:
+        t = time.localtime()
+        return ("WINTER", "WINTER", "SPRING", "SPRING", "SPRING", "SUMMER", "SUMMER", "SUMMER",
+                "FALL", "FALL", "FALL", "WINTER")[t.tm_mon - 1], t.tm_year + (1 if t.tm_mon == 12 else 0)
+
+    def _build_spotlight(self) -> None:
+        seen_statuses = {e.anilist_id for status in ("COMPLETED", "DROPPED")
+                         for e in self._db.get_anilist_by_status(status)}
+        planning_ids = [e.anilist_id for e in self._db.get_anilist_by_status("PLANNING")]
+        client = self._anilist_public
+
+        def work() -> list[dict[str, Any]]:
+            season, year = self._current_season()
+            pools: list[tuple[str, list]] = [
+                ("Trending now", client.get_spotlight_pool("trending")),
+                (f"Popular this {season.title()}", client.get_spotlight_pool("season", season=season, year=year)),
+            ]
+            if planning_ids:
+                picks = random.sample(planning_ids, min(20, len(planning_ids)))
+                pools.append(("On your Planning list", client.get_spotlight_pool("ids", ids=picks)))
+            gems = [g for g in client.get_spotlight_pool("gems", year=year)
+                    if not any(self._SEQUEL_RE.search(t) for t in g.media.titles)]
+            pools.append(("Hidden gem", gems))
+
+            wanted = {"Trending now": 3, "On your Planning list": 2, "Hidden gem": 2}
+            chosen: list[tuple[str, Any]] = []
+            used: set[int] = set()
+            for reason, pool in pools:
+                candidates = [m for m in pool
+                              if m.media.id not in used and m.media.id not in seen_statuses
+                              and m.media.description]
+                # From the top of each list, but not always its very top.
+                candidates = candidates[:15]
+                random.shuffle(candidates)
+                for m in candidates[:wanted.get(reason, 2)]:
+                    used.add(m.media.id)
+                    chosen.append((reason, m))
+            random.shuffle(chosen)
+            self._remember_titles([m.media for _r, m in chosen])
+            return [self._spotlight_card(reason, m, i + 1) for i, (reason, m) in enumerate(chosen[:10])]
+
+        def done(cards: list[dict[str, Any]]) -> None:
+            if cards:
+                self._spotlight_built = True
+                self.homeSpotlightReady.emit(cards)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
+
+    @staticmethod
+    def _spotlight_card(reason: str, m: Any, rank: int) -> dict[str, Any]:
+        media = m.media
+        description = _strip_html(media.description or "").replace("\n", " ")
+        if len(description) > 420:
+            description = description[:420].rsplit(" ", 1)[0] + "…"
+        return {
+            "slug_id": "", "numeric_id": "", "anilist_id": media.id,
+            "title": media.title, "japanese_title": "",
+            "banner_url": media.banner_url or media.cover_url or "",
+            "description": description,
+            "kind": {"TV_SHORT": "TV Short"}.get(media.format or "", media.format or ""),
+            "duration": f"{m.duration}m" if m.duration else "",
+            "released": f"{m.season.title()} {m.season_year}" if m.season and m.season_year else "",
+            "sub_count": 0, "dub_count": 0,
+            "score": media.average_score or 0,
+            "rank": rank,
+            "reason": reason,
+        }

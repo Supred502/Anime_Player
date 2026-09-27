@@ -941,7 +941,9 @@ Kirigami.ScrollablePage {
                         // buttons: there are exactly two options and one is
                         // always chosen, which is what a segmented control is.
                         RowLayout {
-                            spacing: 0
+                            // A little apart: butted together, the two read as
+                            // one button with a line through it.
+                            spacing: Kirigami.Units.smallSpacing
                             Repeater {
                                 model: [{ label: "Sub", dub: false }, { label: "Dub", dub: true }]
                                 AppButton {
