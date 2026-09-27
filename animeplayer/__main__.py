@@ -127,6 +127,18 @@ def _selftest(out_path: str) -> int:
     check("keyring", keyring_backend)
     check("data_dir", lambda: DEFAULT_DB_PATH.parent)
     check("kirigami_compat", kirigami_compat.needed)
+
+    def controller_support() -> str:
+        from animeplayer import gamepad
+        if gamepad.sdl2 is None:
+            raise RuntimeError("SDL isn't bundled")
+        pad = gamepad.Gamepad()
+        if not pad.available:
+            raise RuntimeError("SDL couldn't start")
+        pad.shutdown()
+        return "SDL %d.%d.%d" % gamepad.sdl2.dll.version_tuple
+
+    check("controllers", controller_support)
     Path(out_path).write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     return 1 if any(v.startswith("FAIL") for v in results.values()) else 0
 

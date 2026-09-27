@@ -27,7 +27,11 @@ from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QGuiApplication
 
 try:  # pragma: no cover - depends on the platform's SDL
-    import sdl2
+    import warnings
+    with warnings.catch_warnings():
+        # "Using SDL2 binaries from pysdl2-dll": expected, and on every start.
+        warnings.simplefilter("ignore", UserWarning)
+        import sdl2
 except Exception:  # noqa: BLE001 -- no SDL means no controller support, not a crash
     sdl2 = None
 

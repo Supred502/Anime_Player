@@ -5,6 +5,7 @@ import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
 import QtQuick.Dialogs
+import QtCore
 import org.kde.kirigami as Kirigami
 
 Kirigami.ScrollablePage {
@@ -67,7 +68,9 @@ Kirigami.ScrollablePage {
         fileMode: FileDialog.SaveFile
         nameFilters: ["Anki deck (*.apkg)"]
         defaultSuffix: "apkg"
-        selectedFile: "file:anime-player-words.apkg"
+        // A save dialog can't be handed a file that doesn't exist yet, so
+        // it opens on Documents; the name typed gets .apkg if it lacks one.
+        currentFolder: StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
         onAccepted: {
             page.exporting = true
             page.exportStatus = "Making your deck..."

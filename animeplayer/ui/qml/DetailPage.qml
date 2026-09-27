@@ -578,6 +578,13 @@ Kirigami.ScrollablePage {
 
     function copyText(text) { applicationWindow().copyText(text) }
 
+    // Back from the player: where you are has moved on since this page
+    // loaded, so Continue and the grid read it again.
+    // (isCurrentPage, not visible: Kirigami keeps this page visible under
+    // the player, so "visible" never changes on the way back.)
+    onIsCurrentPageChanged: if (isCurrentPage && page.anime && page.anime.slug_id)
+        page.localProgress = backend.getLocalProgress(page.anime.slug_id)
+
     // ---- Watch together ------------------------------------------------------
     property var together: backend.watchTogether()
     Connections {

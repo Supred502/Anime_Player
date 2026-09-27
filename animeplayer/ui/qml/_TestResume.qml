@@ -20,7 +20,6 @@ AppWindow {
             if (root.step === 2) p.playEpisode(2, 400)
             if (root.step === 6) { log("leaving the player"); root.pageStack.goBack() }
             if (root.step === 7) {
-                p.localProgress = backend.getLocalProgress(p.anime.slug_id)
                 log("progress " + JSON.stringify(p.localProgress) + " -> resume ep " + p.resumeEpisode + " at " + p.resumeAt)
                 p.continueWatching()
             }
@@ -29,7 +28,6 @@ AppWindow {
                 root.pageStack.goBack()
             }
             if (root.step === 11) {
-                p.localProgress = backend.getLocalProgress(p.anime.slug_id)
                 log("after second visit: " + JSON.stringify(p.localProgress))
                 Qt.quit()
             }

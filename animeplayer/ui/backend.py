@@ -3477,6 +3477,10 @@ class Backend(QObject):
                 )
             )
             self._emit_anilist_home_lists()
+            # The show's page, if it's still the one open, shows it watched.
+            current = self._current_anime or {}
+            if current.get("anilist_id") == media_id:
+                self.anilistCurrentStatus.emit(_STATUS_LABELS.get(status, status), progress)
 
         self._pool.start(_Worker(work, done, self.anilistError.emit))
 
@@ -3847,7 +3851,7 @@ class Backend(QObject):
 
     _SEQUEL_RE = re.compile(
         r"\b(season|part|cour)\s*\d|\b\d+(st|nd|rd|th)\s+season|\b(ii|iii|iv)\b|\bmovie\b|"
-        r"\bfinal\b|\s[2-9]$|:\s.*\barc\b", re.IGNORECASE)
+        r"\bfinal\b|\bspecial\b|\s[2-9]$|:\s.*\barc\b", re.IGNORECASE)
 
     @staticmethod
     def _current_season() -> tuple[str, int]:
@@ -3870,8 +3874,11 @@ class Backend(QObject):
             if planning_ids:
                 picks = random.sample(planning_ids, min(20, len(planning_ids)))
                 pools.append(("On your Planning list", client.get_spotlight_pool("ids", ids=picks)))
+            # Series and films only: a special or an OVA isn't where anyone
+            # starts a show.
             gems = [g for g in client.get_spotlight_pool("gems", year=year)
-                    if not any(self._SEQUEL_RE.search(t) for t in g.media.titles)]
+                    if g.media.format in ("TV", "MOVIE")
+                    and not any(self._SEQUEL_RE.search(t) for t in g.media.titles)]
             pools.append(("Hidden gem", gems))
 
             wanted = {"Trending now": 3, "On your Planning list": 2, "Hidden gem": 2}
@@ -3902,6 +3909,9 @@ class Backend(QObject):
     def _spotlight_card(reason: str, m: Any, rank: int) -> dict[str, Any]:
         media = m.media
         description = _strip_html(media.description or "").replace("\n", " ")
+        # AniList synopses often end "(Source: Crunchyroll)": credit that
+        # reads as clutter in a hero banner.
+        description = re.sub(r"\s*[\(\[]\s*(Source|Written by)[^\)\]]*[\)\]]\s*$", "", description, flags=re.I).strip()
         if len(description) > 420:
             description = description[:420].rsplit(" ", 1)[0] + "…"
         return {
