@@ -243,7 +243,7 @@ class Backend(QObject):
 
     # -- downloads ---------------------------------------------------------
     downloadsChanged = Signal()                 # any row added/removed/finished
-    downloadProgress = Signal(int, bool, float, int)  # (episode id, dub, 0..1, bytes)
+    downloadProgress = Signal(int, bool, float, float)  # (episode id, dub, 0..1, bytes)
     downloadFailed = Signal(str)
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -1523,8 +1523,10 @@ class Backend(QObject):
     def allDownloads(self) -> list[dict[str, Any]]:
         return [self._download_card(e) for e in self._db.all_downloads()]
 
-    @Slot(result=int)
-    def downloadBytes(self) -> int:
+    # float, not int: Qt's int is 32-bit, and past 2 GB saved the number
+    # didn't make it to QML at all ("Error" on the Settings page).
+    @Slot(result=float)
+    def downloadBytes(self) -> float:
         files: list[str] = []
         for e in self._db.all_downloads():
             if e.status == "ready":
@@ -2888,12 +2890,12 @@ class Backend(QObject):
         """
         self.continueWatchingChanged.emit(self._continue_watching_rows())
 
-    def _continue_watching_rows(self) -> list[dict[str, Any]]:
+    def _continue_watching_rows(self, limit: int = 20) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         local_ids: set[int] = set()
         index = self._anilist_title_index()
 
-        for e in self._db.continue_watching():
+        for e in self._db.continue_watching(limit=limit):
             match = index.match(e.anime_title) if index is not None else None
             if match is not None:
                 local_ids.add(match.anilist_id)
@@ -3757,4 +3759,20 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, done, lambda message: self.watchTogetherNotice.emit(
             f"Couldn't update {session['name']}'s AniList: {message}")))
+
+    # -- the Continue page ---------------------------------------------------
+
+    @Slot(result=list)
+    def continueWatchingAll(self) -> list[dict[str, Any]]:
+        """Everything in progress: this PC's, then AniList's Watching list.
+        The home row shows the first twenty; the Continue page shows it all."""
+        return self._continue_watching_rows(limit=500)
+
+    @Slot(str)
+    def removeFromContinueWatching(self, slug_id: str) -> None:
+        """Forgets where you were in a show on this PC. Its AniList entry
+        (if any) is left alone."""
+        if slug_id:
+            self._db.delete_progress(slug_id)
+            self._emit_continue_watching()
 

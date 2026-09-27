@@ -83,7 +83,7 @@ Kirigami.ApplicationWindow {
     // Its own section rather than a Browse preset arrived at sideways, so the
     // nav entry stays lit while you are looking at it.
     function goContinue() {
-        return root.goTo("continue", "BrowsePage.qml", { startCategory: "continue" })
+        return root.goTo("continue", "ContinuePage.qml")
     }
 
     // Copying text, for anything in the app. A hidden TextEdit is the one

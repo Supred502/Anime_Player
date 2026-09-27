@@ -153,8 +153,13 @@ Item {
 
     HoverHandler { id: hoverHandler; cursorShape: Qt.PointingHandCursor }
     TapHandler { onTapped: resume.clicked() }
+    // A page with its own right-click menu for these cards handles the
+    // signal; otherwise it's the app's usual "Copy title" menu.
+    signal contextMenuRequested()
+    property bool customMenu: false
     TapHandler {
         acceptedButtons: Qt.RightButton
-        onTapped: applicationWindow().showCardMenu(resume.title)
+        onTapped: resume.customMenu ? resume.contextMenuRequested()
+                                    : applicationWindow().showCardMenu(resume.title)
     }
 }

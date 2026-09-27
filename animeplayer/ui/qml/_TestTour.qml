@@ -59,6 +59,7 @@ AppWindow {
     // Each stop: go there, wait for it to load, take the picture.
     readonly property var stops: [
         ["1-home", function() { backend.search("Frieren") }],
+        ["1b-continue", function() { root.goContinue() }],
         ["2-browse", function() { root.goBrowse() }],
         ["3-settings", function() { root.goSettings() }],
         ["4-detail", function() { if (root.found) root.goTo("browse", "DetailPage.qml", { anime: root.found }) }],

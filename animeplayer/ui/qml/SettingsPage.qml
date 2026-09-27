@@ -14,7 +14,7 @@ Kirigami.ScrollablePage {
     property var themeAccents: []
     property string currentAccent: ""
     property bool canDownload: false
-    property int downloadBytes: 0
+    property real downloadBytes: 0
     property string downloadFolder: ""
     property string downloadFolderUrl: ""
     property bool defaultFolder: true

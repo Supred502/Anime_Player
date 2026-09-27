@@ -371,6 +371,11 @@ class Database:
             self._conn.execute("DELETE FROM progress WHERE anime_slug_id = ?", (old_slug_id,))
             self._conn.commit()
 
+    def delete_progress(self, slug_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM progress WHERE anime_slug_id = ?", (slug_id,))
+            self._conn.commit()
+
     def continue_watching(self, limit: int = 20) -> list[ProgressEntry]:
         with self._lock:
             rows = self._conn.execute(

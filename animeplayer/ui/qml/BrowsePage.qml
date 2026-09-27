@@ -172,7 +172,10 @@ Kirigami.ScrollablePage {
     }
 
     function restoreBrowseState(saved) {
-        page.localKey = saved.localKey || ""
+        // A state saved on Continue Watching or Downloaded (see the preset
+        // menu) is from before those moved out of Browse: start fresh.
+        if (saved.localKey) { page.applyPreset("top-airing"); return }
+        page.localKey = ""
         page.presetLabel = saved.presetLabel || ""
         queryField.text = saved.keyword || ""
         page.filterSeason = saved.season || ""
@@ -632,8 +635,12 @@ Kirigami.ScrollablePage {
                     // ranked catalogs: they answer "where was I" and "what do
                     // I already have", which is what someone opening this
                     // picker most often wants.
+                    // Continue Watching and Downloaded used to be listed here
+                    // too. They have their own places now (the Continue page,
+                    // Library > Downloads), and being presets here is what
+                    // let Browse get stuck opening on Continue.
                     Instantiator {
-                        model: page.localCatalogs
+                        model: []
                         onObjectAdded: (index, object) => catalogMenu.insertItem(index, object)
                         onObjectRemoved: (index, object) => catalogMenu.removeItem(object)
                         delegate: Controls.MenuItem {
@@ -644,8 +651,6 @@ Kirigami.ScrollablePage {
                             onTriggered: page.applyPreset(modelData.key)
                         }
                     }
-                    Controls.MenuSeparator {}
-
                     Instantiator {
                         // Assigned once, not left as a live binding on
                         // backend.catalogs(): the preset list never changes,
