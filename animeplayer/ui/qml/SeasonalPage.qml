@@ -177,6 +177,7 @@ Kirigami.ScrollablePage {
                             // asked for explicitly.
                             Layout.preferredHeight: heightForWidth(page.cellWidth)
                             posterUrl: modelData.poster_url
+                            anilistId: modelData.anilist_id
                             title: modelData.title
                             subtitle: page.airingText(modelData)
                             scoreText: modelData.score > 0 ? (modelData.score / 10).toFixed(1) : ""

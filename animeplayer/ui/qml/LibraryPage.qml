@@ -380,6 +380,7 @@ Kirigami.ScrollablePage {
                         width: parent.width
                         height: parent.height
                         posterUrl: cell.modelData.poster_url || ""
+                        anilistId: cell.modelData.anilist_id || 0
                         title: cell.modelData.title
                         subtitle: page.tab === "downloads"
                                   ? cell.modelData.count + (cell.modelData.count === 1 ? " episode · " : " episodes · ")

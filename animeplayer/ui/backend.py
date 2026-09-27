@@ -256,6 +256,7 @@ class Backend(QObject):
         self._progressReady.connect(self._save_progress_on_gui_thread)
         self._idle_inhibitor = IdleInhibitor()
         self._spotlight_built = False
+        self._preview_cache: dict[str, dict[str, Any]] = {}
         self._catalog_lock = threading.Lock()
         self._catalog: dict[int, tuple[str, tuple[str, ...]]] = {}
         self._catalog_complete = False
@@ -4012,4 +4013,58 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, lambda title: self.searchSuggestion.emit(query, title),
                                  lambda _msg: None))
+
+    # -- hover previews ----------------------------------------------------------
+    # Resting the pointer on a poster shows a small card beside it: score,
+    # format, genres and the start of the synopsis. Looked up once per show
+    # and kept for the session.
+
+    previewReady = Signal(str, "QVariantMap")   # (key the card asked with, details)
+
+    @Slot(result=bool)
+    def getHoverPreviewEnabled(self) -> bool:
+        return (self._db.get_setting("hover_preview") or "true") == "true"
+
+    @Slot(bool)
+    def setHoverPreviewEnabled(self, value: bool) -> None:
+        self._db.set_setting("hover_preview", "true" if value else "false")
+
+    @Slot(str, int, str)
+    def requestPreview(self, key: str, anilist_id: int, title: str) -> None:
+        cache = self._preview_cache
+        if key in cache:
+            self.previewReady.emit(key, cache[key])
+            return
+        client = self._anilist_public
+
+        def work() -> dict[str, Any]:
+            media = None
+            if anilist_id:
+                media = client.get_media_by_id(anilist_id)
+            elif title:
+                found = client.search_media(title)
+                wanted = title.casefold()
+                media = next((m for m in found if any(t.casefold() == wanted for t in m.titles)),
+                             found[0] if found else None)
+            if media is None:
+                return {}
+            description = _strip_html(media.description or "").replace("\n", " ")
+            if len(description) > 260:
+                description = description[:260].rsplit(" ", 1)[0] + "…"
+            status = self._db.get_anilist_status(media.id)
+            return {
+                "title": media.title,
+                "score": media.average_score or 0,
+                "format": {"TV_SHORT": "TV Short"}.get(media.format or "", media.format or ""),
+                "episodes": media.episodes or 0,
+                "genres": list(media.genres[:4]),
+                "description": description,
+                "list_status": status.status if status else "",
+            }
+
+        def done(info: dict[str, Any]) -> None:
+            cache[key] = info
+            self.previewReady.emit(key, info)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
 

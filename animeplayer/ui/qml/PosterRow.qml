@@ -129,6 +129,7 @@ ColumnLayout {
                 width: row.cardWidth
                 height: shelf.height - Kirigami.Units.smallSpacing
                 posterUrl: model.poster_url || ""
+                anilistId: model.anilist_id || 0
                 title: model.title
                 subtitle: row.subtitleFor(model)
                 badgeText: row.badgeFor(model)

@@ -143,6 +143,7 @@ Kirigami.ScrollablePage {
         newEpisodeToggle.checked = backend.getNewEpisodeAlertsEnabled()
         updateChecksToggle.checked = backend.getUpdateChecksEnabled()
         discordToggle.checked = backend.getDiscordEnabled()
+        previewToggle.checked = backend.getHoverPreviewEnabled()
         dubEnglishToggle.checked = backend.getDubEnglishEnabled()
         page.hasJimakuKey = backend.hasJimakuKey()
         page.dictionaryState = backend.dictionaryState()
@@ -460,6 +461,16 @@ Kirigami.ScrollablePage {
                 Layout.maximumWidth: Kirigami.Units.gridUnit * 28
                 opacity: 0.7
                 font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
+
+            AppCheckBox {
+                id: previewToggle
+                Kirigami.FormData.label: "Posters:"
+                text: "Show details when the pointer rests on a poster"
+                onToggled: {
+                    backend.setHoverPreviewEnabled(checked)
+                    applicationWindow().previewsOn = checked
+                }
             }
 
             AppCheckBox {

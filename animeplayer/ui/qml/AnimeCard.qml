@@ -18,6 +18,8 @@ Item {
     id: card
 
     property string posterUrl: ""
+    // For the hover preview's lookup; without it the title is searched.
+    property int anilistId: 0
     property string title: ""
     property string subtitle: ""
     property string badgeText: ""        // top-right pill, e.g. an AniList status
@@ -248,9 +250,21 @@ Item {
             HoverHandler {
                 id: hoverHandler
                 cursorShape: Qt.PointingHandCursor
+                // The preview waits for the pointer to settle: sweeping
+                // across a row of posters shows nothing.
+                onPointChanged: if (hovered) previewTimer.restart()
+                onHoveredChanged: if (!hovered) {
+                    previewTimer.stop()
+                    applicationWindow().hidePreview(card)
+                }
+            }
+            Timer {
+                id: previewTimer
+                interval: 650
+                onTriggered: if (hoverHandler.hovered) applicationWindow().showPreview(card, hoverHandler.parent)
             }
             TapHandler {
-                onTapped: card.clicked()
+                onTapped: { previewTimer.stop(); applicationWindow().hidePreview(card); card.clicked() }
             }
             TapHandler {
                 acceptedButtons: Qt.RightButton

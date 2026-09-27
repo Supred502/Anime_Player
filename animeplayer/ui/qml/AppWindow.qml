@@ -379,6 +379,107 @@ Kirigami.ApplicationWindow {
         onActivated: root.toggleAppFullscreen()
     }
 
+    // ---- Hover previews (see AnimeCard) -------------------------------------
+    // One small card beside the poster the pointer rests on. Never covers
+    // the poster, never takes clicks, and goes the moment the pointer leaves.
+    property var previewCard: null
+    property var previewInfo: ({})
+    property string previewKey: ""
+    property bool previewsOn: true
+    function showPreview(card, poster) {
+        if (!root.previewsOn || !card.title) return
+        root.previewCard = card
+        root.previewKey = card.anilistId > 0 ? "id:" + card.anilistId : "title:" + card.title
+        root.previewInfo = { title: card.title }
+        backend.requestPreview(root.previewKey, card.anilistId, card.title)
+        let overlay = preview.parent
+        let p = poster.mapToItem(overlay, 0, 0)
+        let gap = Kirigami.Units.largeSpacing
+        preview.x = p.x + poster.width + gap + preview.width < overlay.width
+                    ? p.x + poster.width + gap : Math.max(gap, p.x - preview.width - gap)
+        preview.y = Math.max(gap, Math.min(p.y, overlay.height - preview.height - gap))
+        preview.shown = true
+    }
+    function hidePreview(card) {
+        if (card === undefined || card === root.previewCard) {
+            preview.shown = false
+            root.previewCard = null
+        }
+    }
+    Connections {
+        target: backend
+        function onPreviewReady(key, info) { if (key === root.previewKey && info.title) root.previewInfo = info }
+    }
+    Connections {
+        target: root.pageStack
+        function onCurrentItemChanged() { root.hidePreview() }
+    }
+    Rectangle {
+        id: preview
+        property bool shown: false
+        parent: Controls.Overlay.overlay
+        z: 950
+        width: Kirigami.Units.gridUnit * 16
+        height: previewColumn.implicitHeight + Kirigami.Units.largeSpacing * 2
+        radius: Kirigami.Units.smallSpacing * 2
+        color: Kirigami.Theme.alternateBackgroundColor
+        border.width: 1
+        border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.12)
+        visible: opacity > 0
+        opacity: shown ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 90 } }
+        // Nothing in here takes the pointer, so the poster underneath stays
+        // hovered and the preview never gets in the way.
+
+        ColumnLayout {
+            id: previewColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Kirigami.Units.largeSpacing
+            spacing: Kirigami.Units.smallSpacing
+            Controls.Label {
+                Layout.fillWidth: true
+                text: root.previewInfo.title || ""
+                font.bold: true
+                wrapMode: Text.WordWrap
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                visible: text !== ""
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                text: {
+                    let i = root.previewInfo, parts = []
+                    if (i.score > 0) parts.push("\u2605 " + (i.score / 10).toFixed(1))
+                    if (i.format) parts.push(i.format)
+                    if (i.episodes > 0) parts.push(i.episodes + (i.episodes === 1 ? " episode" : " episodes"))
+                    let lists = { CURRENT: "Watching", PLANNING: "Planning", COMPLETED: "Completed",
+                                  PAUSED: "Paused", DROPPED: "Dropped", REPEATING: "Rewatching" }
+                    if (i.list_status && lists[i.list_status]) parts.push(lists[i.list_status])
+                    return parts.join("  ·  ")
+                }
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: (root.previewInfo.genres || []).join(", ")
+                color: Kirigami.Theme.highlightColor
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                wrapMode: Text.WordWrap
+            }
+            Controls.Label {
+                Layout.fillWidth: true
+                visible: text !== ""
+                text: root.previewInfo.description || ""
+                wrapMode: Text.WordWrap
+                maximumLineCount: 6
+                elide: Text.ElideRight
+                opacity: 0.8
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
+        }
+    }
+
     function toggleMaximised() {
         if (root.maximised) root.showNormal()
         else root.showMaximized()
@@ -388,6 +489,7 @@ Kirigami.ApplicationWindow {
     // a Wayland client cannot place itself, so a saved x/y could be written
     // but never honoured (see backend.windowGeometry).
     Component.onCompleted: {
+        root.previewsOn = backend.getHoverPreviewEnabled()
         let saved = backend.windowGeometry()
         if (saved.width) { root.width = saved.width; root.height = saved.height }
         if (saved.maximised) root.showMaximized()
