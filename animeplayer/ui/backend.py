@@ -3241,6 +3241,8 @@ class Backend(QObject):
                 "nextAiringAt": extras.next_airing_at or 0,
                 "watchOrder": chain,
                 "unwatchedPrequels": unwatched,
+                # {"12": {"title", "thumbnail"}} -- string keys: QML maps are keyed by string.
+                "episodeArt": {str(n): {"title": t, "thumbnail": u} for n, (t, u) in extras.episode_art.items()},
                 "related": related,
                 "recommendations": [
                     self._media_summary_to_card(m) for m in extras.recommendations

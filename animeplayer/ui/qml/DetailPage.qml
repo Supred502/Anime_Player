@@ -19,6 +19,10 @@ Kirigami.ScrollablePage {
     property string anilistLabel: ""
     property int anilistProgress: 0
     property var localProgress: null
+    // Grid of numbers, or a list with titles and thumbnails. Remembered.
+    property bool listView: backend.learnOption("episode_view") === "list"
+    // "12" -> {title, thumbnail}, from AniList's official streaming listings.
+    property var episodeArt: ({})
     property bool dub: false
     // Remembered per show (see backend.showPrefs), so One Piece opens in sub
     // and Frieren in dub without being asked. Saved only after the saved
@@ -410,6 +414,7 @@ Kirigami.ScrollablePage {
             // The backend only emits for the anime still open, but this page
             // may have been pushed twice for different shows -- check anyway.
             if (extras.slug_id !== page.anime.slug_id) return
+            page.episodeArt = extras.episodeArt || ({})
             page.watchOrder = extras.watchOrder
             page.unwatchedPrequels = extras.unwatchedPrequels
             page.related = extras.related
@@ -1068,6 +1073,23 @@ Kirigami.ScrollablePage {
                 opacity: 0.6
             }
             Item { Layout.fillWidth: true }
+            Repeater {
+                model: [{ list: false, icon: "view-grid-symbolic", tip: "Grid" },
+                        { list: true, icon: "view-list-details-symbolic", tip: "List with titles" }]
+                Controls.ToolButton {
+                    required property var modelData
+                    Kirigami.Theme.inherit: true
+                    icon.name: modelData.icon
+                    checkable: true
+                    checked: page.listView === modelData.list
+                    onClicked: {
+                        page.listView = modelData.list
+                        backend.setLearnOption("episode_view", modelData.list ? "list" : "grid")
+                    }
+                    Controls.ToolTip.visible: hovered
+                    Controls.ToolTip.text: modelData.tip
+                }
+            }
             // Only worth explaining when there is something orange to explain.
             RowLayout {
                 spacing: Kirigami.Units.smallSpacing
@@ -1162,6 +1184,7 @@ Kirigami.ScrollablePage {
 
             GridLayout {
                 id: episodeGrid
+                visible: !page.listView
                 Layout.alignment: Qt.AlignTop | Qt.AlignLeft
 
                 readonly property int shownCount: pageEpisodesModel.count
@@ -1285,6 +1308,142 @@ Kirigami.ScrollablePage {
                             return parts.join("\n")
                         }
                         Controls.ToolTip.delay: 400
+                    }
+                }
+            }
+
+            // The same episodes as a list: thumbnail, number and title, and
+            // where each stands (watched, filler, saved) in words.
+            ColumnLayout {
+                id: episodeList
+                visible: page.listView
+                Layout.alignment: Qt.AlignTop | Qt.AlignLeft
+                Layout.preferredWidth: page.episodeAreaWidth
+                Layout.maximumWidth: page.episodeAreaWidth
+                spacing: Kirigami.Units.smallSpacing
+
+                Repeater {
+                    model: page.listView ? pageEpisodesModel : null
+                    delegate: Rectangle {
+                        id: row
+                        required property var model
+                        readonly property var art: page.episodeArt[String(model.number)] || null
+                        readonly property bool watched: page.anilistProgress > 0 && model.number <= page.anilistProgress
+                        readonly property bool resumeHere: !!page.localProgress
+                            && page.localProgress.episode_number === model.number
+                        readonly property var saved: page.downloadFor(model.episode_id)
+                        readonly property string title: row.art && row.art.title ? row.art.title
+                            : (model.title && model.title !== "Episode " + model.number ? model.title : "")
+
+                        Layout.fillWidth: true
+                        implicitHeight: Kirigami.Units.gridUnit * 4.4
+                        radius: Kirigami.Units.smallSpacing * 2
+                        color: rowHover.hovered
+                               ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                                         Kirigami.Theme.highlightColor.b, 0.18)
+                               : Kirigami.Theme.alternateBackgroundColor
+                        border.width: row.resumeHere ? 2 : 0
+                        border.color: Kirigami.Theme.highlightColor
+
+                        HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: page.requestEpisode(row.model.number) }
+                        TapHandler {
+                            acceptedButtons: Qt.RightButton
+                            onTapped: if (page.canDownload) page.toggleDownload(row.model.episode_id, row.model.number)
+                        }
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: Kirigami.Units.smallSpacing
+                            spacing: Kirigami.Units.largeSpacing
+
+                            // The thumbnail, or the number on its own when
+                            // AniList has no art for this one.
+                            Rectangle {
+                                Layout.fillHeight: true
+                                Layout.preferredWidth: height * 16 / 9
+                                radius: Kirigami.Units.smallSpacing
+                                color: Qt.rgba(0, 0, 0, 0.35)
+                                clip: true
+                                Image {
+                                    anchors.fill: parent
+                                    visible: !!row.art
+                                    source: row.art ? row.art.thumbnail : ""
+                                    fillMode: Image.PreserveAspectCrop
+                                    asynchronous: true
+                                    opacity: row.watched ? 0.55 : 1
+                                }
+                                Controls.Label {
+                                    anchors.centerIn: parent
+                                    visible: !row.art
+                                    text: row.model.number
+                                    font.bold: true
+                                    font.pixelSize: Kirigami.Units.gridUnit * 1.4
+                                }
+                                Kirigami.Icon {
+                                    anchors.centerIn: parent
+                                    visible: rowHover.hovered
+                                    width: Kirigami.Units.iconSizes.medium
+                                    height: width
+                                    source: "media-playback-start-symbolic"
+                                    color: "white"
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 2
+                                Controls.Label {
+                                    text: "Episode " + row.model.number
+                                    opacity: 0.6
+                                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                }
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    visible: row.title !== ""
+                                    text: row.title
+                                    font.bold: true
+                                    elide: Text.ElideRight
+                                }
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    elide: Text.ElideRight
+                                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                    color: row.model.filler ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.textColor
+                                    opacity: row.model.filler ? 1 : 0.7
+                                    text: {
+                                        let parts = []
+                                        if (row.resumeHere) parts.push("Continue here")
+                                        else if (row.watched) parts.push("Watched")
+                                        if (row.model.filler) parts.push("Filler")
+                                        if (row.saved) {
+                                            parts.push(row.saved.status === "ready" ? "Saved offline"
+                                                     : row.saved.status === "downloading" ? "Saving " + Math.round(row.saved.progress * 100) + "%"
+                                                     : row.saved.status === "failed" ? "Save failed" : "Queued to save")
+                                        }
+                                        return parts.join("  ·  ")
+                                    }
+                                }
+                            }
+
+                            Kirigami.Icon {
+                                visible: row.watched && !row.resumeHere
+                                Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                                Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                                source: "checkmark-symbolic"
+                                color: Kirigami.Theme.highlightColor
+                            }
+                            Controls.ToolButton {
+                                Kirigami.Theme.inherit: true
+                                visible: page.canDownload
+                                icon.name: !row.saved ? "folder-download-symbolic"
+                                         : row.saved.status === "ready" ? "edit-delete-symbolic" : "dialog-cancel-symbolic"
+                                onClicked: page.toggleDownload(row.model.episode_id, row.model.number)
+                                Controls.ToolTip.visible: hovered
+                                Controls.ToolTip.text: !row.saved ? "Save offline"
+                                    : row.saved.status === "ready" ? "Remove the saved copy" : "Cancel"
+                            }
+                        }
                     }
                 }
             }

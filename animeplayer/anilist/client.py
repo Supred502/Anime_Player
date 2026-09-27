@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -931,6 +932,7 @@ class AniListClient:
             next_episode=airing.get("episode"),
             next_airing_at=airing.get("airingAt"),
             status=media.get("status") or "",
+            episode_art=_episode_art(media.get("streamingEpisodes") or []),
         )
 
     # Six rounds is plenty: each one steps one sequel/prequel further from
@@ -1107,6 +1109,7 @@ query ($id: Int!) {
     }
     status
     nextAiringEpisode { episode airingAt }
+    streamingEpisodes { title thumbnail }
     reviews(perPage: 6, sort: RATING_DESC) {
       nodes {
         id
@@ -1125,6 +1128,20 @@ query ($id: Int!) {
 # rest are related viewing, not the same watch order, and putting them in the
 # chain is how a recap or an OVA ends up presented as "season 2".
 _STORY_RELATIONS = ("PREQUEL", "SEQUEL")
+
+_STREAMING_EPISODE_RE = re.compile(r"^\s*(?:Episode|Ep\.?|E)\s*(\d+)\s*[-:–.]?\s*(.*)$", re.IGNORECASE)
+
+
+def _episode_art(items: list[dict]) -> dict[int, tuple[str, str]]:
+    """AniList's streamingEpisodes are titled "Episode 12 - The Title". The
+    number comes from there, not the list order: the list is often out of
+    order, and sometimes has gaps."""
+    art: dict[int, tuple[str, str]] = {}
+    for item in items:
+        match = _STREAMING_EPISODE_RE.match(item.get("title") or "")
+        if match and item.get("thumbnail"):
+            art.setdefault(int(match.group(1)), (match.group(2).strip(), item["thumbnail"]))
+    return art
 
 # Formats that are side content whatever AniList calls the edge. An OVA or a
 # special is extra viewing, not a step in the story, and AniList files plenty
@@ -1262,6 +1279,11 @@ class MediaExtras:
     next_episode: int | None = None
     next_airing_at: int | None = None
     status: str = ""
+    # Episode number -> (title, thumbnail URL), from the official streaming
+    # listings AniList links to. Often missing, and never complete for a
+    # show still airing -- the episode list falls back to the source's own
+    # titles and a plain number.
+    episode_art: dict[int, tuple[str, str]] = field(default_factory=dict)
 
 
 def _is_side_content(media: dict, anchor: dict) -> bool:
