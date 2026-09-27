@@ -26,6 +26,8 @@ binaries = [
     (str(VENDOR / "ffprobe.exe"), "."),
 ]
 binaries += collect_dynamic_libs("fugashi")
+binaries += collect_dynamic_libs("sdl2dll")
+datas += collect_data_files("sdl2dll")
 
 a = Analysis(
     [str(ROOT / "packaging" / "windows" / "launch.py")],
@@ -42,6 +44,8 @@ a = Analysis(
         "fugashi",
         *collect_submodules("cutlet"),
         *collect_submodules("genanki"),
+        *collect_submodules("sdl2"),
+        "sdl2dll",
     ],
     excludes=["tkinter", "pytest", "respx"],
 )

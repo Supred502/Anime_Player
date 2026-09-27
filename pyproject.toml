@@ -17,6 +17,9 @@ dependencies = [
     "cutlet",
     # Saved words as an Anki deck.
     "genanki",
+    # Game controllers (Xbox, PlayStation, Switch, Steam Deck).
+    "pysdl2",
+    "pysdl2-dll",
 ]
 
 [project.optional-dependencies]

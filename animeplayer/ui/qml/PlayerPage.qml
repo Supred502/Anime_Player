@@ -272,6 +272,33 @@ Kirigami.Page {
         win.pageStack.goBack()
     }
 
+    // A controller in the player (see GamepadNav): A pauses, left/right
+    // seek 10s and the triggers 30s, up/down is volume, LB/RB change
+    // episode, Y skips the intro or outro, X is Learn Japanese, Start is
+    // fullscreen, B leaves. View/Select hands over to the on-screen controls.
+    function gamepadAction(action) {
+        page.controlsVisible = true
+        hideTimer.restart()
+        switch (action) {
+        case "accept": video.togglePause(); break
+        case "left": page.seekRelative(-10); break
+        case "right": page.seekRelative(10); break
+        case "lt": page.seekRelative(-30); break
+        case "rt": page.seekRelative(30); break
+        case "up": page.volumeUp(); page.flashVolume(); break
+        case "down": page.volumeDown(); page.flashVolume(); break
+        case "lb": page.previousEpisode(); break
+        case "rb": page.nextEpisode(); break
+        case "y":
+            if (page.skipOp && video.position >= page.skipOp.start && video.position < page.skipOp.end) page.skipIntroNow()
+            else if (page.skipEd && video.position >= page.skipEd.start && video.position < page.skipEd.end) page.skipOutroNow()
+            break
+        case "x": page.learnMode = !page.learnMode; break
+        case "menu": page.toggleFullscreen(); break
+        case "back": applicationWindow().pageStack.goBack(); break
+        }
+    }
+
     function nextEpisode() { backend.loadNextEpisode(page.episodeNumber, page.dub) }
     function previousEpisode() { backend.loadPreviousEpisode(page.episodeNumber, page.dub) }
     function volumeUp() { video.setVolume(video.volume + 10) }

@@ -14,8 +14,8 @@ multi-monitor edges are the compositor's business regardless.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, Qt, Slot
-from PySide6.QtGui import QWindow
+from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Slot
+from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent, QWindow
 from PySide6.QtQuick import QQuickWindow
 
 
@@ -57,3 +57,42 @@ class WindowChrome(QObject):
         if not isinstance(window, QQuickWindow):
             return False
         return window.grabWindow().save(path)
+
+    @Slot(QObject, float, float, bool)
+    def click(self, window: QObject, x: float, y: float, right: bool = False) -> None:
+        """A mouse click at (x, y) in the window, exactly as the mouse would
+        make it. How a controller's A (and X, for a right-click) presses
+        whatever it has highlighted: every button, card and cell in the app
+        already answers to a click, so none of them needs to know about
+        controllers."""
+        if not isinstance(window, QQuickWindow):
+            return
+        pos = QPointF(x, y)
+        glob = window.mapToGlobal(pos)
+        button = Qt.MouseButton.RightButton if right else Qt.MouseButton.LeftButton
+        for kind, pressed in ((QEvent.Type.MouseMove, Qt.MouseButton.NoButton),
+                              (QEvent.Type.MouseButtonPress, button),
+                              (QEvent.Type.MouseButtonRelease, Qt.MouseButton.NoButton)):
+            which = Qt.MouseButton.NoButton if kind == QEvent.Type.MouseMove else button
+            QGuiApplication.sendEvent(window, QMouseEvent(kind, pos, glob, which, pressed,
+                                                          Qt.KeyboardModifier.NoModifier))
+
+    @Slot(QObject, float, float)
+    def hover(self, window: QObject, x: float, y: float) -> None:
+        """Moves the (invisible) pointer to (x, y), so what a controller has
+        highlighted also looks hovered -- and shows its hover preview."""
+        if not isinstance(window, QQuickWindow):
+            return
+        pos = QPointF(x, y)
+        QGuiApplication.sendEvent(window, QMouseEvent(
+            QEvent.Type.MouseMove, pos, window.mapToGlobal(pos), Qt.MouseButton.NoButton,
+            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier))
+
+    @Slot(QObject, int)
+    def key(self, window: QObject, key: int) -> None:
+        """A key press and release, to the window. B on a controller sends
+        Escape, which is what closes a menu or a dialog in Qt."""
+        if not isinstance(window, QQuickWindow):
+            return
+        for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
+            QGuiApplication.sendEvent(window, QKeyEvent(kind, key, Qt.KeyboardModifier.NoModifier))

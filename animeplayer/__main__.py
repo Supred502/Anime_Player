@@ -16,6 +16,7 @@ from animeplayer import platform_setup
 platform_setup.before_imports()
 
 from animeplayer.player.mpv_video_item import MpvVideoItem  # noqa: E402 -- needs the DLL path set up first
+from animeplayer.gamepad import Gamepad  # noqa: E402
 from animeplayer.ui import kirigami_compat  # noqa: E402
 from animeplayer.ui.backend import Backend  # noqa: E402
 from animeplayer.ui.window_chrome import WindowChrome  # noqa: E402
@@ -179,6 +180,10 @@ def main() -> int:
     # collected while QML still held a pointer to it.
     window_chrome = WindowChrome()
     engine.rootContext().setContextProperty("windowChrome", window_chrome)
+    # Controllers (see gamepad.py). Held here for the same reason.
+    game_controller = Gamepad()
+    engine.rootContext().setContextProperty("gamepad", game_controller)
+    app.aboutToQuit.connect(game_controller.shutdown)
     app.aboutToQuit.connect(backend.shutdown)
 
     # ANIMEPLAYER_TEST_QML swaps in a scripted driver that walks the real

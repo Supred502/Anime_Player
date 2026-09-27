@@ -272,6 +272,8 @@ Kirigami.ApplicationWindow {
         }
 
         contentItem: ColumnLayout {
+            // GamepadNav leaves it out of the popups that take the controller.
+            objectName: "updateCard"
             spacing: Kirigami.Units.smallSpacing
             RowLayout {
                 Layout.fillWidth: true
@@ -510,6 +512,9 @@ Kirigami.ApplicationWindow {
             }
         }
     }
+
+    // Game controllers: see GamepadNav.qml and gamepad.py.
+    GamepadNav { window: root }
 
     function toggleMaximised() {
         if (root.maximised) root.showNormal()
