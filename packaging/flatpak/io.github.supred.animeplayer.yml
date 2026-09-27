@@ -1,0 +1,187 @@
+# Flatpak for Linux, and the Steam Deck (SteamOS). Build with:
+#   flatpak run org.flatpak.Builder --user --install --force-clean build-dir \
+#       packaging/flatpak/io.github.supred.animeplayer.yml
+# or as a single-file bundle, as the GitHub workflow does for each release.
+#
+# KDE's runtime plus PySide built against it, so the Deck gets the real
+# Kirigami UI (not the Windows stand-in). libmpv and what it needs are built
+# the way KDE's own mpv player, Haruna, builds them on Flathub.
+app-id: io.github.supred.animeplayer
+runtime: org.kde.Platform
+runtime-version: '6.11'
+sdk: org.kde.Sdk
+base: io.qt.PySide.BaseApp
+base-version: '6.11'
+command: animeplayer
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  # Game controllers (SDL reads /dev/input and hidraw).
+  - --device=all
+  # Downloads can go anywhere the user picks.
+  - --filesystem=home
+  # AniList / Jimaku logins (Secret Service: KWallet, GNOME Keyring).
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.kwalletd6
+  - --talk-name=org.freedesktop.ScreenSaver
+  - --talk-name=org.freedesktop.PowerManagement.Inhibit
+  - --talk-name=org.freedesktop.Notifications
+  # Updating itself: installs the next release's bundle through the host's
+  # flatpak (see animeplayer/updates.py).
+  - --talk-name=org.freedesktop.Flatpak
+  # Discord status (animeplayer/discord_presence.py).
+  - --filesystem=xdg-run/discord-ipc-0
+  - --filesystem=xdg-run/app/com.discordapp.Discord:ro
+cleanup:
+  - '*.a'
+  - '*.la'
+  - /include
+  - /lib/cmake
+  - /lib/pkgconfig
+  - /share/man
+cleanup-commands:
+  - /app/cleanup-BaseApp.sh
+  # From the PySide base, and unused here: LLVM/Clang (only for generating
+  # bindings), NumPy and PyOpenGL -- about 250 MB between them. (A plain
+  # cleanup rule only reaches what this manifest's own modules installed.)
+  - rm -rf /app/lib/libLLVM* /app/lib/libclang* /app/lib/python3.13/site-packages/numpy*
+    /app/lib/python3.13/site-packages/OpenGL /app/lib/python3.13/site-packages/PyOpenGL*
+build-options:
+  env:
+    # The PySide base carries Qt WebEngine; this app doesn't use it.
+    BASEAPP_REMOVE_WEBENGINE: '1'
+
+
+modules:
+  - name: libmpv
+    cleanup:
+      - /share/bash-completion
+      - /share/fish
+      - /share/zsh
+      - /share/doc
+      - /share/icons
+      - /share/applications
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=true
+      - -Dlua=enabled
+      - -Ddebug=false
+      - -Dbuild-date=false
+      - -Dalsa=disabled
+      - -Dmanpage-build=disabled
+    sources:
+      - type: archive
+        url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.41.0.tar.gz
+        sha256: ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209
+        x-checker-data:
+          type: anitya
+          project-id: 5348
+          stable-only: true
+          url-template: https://github.com/mpv-player/mpv/archive/refs/tags/v$version.tar.gz
+    modules:
+      - name: luajit
+        no-autogen: true
+        make-args:
+          - BUILDMODE=dynamic
+          - PREFIX=${FLATPAK_DEST}
+        make-install-args:
+          - PREFIX=${FLATPAK_DEST}
+        sources:
+          - type: git
+            url: https://github.com/openresty/luajit2.git
+            tag: v2.1-20260914
+            commit: ae3d1eecfdbe70b54040779f7b4655e132b9d875
+            x-checker-data:
+              type: git
+              tag-pattern: ^v([\d.-]+)$
+              stable-only: false
+        cleanup:
+          - /bin
+
+      - name: libplacebo
+        buildsystem: meson
+        config-opts:
+          - -Ddemos=false
+        sources:
+          - type: git
+            url: https://github.com/haasn/libplacebo.git
+            tag: v7.360.1
+            commit: cee9b076f2c63104ccfd497fa79c39a867293ec4
+            x-checker-data:
+              type: git
+              tag-pattern: ^v([\d.]+)$
+
+      - name: libXpresent
+        buildsystem: autotools
+        sources:
+          - type: archive
+            url: https://xorg.freedesktop.org/archive/individual/lib/libXpresent-1.0.2.tar.xz
+            sha256: 4e5b21b4812206a4b223013606ae31170502c1043038777a1ef8f70c09d37602
+            x-checker-data:
+              type: anitya
+              project-id: 17166
+              stable-only: true
+              url-template: https://xorg.freedesktop.org/archive/individual/lib/libXpresent-$version.tar.xz
+
+      - name: libass
+        config-opts:
+          - --disable-static
+        sources:
+          - type: archive
+            url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.gz
+            sha256: caab4b993dd7be6187c55623b789ed75dddefea6e65938af134637c732fe094a
+            x-checker-data:
+              type: anitya
+              project-id: 1560
+              stable-only: true
+              url-template: https://github.com/libass/libass/releases/download/$version/libass-$version.tar.gz
+
+      - name: uchardet
+        buildsystem: cmake-ninja
+        config-opts:
+          - -DCMAKE_BUILD_TYPE=Release
+          - -DBUILD_STATIC=0
+          - -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+        cleanup:
+          - /bin
+        sources:
+          - type: archive
+            url: https://www.freedesktop.org/software/uchardet/releases/uchardet-0.0.8.tar.xz
+            sha256: e97a60cfc00a1c147a674b097bb1422abd9fa78a2d9ce3f3fdcc2e78a34ac5f0
+            x-checker-data:
+              type: anitya
+              project-id: 9265
+              stable-only: true
+              url-template: https://www.freedesktop.org/software/uchardet/releases/uchardet-$version.tar.xz
+
+  - name: animeplayer
+    buildsystem: simple
+    build-options:
+      # Python dependencies come straight from PyPI (this is a self-hosted
+      # build, not Flathub's offline one).
+      build-args:
+        - --share=network
+    build-commands:
+      # Everything but PySide6, which comes from the base: pip would
+      # otherwise fetch its own copy, with its own Qt, beside KDE's.
+      # (ffmpeg, ffprobe and SDL2 are in the runtime already.)
+      - pip3 install --prefix=/app --no-cache-dir httpx python-mpv keyring qrcode Pillow fugashi unidic-lite cutlet genanki pysdl2
+      - pip3 install --prefix=/app --no-cache-dir --no-deps --no-build-isolation .
+      - install -Dm755 packaging/flatpak/animeplayer.sh /app/bin/animeplayer
+      - install -Dm644 packaging/flatpak/io.github.supred.animeplayer.desktop /app/share/applications/io.github.supred.animeplayer.desktop
+      - install -Dm644 animeplayer/ui/assets/images/AP.svg /app/share/icons/hicolor/scalable/apps/io.github.supred.animeplayer.svg
+      - install -Dm644 packaging/flatpak/io.github.supred.animeplayer.metainfo.xml /app/share/metainfo/io.github.supred.animeplayer.metainfo.xml
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .venv
+          - build
+          - dist
+          - vendor
+          - build-dir
+          - .flatpak-builder

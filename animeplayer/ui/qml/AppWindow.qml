@@ -400,7 +400,7 @@ Kirigami.ApplicationWindow {
                 visible: root.updateError === ""
                 wrapMode: Text.WordWrap
                 opacity: 0.8
-                text: root.updateHow === "installer"
+                text: root.updateHow === "installer" || root.updateHow === "flatpak"
                       ? "It downloads in the background, then the app restarts on the new version."
                       : root.updateHow === "git"
                         ? "Pulls the new code with git, then restarts."

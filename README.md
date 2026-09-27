@@ -73,7 +73,25 @@ click **More info → Run anyway**.
 
 The app checks for new versions by itself and offers them with a list of what's new.
 
-### Linux
+### Steam Deck (and any Linux with Flatpak)
+
+1. In **Desktop Mode**, download `AnimePlayer-…flatpak` from the
+   [latest release](https://github.com/Supred502/Anime_Player/releases/latest).
+2. Open a terminal (Konsole) where it downloaded and run:
+   ```sh
+   flatpak install --user AnimePlayer-*.flatpak
+   ```
+   (Installs the KDE runtime it needs from Flathub the first time.)
+3. It's now in the app menu. For **Gaming Mode**: in Steam, *Add a Game → Add a Non-Steam
+   Game*, pick **Anime Player**, then switch back to Gaming Mode and launch it from your library.
+
+The controller works throughout: the D-pad or left stick moves, **A** selects, **B** goes back,
+**LB/RB** switch pages, **Y** searches with an on-screen keyboard, **Start** is fullscreen. In the
+player: **A** pause, **←/→** seek, **LB/RB** previous/next episode, **Y** skip intro.
+
+The app updates itself from inside, as on Windows.
+
+### Linux from source
 
 Runs from source. On Fedora (other distributions have the same packages under similar names):
 

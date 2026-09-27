@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Anime Player
+GenericName=Anime player
+Comment=Watch and keep track of anime, with AniList sync and a Learn Japanese mode
+Exec=animeplayer
+Icon=io.github.supred.animeplayer
+Categories=AudioVideo;Video;Player;Qt;KDE;
+Keywords=anime;anilist;video;player;japanese;
+StartupWMClass=io.github.supred.animeplayer

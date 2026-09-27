@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.supred.animeplayer</id>
+  <name>Anime Player</name>
+  <summary>Watch and keep track of anime</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <developer id="io.github.supred502">
+    <name>Supred502</name>
+  </developer>
+  <description>
+    <p>A desktop app for finding, watching and keeping track of anime, with AniList sync,
+    offline downloads, skip intro, controller support and a Learn Japanese mode.</p>
+  </description>
+  <launchable type="desktop-id">io.github.supred.animeplayer.desktop</launchable>
+  <url type="homepage">https://github.com/Supred502/Anime_Player</url>
+  <url type="bugtracker">https://github.com/Supred502/Anime_Player/issues</url>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>gamepad</control>
+  </supports>
+</component>

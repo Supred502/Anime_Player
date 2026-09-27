@@ -12,11 +12,15 @@ How an update is applied depends on how the app is running:
   one (see packaging/windows/installer.iss).
 * A git checkout (running from source, as on the developer's own machine):
   `git pull`, then restart.
+* The Flatpak (Linux, the Steam Deck): download the release's .flatpak
+  bundle and install it with the system's own flatpak (from inside the
+  sandbox, through flatpak-spawn), then start the new one.
 * Anything else: the release page is opened and the rest is up to the user.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -31,6 +35,8 @@ from animeplayer.version import REPO, VERSION
 
 API_URL = f"https://api.github.com/repos/{REPO}/releases/latest"
 INSTALLER_SUFFIX = "-Setup.exe"
+FLATPAK_SUFFIX = ".flatpak"
+FLATPAK_ID = "io.github.supred.animeplayer"
 
 
 class UpdateError(Exception):
@@ -44,6 +50,8 @@ class Release:
     page_url: str
     installer_url: str  # "" when the release has no Windows installer attached
     installer_size: int
+    flatpak_url: str = ""
+    flatpak_size: int = 0
 
 
 def parse_version(text: str) -> tuple[int, ...]:
@@ -73,12 +81,16 @@ def latest_release(client: httpx.Client) -> Release | None:
     data = resp.json()
     installer = next((a for a in data.get("assets") or []
                       if a.get("name", "").endswith(INSTALLER_SUFFIX)), None)
+    bundle = next((a for a in data.get("assets") or []
+                   if a.get("name", "").endswith(FLATPAK_SUFFIX)), None)
     return Release(
         version=".".join(str(p) for p in parse_version(data.get("tag_name", ""))),
         notes=(data.get("body") or "").strip(),
         page_url=data.get("html_url") or f"https://github.com/{REPO}/releases",
         installer_url=installer["browser_download_url"] if installer else "",
         installer_size=int(installer.get("size") or 0) if installer else 0,
+        flatpak_url=bundle["browser_download_url"] if bundle else "",
+        flatpak_size=int(bundle.get("size") or 0) if bundle else 0,
     )
 
 
@@ -105,8 +117,14 @@ def source_checkout() -> Path | None:
     return root if (root / ".git").exists() else None
 
 
+def in_flatpak() -> bool:
+    return bool(os.environ.get("FLATPAK_ID"))
+
+
 def how_to_install() -> str:
-    """"installer", "git" or "page" -- see the module docstring."""
+    """"installer", "flatpak", "git" or "page" -- see the module docstring."""
+    if in_flatpak():
+        return "flatpak"
     if is_frozen() and sys.platform == "win32":
         return "installer"
     if not is_frozen() and source_checkout() is not None:
@@ -115,13 +133,15 @@ def how_to_install() -> str:
 
 
 def download_installer(client: httpx.Client, release: Release, folder: Path,
-                       on_progress: Callable[[float], None]) -> Path:
+                       on_progress: Callable[[float], None], flatpak: bool = False) -> Path:
     folder.mkdir(parents=True, exist_ok=True)
-    target = folder / f"AnimePlayer-{release.version}{INSTALLER_SUFFIX}"
+    url = release.flatpak_url if flatpak else release.installer_url
+    expected = release.flatpak_size if flatpak else release.installer_size
+    target = folder / f"AnimePlayer-{release.version}{FLATPAK_SUFFIX if flatpak else INSTALLER_SUFFIX}"
     partial = target.with_suffix(".part")
-    with client.stream("GET", release.installer_url, follow_redirects=True, timeout=60) as resp:
+    with client.stream("GET", url, follow_redirects=True, timeout=60) as resp:
         resp.raise_for_status()
-        total = int(resp.headers.get("content-length") or release.installer_size or 0)
+        total = int(resp.headers.get("content-length") or expected or 0)
         done = 0
         with open(partial, "wb") as out:
             for chunk in resp.iter_bytes(1 << 16):
@@ -129,7 +149,7 @@ def download_installer(client: httpx.Client, release: Release, folder: Path,
                 done += len(chunk)
                 if total:
                     on_progress(min(1.0, done / total))
-    if release.installer_size and partial.stat().st_size != release.installer_size:
+    if expected and partial.stat().st_size != expected:
         partial.unlink(missing_ok=True)
         raise UpdateError("The download was cut short -- try again.")
     partial.replace(target)
@@ -142,6 +162,23 @@ def run_installer(path: Path) -> None:
     flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
     subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
                      creationflags=flags, close_fds=True)
+
+
+def install_flatpak_bundle(bundle: Path) -> str:
+    """Installs a downloaded .flatpak with the host's flatpak (this app runs
+    sandboxed, so through flatpak-spawn). Returns flatpak's message on
+    failure, "" on success."""
+    try:
+        result = subprocess.run(
+            ["flatpak-spawn", "--host", "flatpak", "install", "--user", "-y", "--noninteractive",
+             "--bundle", str(bundle)],
+            capture_output=True, text=True, timeout=600)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return str(exc)
+    if result.returncode != 0:
+        output = (result.stderr or result.stdout).strip()
+        return output.splitlines()[-1] if output else "flatpak install failed"
+    return ""
 
 
 def git_pull(root: Path) -> str:

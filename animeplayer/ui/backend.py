@@ -137,6 +137,18 @@ def _notify_desktop(title: str, body: str) -> None:
     if platform_setup.notify(title, body):
         return
     if shutil.which("notify-send") is None:
+        # The Flatpak has no notify-send, but its runtime has gdbus, which
+        # can make the same call on the session bus.
+        if shutil.which("gdbus") is not None:
+            try:
+                subprocess.Popen(
+                    ["gdbus", "call", "--session", "--dest", "org.freedesktop.Notifications",
+                     "--object-path", "/org/freedesktop/Notifications",
+                     "--method", "org.freedesktop.Notifications.Notify",
+                     "Anime Player", "0", "io.github.supred.animeplayer", title, body, "[]", "{}", "8000"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError:
+                pass
         return
     try:
         subprocess.Popen(
@@ -3534,7 +3546,7 @@ class Backend(QObject):
                 return
             self._release = release
             how = updates.how_to_install()
-            if how == "installer" and not release.installer_url:
+            if (how == "installer" and not release.installer_url) or (how == "flatpak" and not release.flatpak_url):
                 how = "page"
             self.updateAvailable.emit(release.version, release.notes, how)
 
@@ -3567,6 +3579,20 @@ class Backend(QObject):
                 self._updateReadyToRun.emit(str(path))
 
             self._pool.start(_Worker(work, done, self.updateFailed.emit))
+        elif how == "flatpak" and release.flatpak_url:
+            # The download goes somewhere the host's flatpak can read it: the
+            # app's own data folder is inside the sandbox's view of $HOME.
+            folder = Path.home() / ".cache" / "animeplayer-update"
+
+            def work() -> str:
+                bundle = updates.download_installer(self._http, release, folder,
+                                                    self.updateProgress.emit, flatpak=True)
+                error = updates.install_flatpak_bundle(bundle)
+                if error:
+                    raise updates.UpdateError(error)
+                return "flatpak"
+
+            self._pool.start(_Worker(work, self._updateReadyToRun.emit, self.updateFailed.emit))
         elif how == "git":
             root = updates.source_checkout()
 
@@ -3592,7 +3618,10 @@ class Backend(QObject):
     _updateReadyToRun = Signal(str)
 
     def _run_update(self, installer: str) -> None:
-        if installer:
+        if installer == "flatpak":
+            # Already installed; start the new one through the host.
+            QProcess.startDetached("flatpak-spawn", ["--host", "flatpak", "run", updates.FLATPAK_ID])
+        elif installer:
             try:
                 updates.run_installer(Path(installer))
             except OSError as exc:

@@ -59,6 +59,13 @@ def needed() -> bool:
     asks for the stand-in anyway, to preview the Windows look on Linux)."""
     if os.environ.get("ANIMEPLAYER_COMPAT_UI"):
         return True
+    # In the Flatpak outside a KDE desktop -- the Steam Deck's Gaming Mode
+    # (gamescope), GNOME -- KDE's colour settings don't reach the app and
+    # the real Kirigami could come up light. The stand-in is dark
+    # regardless.
+    desktop = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    if os.environ.get("FLATPAK_ID") and "KDE" not in desktop.upper():
+        return True
     from PySide6.QtCore import QLibraryInfo
     qml_root = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.QmlImportsPath))
     return not (qml_root / "org" / "kde" / "kirigami" / "qmldir").exists()
