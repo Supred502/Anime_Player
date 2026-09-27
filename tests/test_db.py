@@ -198,3 +198,22 @@ def test_ignore_anilist_defaults_to_off_and_round_trips(tmp_path: Path) -> None:
 
     db.set_ignore_anilist(101, False)
     assert db.get_ignore_anilist(101) is False
+
+
+def test_library_lists_and_items(tmp_path):
+    from animeplayer.storage.db import Database
+    db = Database(tmp_path / "t.db")
+    soon = db.create_library_list("Next 30 days")
+    later = db.create_library_list("Someday")
+    show = {"slug_id": "frieren-1", "numeric_id": "1", "title": "Frieren", "poster_url": "p"}
+    db.add_to_library(soon, show)
+    db.add_to_library(soon, show)  # adding twice is one entry
+    db.add_to_library(later, show)
+    assert [(l["name"], l["count"]) for l in db.library_lists()] == [("Next 30 days", 1), ("Someday", 1)]
+    assert sorted(db.lists_containing("frieren-1")) == sorted([soon, later])
+    db.remove_from_library(later, "frieren-1")
+    assert db.lists_containing("frieren-1") == [soon]
+    db.rename_library_list(soon, "This month")
+    db.delete_library_list(soon)
+    assert [l["name"] for l in db.library_lists()] == ["Someday"]
+    assert db.lists_containing("frieren-1") == []

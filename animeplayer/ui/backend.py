@@ -8,6 +8,7 @@ safe to call directly from worker threads too -- see storage/db.py.
 
 from __future__ import annotations
 
+import collections
 import json
 import os
 import random
@@ -17,6 +18,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import webbrowser
 from dataclasses import asdict, replace
@@ -296,6 +298,11 @@ class Backend(QObject):
         self._playing = False
         self._download_pool = QThreadPool()
         self._download_pool.setMaxThreadCount(1)
+        # The line of episodes waiting to download, in the order they'll run,
+        # and the one running now. Read and changed from both threads.
+        self._download_lock = threading.Lock()
+        self._pending_downloads: list[tuple[DownloadRequest, Path]] = []
+        self._active_download: DownloadRequest | None = None
         # Anything left mid-flight when the app was last closed is not
         # running any more, whatever the database says.
         for entry in self._db.all_downloads():
@@ -326,6 +333,19 @@ class Backend(QObject):
         self._update_timer.timeout.connect(lambda: self.checkForUpdates(False))
         self._update_timer.start()
         self._updateReadyToRun.connect(self._run_update)
+
+        # The last few things that went wrong, for "Report a problem".
+        self._recent_errors: collections.deque[str] = collections.deque(maxlen=15)
+        for name, signal in (
+            ("Search", self.searchFailed), ("Episodes", self.episodesFailed),
+            ("Stream", self.streamFailed), ("AniList", self.anilistError),
+            ("Finding show", self.anilistAnimeResolveErrored), ("Browse", self.browseFailed),
+            ("Discover", self.discoverFailed), ("Phone remote", self.remoteServerFailed),
+            ("Download", self.downloadFailed), ("AniList list", self.listStatusFailed),
+            ("Japanese subtitles", self.japaneseSubsFailed), ("Dictionary", self.dictionaryFailed),
+            ("Update", self.updateFailed),
+        ):
+            signal.connect(lambda message, name=name: self.noteError(f"{name}: {message}"))
         QTimer.singleShot(8_000, lambda: self.checkForUpdates(False))
 
     def _drop_mappings_from_a_previous_source(self) -> None:
@@ -1549,24 +1569,79 @@ class Backend(QObject):
                 bytes=0, message="", created_at=time.time(),
             )
         )
+        with self._download_lock:
+            self._pending_downloads.append((request, destination))
+        # One "run whatever is first in line" job per queued episode, rather
+        # than a job bound to this episode: that is what lets the queue be
+        # reordered after the fact (see moveDownload).
+        self._download_pool.start(_Worker(self._run_next_download, self._download_finished,
+                                          lambda _msg: self.downloadsChanged.emit()))
 
-        def work() -> None:
+    def _run_next_download(self) -> tuple[DownloadRequest, str] | None:
+        """On the download thread. Returns (request, error or "")."""
+        with self._download_lock:
+            if not self._pending_downloads:
+                return None
+            request, destination = self._pending_downloads.pop(0)
+            self._active_download = request
+        try:
             self._run_download(request, destination)
+            return request, ""
+        except Exception as exc:  # noqa: BLE001 -- reported per episode below
+            return request, str(exc)
+        finally:
+            with self._download_lock:
+                self._active_download = None
 
-        def done(_result: None) -> None:
-            self.downloadsChanged.emit()
-
-        def failed(message: str) -> None:
+    def _download_finished(self, result: tuple[DownloadRequest, str] | None) -> None:
+        if result is not None:
+            request, error = result
             # "cancelled" is the user's own doing, not something to report at
             # them -- the row is already gone by the time this runs.
-            if message != "cancelled":
+            if error and error != "cancelled":
                 self._db.set_download_status(request.episode_id, request.dub, "failed",
-                                             message=message)
+                                             message=error)
                 self.downloadFailed.emit(f"{request.anime_title} episode "
-                                         f"{request.episode_number:g}: {message}")
-            self.downloadsChanged.emit()
+                                         f"{request.episode_number:g}: {error}")
+        self.downloadsChanged.emit()
 
-        self._download_pool.start(_Worker(work, done, failed))
+    @Slot(result=list)
+    def downloadQueue(self) -> list[dict[str, Any]]:
+        """What's downloading now, then what's waiting, in the order they'll run."""
+        with self._download_lock:
+            order = ([self._active_download] if self._active_download else []) \
+                + [r for r, _ in self._pending_downloads]
+        cards = []
+        for request in order:
+            entry = self._db.get_download(request.episode_id, request.dub)
+            if entry is not None:
+                cards.append(self._download_card(entry))
+        return cards
+
+    @Slot(int, bool, int)
+    def moveDownload(self, episode_id: int, dub: bool, to_index: int) -> None:
+        """Moves a waiting episode to position to_index in the line (0 = next)."""
+        with self._download_lock:
+            index = next((i for i, (r, _) in enumerate(self._pending_downloads)
+                          if r.episode_id == episode_id and r.dub == dub), None)
+            if index is None:
+                return
+            item = self._pending_downloads.pop(index)
+            to_index = max(0, min(to_index, len(self._pending_downloads)))
+            self._pending_downloads.insert(to_index, item)
+        self.downloadsChanged.emit()
+
+    @Slot(int, bool)
+    def retryDownload(self, episode_id: int, dub: bool) -> None:
+        entry = self._db.get_download(episode_id, dub)
+        if entry is None or entry.status != "failed":
+            return
+        self._db.delete_download(episode_id, dub)
+        self.downloadEpisode({
+            "episode_id": entry.episode_id, "dub": entry.dub, "slug_id": entry.slug_id,
+            "numeric_id": entry.numeric_id, "title": entry.anime_title,
+            "poster_url": entry.poster_url, "episode_number": entry.episode_number,
+        })
 
     DOWNLOAD_READRATE_WHILE_PLAYING = 3.0
 
@@ -1634,6 +1709,13 @@ class Backend(QObject):
     @Slot(int, bool)
     def removeDownload(self, episode_id: int, dub: bool) -> None:
         entry = self._db.get_download(episode_id, dub)
+        if entry is not None and entry.status in ("queued", "downloading"):
+            # Still in line or running: take it out of the line too, or it
+            # would download anyway into a row that no longer exists.
+            self._downloader.cancel(episode_id, dub)
+            with self._download_lock:
+                self._pending_downloads = [(r, d) for r, d in self._pending_downloads
+                                           if not (r.episode_id == episode_id and r.dub == dub)]
         if entry is not None:
             delete_files(entry.path, entry.subtitle_path,
                          str(Path(entry.path).with_suffix(".part.mp4")),
@@ -3332,4 +3414,108 @@ class Backend(QObject):
             QProcess.startDetached(sys.executable, ["-m", "animeplayer", *sys.argv[1:]],
                                    str(updates.source_checkout() or Path.cwd()))
         QCoreApplication.quit()
+
+    # -- reporting problems --------------------------------------------------
+    # For testers: one click opens a GitHub issue with what the app knows --
+    # its version, the OS and the last errors -- filled in. Nothing is sent
+    # by the app itself; the person sees the report before submitting it.
+
+    @Slot(str)
+    def noteError(self, message: str) -> None:
+        self._recent_errors.append(f"{time.strftime('%H:%M:%S')}  {message.strip()}")
+
+    @Slot(result=str)
+    def problemReport(self) -> str:
+        import platform
+        errors = "\n".join(self._recent_errors) or "(none this session)"
+        return (
+            f"**Version:** {updates.VERSION}\n"
+            f"**System:** {platform.system()} {platform.release()} ({platform.machine()})\n\n"
+            "**What happened:**\n\n\n"
+            "**What you expected:**\n\n\n"
+            f"**Recent errors:**\n```\n{errors}\n```\n"
+        )
+
+    @Slot(str, result=str)
+    def problemReportUrl(self, title: str) -> str:
+        from urllib.parse import urlencode
+        body = self.problemReport()
+        # Browsers and GitHub cap URL length; the oldest errors go first.
+        while len(body) > 6000 and self._recent_errors:
+            self._recent_errors.popleft()
+            body = self.problemReport()
+        query = urlencode({"title": title or "Problem report", "body": body})
+        return f"https://github.com/{updates.REPO}/issues/new?{query}"
+
+    # -- library -------------------------------------------------------------
+    # Tabs of shows. Two are built in -- what's downloaded, and the AniList
+    # Planning list -- and the rest are the user's own, kept on this PC.
+
+    libraryChanged = Signal()
+
+    @Slot(result=list)
+    def libraryLists(self) -> list[dict[str, Any]]:
+        return self._db.library_lists()
+
+    @Slot(str, result=int)
+    def createLibraryList(self, name: str) -> int:
+        name = name.strip()
+        if not name:
+            return 0
+        list_id = self._db.create_library_list(name)
+        self.libraryChanged.emit()
+        return list_id
+
+    @Slot(int, str)
+    def renameLibraryList(self, list_id: int, name: str) -> None:
+        if name.strip():
+            self._db.rename_library_list(list_id, name.strip())
+            self.libraryChanged.emit()
+
+    @Slot(int)
+    def deleteLibraryList(self, list_id: int) -> None:
+        self._db.delete_library_list(list_id)
+        self.libraryChanged.emit()
+
+    @Slot(int, "QVariantMap")
+    def addToLibrary(self, list_id: int, show: dict[str, Any]) -> None:
+        if not show.get("slug_id"):
+            return
+        self._db.add_to_library(list_id, show)
+        self.libraryChanged.emit()
+
+    @Slot(int, str)
+    def removeFromLibrary(self, list_id: int, slug_id: str) -> None:
+        self._db.remove_from_library(list_id, slug_id)
+        self.libraryChanged.emit()
+
+    @Slot(str, result=list)
+    def libraryListsFor(self, slug_id: str) -> list[int]:
+        return self._db.lists_containing(slug_id)
+
+    @Slot(int, result=list)
+    def libraryItems(self, list_id: int) -> list[dict[str, Any]]:
+        return self._db.library_items(list_id)
+
+    @Slot(result=list)
+    def downloadedShows(self) -> list[dict[str, Any]]:
+        """Every show with saved episodes, newest first, with how many and how big."""
+        shows: dict[str, dict[str, Any]] = {}
+        for entry in self._db.all_downloads():
+            if entry.status != "ready":
+                continue
+            show = shows.setdefault(entry.slug_id, {
+                "slug_id": entry.slug_id, "numeric_id": entry.numeric_id,
+                "title": entry.anime_title, "poster_url": entry.poster_url or "",
+                "count": 0, "bytes": 0, "latest": 0.0,
+            })
+            show["count"] += 1
+            show["bytes"] += entry.bytes
+            show["latest"] = max(show["latest"], entry.created_at)
+        return sorted(shows.values(), key=lambda s: s["latest"], reverse=True)
+
+    @Slot(result=list)
+    def planningShows(self) -> list[dict[str, Any]]:
+        return [{"anilist_id": e.anilist_id, "title": e.title, "poster_url": e.cover_url or ""}
+                for e in self._db.get_anilist_by_status("PLANNING")]
 

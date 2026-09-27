@@ -312,6 +312,7 @@ Kirigami.ScrollablePage {
     }
 
     Component.onCompleted: {
+        page.refreshLibrary()
         backend.loadEpisodes(anime.slug_id, anime.numeric_id, anime.title, anime.poster_url)
         page.localProgress = backend.getLocalProgress(anime.slug_id)
         page.canDownload = backend.canDownload()
@@ -541,6 +542,47 @@ Kirigami.ScrollablePage {
 
     function copyText(text) { applicationWindow().copyText(text) }
 
+    // ---- Library tabs ------------------------------------------------------
+    property var libraryLists: []
+    property var libraryTabs: []   // ids of the tabs this show is in
+    function refreshLibrary() {
+        page.libraryLists = backend.libraryLists()
+        page.libraryTabs = page.anime && page.anime.slug_id ? backend.libraryListsFor(page.anime.slug_id) : []
+    }
+    function libraryEntry() {
+        return { slug_id: page.anime.slug_id, numeric_id: page.anime.numeric_id || "",
+                 title: page.anime.title || "", poster_url: page.coverUrl || page.anime.poster_url || "",
+                 anilist_id: page.anilistId }
+    }
+    function toggleLibrary(listId) {
+        if (page.libraryTabs.indexOf(listId) >= 0) backend.removeFromLibrary(listId, page.anime.slug_id)
+        else backend.addToLibrary(listId, page.libraryEntry())
+    }
+    Connections {
+        target: backend
+        function onLibraryChanged() { page.refreshLibrary() }
+    }
+    Controls.Dialog {
+        id: newLibraryDialog
+        Kirigami.Theme.inherit: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        title: "New library tab"
+        standardButtons: Controls.Dialog.Ok | Controls.Dialog.Cancel
+        onOpened: newLibraryField.forceActiveFocus()
+        onAccepted: {
+            let id = backend.createLibraryList(newLibraryField.text)
+            if (id) backend.addToLibrary(id, page.libraryEntry())
+        }
+        Controls.TextField {
+            id: newLibraryField
+            implicitWidth: Kirigami.Units.gridUnit * 18
+            placeholderText: "e.g. Next 30 days"
+            onAccepted: newLibraryDialog.accept()
+        }
+    }
+
     Connections {
         target: backend
         function onPosterSaved(path) {
@@ -759,6 +801,38 @@ Kirigami.ScrollablePage {
                             // than no button.
                             visible: page.anilistId !== 0
                             onClicked: page.togglePlanning()
+                        }
+
+                        // Your own Library tabs: a menu of them, ticked where
+                        // the show already is, plus a new one on the spot.
+                        AppButton {
+                            id: libraryButton
+                            text: page.libraryTabs.length ? "In Library" : "Library"
+                            icon.name: page.libraryTabs.length ? "checkmark-symbolic" : "list-add-symbolic"
+                            checked: page.libraryTabs.length > 0
+                            onClicked: libraryMenu.popup(libraryButton, 0, libraryButton.height)
+                            Controls.Menu {
+                                id: libraryMenu
+                                Kirigami.Theme.inherit: true
+                                Instantiator {
+                                    model: page.libraryLists
+                                    delegate: Controls.MenuItem {
+                                        required property var modelData
+                                        text: modelData.name
+                                        checkable: true
+                                        checked: page.libraryTabs.indexOf(modelData.id) >= 0
+                                        onTriggered: page.toggleLibrary(modelData.id)
+                                    }
+                                    onObjectAdded: (index, object) => libraryMenu.insertItem(index, object)
+                                    onObjectRemoved: (index, object) => libraryMenu.removeItem(object)
+                                }
+                                Controls.MenuSeparator { visible: page.libraryLists.length > 0 }
+                                Controls.MenuItem {
+                                    text: "New tab..."
+                                    icon.name: "list-add-symbolic"
+                                    onTriggered: { newLibraryField.text = ""; newLibraryDialog.open() }
+                                }
+                            }
                         }
 
                         // A two-way switch rather than a label and two radio

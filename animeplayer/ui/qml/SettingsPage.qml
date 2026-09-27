@@ -349,6 +349,31 @@ Kirigami.ScrollablePage {
                     }
                 }
             }
+            RowLayout {
+                Kirigami.FormData.label: "Problems:"
+                spacing: Kirigami.Units.largeSpacing
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    text: "Report a problem"
+                    icon.name: "tools-report-bug-symbolic"
+                    onClicked: Qt.openUrlExternally(backend.problemReportUrl(""))
+                }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    text: "Copy details"
+                    icon.name: "edit-copy-symbolic"
+                    onClicked: applicationWindow().copyText(backend.problemReport())
+                }
+            }
+            Controls.Label {
+                Kirigami.FormData.label: " "
+                text: "Opens a GitHub issue with your app version and recent errors filled in "
+                    + "(needs a GitHub account). No account? Copy the details and send them to the developer."
+                wrapMode: Text.WordWrap
+                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
+                opacity: 0.7
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            }
             AppCheckBox {
                 id: updateChecksToggle
                 Kirigami.FormData.label: " "

@@ -93,7 +93,8 @@ Kirigami.ApplicationWindow {
         clipboardHelper.text = text
         clipboardHelper.selectAll()
         clipboardHelper.copy()
-        root.showPassiveNotification("Copied \"" + text + "\"")
+        root.showPassiveNotification(text.length > 60 || text.indexOf("\n") >= 0
+                                     ? "Copied" : "Copied \"" + text + "\"")
     }
 
     // Right-click on any anime card. One menu for the whole app rather than
@@ -316,6 +317,31 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // F11: the whole app fullscreen with no nav bar, as browsers do. On the
+    // player it is the player's own fullscreen, which already hides the bar.
+    property bool appFullscreen: false
+    property bool wasMaximisedBeforeFullscreen: false
+    function toggleAppFullscreen() {
+        let page = root.pageStack.currentItem
+        if (page && typeof page.toggleFullscreen === "function") { page.toggleFullscreen(); return }
+        root.appFullscreen = !root.appFullscreen
+        if (root.appFullscreen) {
+            root.wasMaximisedBeforeFullscreen = root.visibility === Window.Maximized
+            root.showFullScreen()
+            root.showPassiveNotification("Press F11 to leave full screen")
+        } else if (root.wasMaximisedBeforeFullscreen) {
+            root.showMaximized()
+        } else {
+            root.showNormal()
+        }
+        root.chromeVisible = !root.appFullscreen
+    }
+    Shortcut {
+        sequence: "F11"
+        context: Qt.ApplicationShortcut
+        onActivated: root.toggleAppFullscreen()
+    }
+
     function toggleMaximised() {
         if (root.maximised) root.showNormal()
         else root.showMaximized()
@@ -439,6 +465,13 @@ Kirigami.ApplicationWindow {
                 iconName: "media-playback-start-symbolic"
                 current: root.section === "continue"
                 onClicked: root.goContinue()
+            }
+
+            NavButton {
+                text: "Library"
+                iconName: "view-media-playlist-symbolic"
+                current: root.section === "library"
+                onClicked: root.goTo("library", "LibraryPage.qml")
             }
 
             NavButton {

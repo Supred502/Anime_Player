@@ -179,6 +179,26 @@ CREATE TABLE IF NOT EXISTS airing_seen (
     anilist_id INTEGER PRIMARY KEY,
     episode    INTEGER NOT NULL
 );
+
+-- Library tabs the user makes ("Next 30 days", "With friends"...), and
+-- which shows are in each. A show is kept by its source slug, which is what
+-- opens its page; the rest is what its card shows.
+CREATE TABLE IF NOT EXISTS library_lists (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0,
+    created_at  REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS library_items (
+    list_id     INTEGER NOT NULL,
+    slug_id     TEXT NOT NULL,
+    numeric_id  TEXT NOT NULL DEFAULT '',
+    title       TEXT NOT NULL,
+    poster_url  TEXT NOT NULL DEFAULT '',
+    anilist_id  INTEGER NOT NULL DEFAULT 0,
+    added_at    REAL NOT NULL,
+    PRIMARY KEY (list_id, slug_id)
+);
 """
 
 
@@ -451,6 +471,64 @@ class Database:
         with self._lock:
             self._conn.execute("DELETE FROM saved_words WHERE id = ?", (word_id,))
             self._conn.commit()
+
+    # -- library -----------------------------------------------------------
+
+    def library_lists(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT l.id, l.name, COUNT(i.slug_id) AS count FROM library_lists l "
+                "LEFT JOIN library_items i ON i.list_id = l.id "
+                "GROUP BY l.id ORDER BY l.position, l.id").fetchall()
+        return [dict(r) for r in rows]
+
+    def create_library_list(self, name: str) -> int:
+        with self._lock:
+            top = self._conn.execute("SELECT COALESCE(MAX(position), 0) FROM library_lists").fetchone()[0]
+            cursor = self._conn.execute(
+                "INSERT INTO library_lists (name, position, created_at) VALUES (?, ?, ?)",
+                (name, top + 1, time.time()))
+            self._conn.commit()
+            return cursor.lastrowid
+
+    def rename_library_list(self, list_id: int, name: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE library_lists SET name = ? WHERE id = ?", (name, list_id))
+            self._conn.commit()
+
+    def delete_library_list(self, list_id: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM library_items WHERE list_id = ?", (list_id,))
+            self._conn.execute("DELETE FROM library_lists WHERE id = ?", (list_id,))
+            self._conn.commit()
+
+    def add_to_library(self, list_id: int, show: dict) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO library_items (list_id, slug_id, numeric_id, title, "
+                "poster_url, anilist_id, added_at) VALUES (?,?,?,?,?,?,?)",
+                (list_id, show["slug_id"], str(show.get("numeric_id") or ""), show.get("title") or "",
+                 show.get("poster_url") or "", int(show.get("anilist_id") or 0), time.time()))
+            self._conn.commit()
+
+    def remove_from_library(self, list_id: int, slug_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM library_items WHERE list_id = ? AND slug_id = ?",
+                               (list_id, slug_id))
+            self._conn.commit()
+
+    def library_items(self, list_id: int) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM library_items WHERE list_id = ? ORDER BY added_at DESC",
+                (list_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def lists_containing(self, slug_id: str) -> list[int]:
+        with self._lock:
+            rows = self._conn.execute("SELECT list_id FROM library_items WHERE slug_id = ?",
+                                      (slug_id,)).fetchall()
+        return [r[0] for r in rows]
 
     # -- per-show preferences ---------------------------------------------
 

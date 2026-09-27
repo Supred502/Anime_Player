@@ -194,21 +194,25 @@ Kirigami.Page {
         page.showingPointerAgain = true
         backend.setKeepScreenAwake(false)
         backend.playerClosed()
-        if (page.isFullscreen) applicationWindow().visibility = Window.Windowed
-        // Always, not only when leaving fullscreen: this page is the only
-        // thing that hides the window chrome, so it is the only thing that
-        // can leave the app with no nav bar at all.
-        applicationWindow().chromeVisible = true
+        let win = applicationWindow()
+        if (page.isFullscreen && !win.appFullscreen) win.visibility = Window.Windowed
+        // Always, not only when leaving fullscreen: the player hides the
+        // nav bar, so it must hand it back -- unless the whole app is in
+        // F11 fullscreen, which hides it on purpose.
+        win.chromeVisible = !win.appFullscreen
     }
 
     function toggleFullscreen() {
         page.isFullscreen = !page.isFullscreen
-        applicationWindow().visibility = page.isFullscreen ? Window.FullScreen : Window.Windowed
+        let win = applicationWindow()
+        // Leaving the player's fullscreen while the whole app is in F11
+        // fullscreen goes back to the app's fullscreen, not to a window.
+        win.visibility = page.isFullscreen || win.appFullscreen ? Window.FullScreen : Window.Windowed
         page.globalToolBarStyle = page.isFullscreen ? Kirigami.ApplicationHeaderStyle.None : page.normalToolBarStyle
         // The app draws its own titlebar now, and that bar belongs to the
         // window rather than to any page -- so hiding this page's own toolbar
         // used to leave the nav bar sitting across the top of the video.
-        applicationWindow().chromeVisible = !page.isFullscreen
+        applicationWindow().chromeVisible = !page.isFullscreen && !win.appFullscreen
     }
 
     // Shared actions -- used by both the keyboard shortcuts below and by
@@ -539,6 +543,7 @@ Kirigami.Page {
                 return
             }
             page.stalled = true
+            backend.noteError("Playback: " + message)
             showPassiveNotification("Playback error: " + message)
         }
         onPausedChanged: {
@@ -612,6 +617,41 @@ Kirigami.Page {
             text: "Retry"
             icon.name: "view-refresh-symbolic"
             onClicked: page.startLoad()
+        }
+        Controls.ToolButton {
+            Kirigami.Theme.inherit: true
+            Layout.alignment: Qt.AlignHCenter
+            visible: page.stalled
+            text: "Report this problem"
+            icon.name: "tools-report-bug-symbolic"
+            onClicked: Qt.openUrlExternally(backend.problemReportUrl(
+                "Won't play: " + (page.anime.title || "") + " episode " + page.episodeNumber))
+        }
+    }
+
+    // Fullscreen hides the page's toolbar and with it the back arrow, which
+    // left Esc as the only way out -- and nothing on screen said so.
+    RowLayout {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.margins: Kirigami.Units.largeSpacing
+        visible: page.isFullscreen && page.controlsVisible
+        spacing: Kirigami.Units.largeSpacing
+
+        AppButton {
+            icon.name: "go-previous-symbolic"
+            text: "Back"
+            onClicked: applicationWindow().pageStack.goBack()
+            Controls.ToolTip.visible: hovered
+            Controls.ToolTip.text: "Back to the episode list"
+        }
+        Controls.Label {
+            text: (page.anime && page.anime.title ? page.anime.title + " · " : "")
+                  + "Episode " + page.episodeNumber
+            color: "white"
+            style: Text.Outline
+            styleColor: Qt.rgba(0, 0, 0, 0.6)
+            font.bold: true
         }
     }
 
