@@ -92,12 +92,14 @@ Kirigami.ScrollablePage {
         width: page.availableWidth
         spacing: Kirigami.Units.largeSpacing
 
-        Controls.BusyIndicator {
-            Kirigami.Theme.inherit: true
-            Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: Kirigami.Units.gridUnit * 3
+        Placeholders {
+            Layout.fillWidth: true
+            Layout.topMargin: Kirigami.Units.gridUnit
             visible: page.loading
-            running: visible
+            kind: "rows"
+            count: 10
+            spacing: Kirigami.Units.smallSpacing
+            rowHeight: Kirigami.Units.gridUnit * 2.6
         }
 
         Kirigami.PlaceholderMessage {

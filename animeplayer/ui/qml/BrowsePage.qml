@@ -1188,11 +1188,17 @@ Kirigami.ScrollablePage {
             }
         }
 
-        Controls.BusyIndicator {
-            Kirigami.Theme.inherit: true
-            anchors.centerIn: parent
-            running: page.loading
-            visible: page.loading
+        // The first page loading: placeholder cards the size of the real ones.
+        Placeholders {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Kirigami.Units.smallSpacing
+            visible: page.loading && grid.count === 0
+            columns: grid.columns
+            cellWidth: grid.cellWidth - Kirigami.Units.smallSpacing * 2
+            spacing: Kirigami.Units.smallSpacing * 2
+            count: grid.columns * 3
         }
 
         Kirigami.PlaceholderMessage {

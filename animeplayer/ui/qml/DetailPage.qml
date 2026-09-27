@@ -965,16 +965,17 @@ Kirigami.ScrollablePage {
             }
         }
 
-        Controls.BusyIndicator {
-            // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
-            // controls, which stops the app's accent reaching them -- measured
-            // live: a page themed red still drew Breeze-blue Sub/Dub buttons.
-            // Turning inheritance back on is what makes one accent value reach
-            // every control in the app. See AppTheming.qml.
-            Kirigami.Theme.inherit: true
-            running: page.loading
+        // Episode squares, greyed and pulsing, while the list loads.
+        Placeholders {
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.largeSpacing
+            Layout.rightMargin: Kirigami.Units.largeSpacing
             visible: page.loading
-            Layout.alignment: Qt.AlignHCenter
+            kind: "squares"
+            columns: Math.max(1, Math.floor(page.episodeAreaWidth / 76))
+            cellWidth: 70
+            spacing: Kirigami.Units.smallSpacing
+            count: columns * 2
         }
 
         // What is still to come. Only drawn for a show that is actually
