@@ -185,3 +185,4 @@ modules:
           - vendor
           - build-dir
           - .flatpak-builder
+          - animeplayer.egg-info

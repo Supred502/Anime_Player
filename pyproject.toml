@@ -34,6 +34,10 @@ version = {attr = "animeplayer.version.VERSION"}
 [tool.setuptools.packages.find]
 include = ["animeplayer*"]
 
+# The QML, icons, fonts and images the UI loads at run time.
+[tool.setuptools.package-data]
+animeplayer = ["ui/qml/*", "ui/qml_compat/**/*", "ui/assets/**/*"]
+
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
