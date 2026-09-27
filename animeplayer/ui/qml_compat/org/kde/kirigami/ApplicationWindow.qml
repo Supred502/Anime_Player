@@ -19,14 +19,19 @@ QQC2.ApplicationWindow {
     color: K.Theme.backgroundColor
 
     // Explicit, so every control inherits these rather than whatever the
-    // system's palette is (see install() in kirigami_compat.py).
+    // system's palette is (see install() in kirigami_compat.py). Text roles
+    // are set per state: a role set without one applies to the disabled
+    // state too, and disabled buttons then looked enabled.
     palette.window: K.Theme.backgroundColor
-    palette.windowText: K.Theme.textColor
+    palette.active.windowText: K.Theme.textColor
+    palette.inactive.windowText: K.Theme.textColor
     palette.base: "#141618"
     palette.alternateBase: "#1d1f22"
-    palette.text: K.Theme.textColor
+    palette.active.text: K.Theme.textColor
+    palette.inactive.text: K.Theme.textColor
     palette.button: "#292c30"
-    palette.buttonText: K.Theme.textColor
+    palette.active.buttonText: K.Theme.textColor
+    palette.inactive.buttonText: K.Theme.textColor
     palette.brightText: "#ffffff"
     palette.highlight: K.Theme.highlightColor
     palette.accent: K.Theme.highlightColor
