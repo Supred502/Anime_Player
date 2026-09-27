@@ -176,7 +176,10 @@ Kirigami.Page {
     // Watched enough of it to count. Deliberately not "reached the end":
     // most people stop during the credits, and an episode that never counts
     // as watched is one whose saved copy never gets cleaned up.
-    readonly property real watchedThreshold: 0.9
+    // Past this much of an episode it counts as watched: on AniList, in
+    // Stats, and for clearing old downloads. Checked as it plays (see the
+    // video's onPositionChanged), not only on leaving.
+    readonly property real watchedThreshold: 0.8
     property bool reportedWatched: false
 
     function reportWatched() {
@@ -488,7 +491,7 @@ Kirigami.Page {
         interval: 10000
         running: !video.paused && !page.loadingStream
         repeat: true
-        onTriggered: backend.savePlaybackPosition(page.episodeId, page.episodeNumber, video.position)
+        onTriggered: backend.savePlaybackPosition(page.episodeId, page.episodeNumber, video.position, video.duration)
     }
 
     // Time actually spent watching, for the Stats page. Counted in the
@@ -559,6 +562,7 @@ Kirigami.Page {
         Component.onDestruction: close()
         onPositionChanged: (value) => {
             if (value > 0) { page.stalled = false; stallTimer.stop() }
+            if (video.duration > 0 && value >= video.duration * page.watchedThreshold) page.reportWatched()
             if (page.learnMode) learnOverlay.update(value)
             // Auto-skip: seek past the interval the moment playback enters it.
             // The *AutoSkipped guards stop this from firing again every

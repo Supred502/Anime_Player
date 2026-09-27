@@ -137,10 +137,37 @@ Kirigami.ScrollablePage {
     // partway through if there is one, otherwise the one after AniList's
     // progress, otherwise the beginning -- which is also where a finished
     // show sends them, since starting over is the only thing left.
+    // Where Continue picks up: the episode you were in, at the second you
+    // stopped (a few seconds back, to find your place) -- or, if you'd
+    // watched most of it, the start of the next one.
+    readonly property bool localFinished: !!page.localProgress && (
+        (page.localProgress.duration_seconds > 0
+         && page.localProgress.position_seconds >= page.localProgress.duration_seconds * 0.8)
+        || page.localProgress.episode_number <= page.anilistProgress)
     readonly property real resumeEpisode: {
-        if (page.localProgress) return page.localProgress.episode_number
+        if (page.localProgress && !page.localFinished) return page.localProgress.episode_number
+        if (page.localProgress && page.localFinished) {
+            let next = page.nextEpisodeAfter(page.localProgress.episode_number)
+            if (next > 0) return next
+            return page.localProgress.episode_number
+        }
         if (page.anilistProgress > 0 && !page.allWatched) return page.anilistProgress + 1
         return page.firstEpisodeNumber()
+    }
+    readonly property real resumeAt: page.localProgress && !page.localFinished
+        && page.localProgress.episode_number === page.resumeEpisode
+        && page.localProgress.position_seconds > 20 ? Math.max(0, page.localProgress.position_seconds - 5) : -1
+    function nextEpisodeAfter(number) {
+        let best = 0
+        for (let i = 0; i < episodesModel.count; i++) {
+            let n = episodesModel.get(i).number
+            if (n > number && (best === 0 || n < best)) best = n
+        }
+        return best
+    }
+    function clock(seconds) {
+        let s = Math.floor(seconds), m = Math.floor(s / 60)
+        return m + ":" + String(s % 60).padStart(2, "0")
     }
 
     // Best available count of what's been seen. AniList is authoritative when
@@ -493,14 +520,17 @@ Kirigami.ScrollablePage {
     // What every play button and episode cell calls. playEpisode() itself
     // stays the unconditional version, so "Watch anyway" has something to
     // call that won't ask again.
-    function requestEpisode(number) {
+    function requestEpisode(number, startAt) {
         if (!page.warningAcknowledged && page.unwatchedPrequels.length > 0) {
             prequelWarning.pendingEpisode = number
+            prequelWarning.pendingAt = startAt === undefined ? -1 : startAt
             prequelWarning.open()
             return
         }
-        page.playEpisode(number)
+        page.playEpisode(number, startAt)
     }
+    // The Continue buttons: the resume episode, at the resume second.
+    function continueWatching() { page.requestEpisode(page.resumeEpisode, page.resumeAt) }
 
     // {number, at}: play this episode from this second as soon as the list
     // arrives. Set by the Words page's "Watch the line".
@@ -865,12 +895,12 @@ Kirigami.ScrollablePage {
                         spacing: Kirigami.Units.largeSpacing
 
                         AppButton {
-                            text: page.localProgress
-                                ? ("Continue — Episode " + page.localProgress.episode_number)
-                                : "Start Watching"
+                            text: !page.localProgress && page.anilistProgress === 0 ? "Start Watching"
+                                : "Continue — Episode " + page.resumeEpisode
+                                  + (page.resumeAt > 0 ? " at " + page.clock(page.resumeAt) : "")
                             icon.name: "media-playback-start-symbolic"
                             accented: true
-                            onClicked: page.requestEpisode(page.localProgress ? page.localProgress.episode_number : 1)
+                            onClicked: page.continueWatching()
                         }
 
                         AppButton {
@@ -1501,7 +1531,7 @@ Kirigami.ScrollablePage {
                         icon.name: "media-playback-start-symbolic"
                         text: page.allWatched ? "Play" : page.watchedCount > 0 ? "Continue" : "Play"
                         enabled: page.resumeEpisode > 0
-                        onClicked: page.requestEpisode(page.resumeEpisode)
+                        onClicked: page.continueWatching()
                     }
 
                     Kirigami.Separator {
@@ -1881,6 +1911,7 @@ Kirigami.ScrollablePage {
         id: prequelWarning
         title: "Out of order?"
         property real pendingEpisode: -1
+        property real pendingAt: -1
 
         standardButtons: Kirigami.Dialog.NoButton
         customFooterActions: [
@@ -1890,7 +1921,7 @@ Kirigami.ScrollablePage {
                 onTriggered: {
                     page.warningAcknowledged = true
                     prequelWarning.close()
-                    page.playEpisode(prequelWarning.pendingEpisode)
+                    page.playEpisode(prequelWarning.pendingEpisode, prequelWarning.pendingAt)
                 }
             },
             Kirigami.Action {

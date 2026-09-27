@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -176,6 +177,11 @@ class Downloader:
             # Read at most this many times realtime; 0 means as fast as the
             # network allows.
             *(["-readrate", f"{readrate:g}"] if readrate > 0 else []),
+            # A connection that goes quiet fails after 30s (then the app
+            # retries it) instead of hanging the queue; a dropped one is
+            # reconnected.
+            "-rw_timeout", "30000000",
+            "-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "5",
             "-i", url,
             # No re-encode: the segments are already h264/aac, and copying is
             # what makes this run faster than realtime. aac_adtstoasc is
@@ -188,6 +194,19 @@ class Downloader:
                                    creationflags=NO_WINDOW)
         with self._lock:
             self._current = process
+
+        # stderr is drained as it comes. Read only at the end, a download
+        # that ran into trouble filled the pipe with ffmpeg's retry warnings
+        # (~64 KB) and then blocked on it forever: the download crawled or
+        # hung, and the queue behind it with it.
+        errors: deque[str] = deque(maxlen=20)
+
+        def drain() -> None:
+            for raw in process.stderr:
+                errors.append(raw.decode("utf-8", "replace").rstrip())
+
+        drainer = threading.Thread(target=drain, daemon=True)
+        drainer.start()
 
         # ffmpeg emits a block of progress lines several times a second, and
         # each one is a cross-thread Qt signal and a UI update at the other
@@ -210,8 +229,9 @@ class Downloader:
             with self._lock:
                 self._current = None
 
+        drainer.join(timeout=5)
         if process.returncode != 0:
-            stderr = (process.stderr.read() or b"").decode("utf-8", "replace").strip()
+            stderr = "\n".join(line for line in errors if line)
             partial.unlink(missing_ok=True)
             # Terminated by cancel() rather than having actually failed.
             if process.returncode < 0:

@@ -1167,8 +1167,8 @@ class Backend(QObject):
         saved = self._db.get_download(episode_id, dub)
         if saved is not None and saved.status == "ready":
             self._progressReady.emit(episode_id, episode_number)
-            if self._anilist_client is not None and anime_snapshot and anime_snapshot.get("anilist_id"):
-                self._push_anilist_progress(anime_snapshot, episode_number)
+            # AniList hears about it once it's watched (episodeWatched), not
+            # when it starts -- starting episode 5 used to mark 5 done.
             self._now_playing = {"kind": "file", "path": saved.path,
                                  "subtitle_path": saved.subtitle_path or ""}
             self.streamReady.emit(
@@ -1185,12 +1185,16 @@ class Backend(QObject):
                 self.skipTimesReady.emit(saved_times)
             else:
                 self._maybe_fetch_skip_times(episode_number)
+            # A dub saved before downloads kept the English track: add it
+            # now, if we're online.
+            if dub:
+                self._maybe_add_english_to_dub(episode_id, episode_number, saved.subtitle_path, "")
             return
 
         def finish_up(info: source.StreamInfo) -> None:
             self._progressReady.emit(episode_id, episode_number)
-            if self._anilist_client is not None and anime_snapshot and anime_snapshot.get("anilist_id"):
-                self._push_anilist_progress(anime_snapshot, episode_number)
+            # AniList hears about it once it's watched (episodeWatched), not
+            # when it starts -- starting episode 5 used to mark 5 done.
             # The source hands back the MAL id with the stream, which is often
             # the only place we get one: the AniList path only supplies it when
             # the user is logged in and the title matched. Feeding it back here
@@ -1198,7 +1202,7 @@ class Backend(QObject):
             self._adopt_mal_id(info.mal_id)
             self._emit_skip_times(info, episode_number)
             if dub:
-                self._maybe_add_english_to_dub(episode_id, episode_number, info)
+                self._maybe_add_english_to_dub(episode_id, episode_number, info.subtitle_url, info.referer)
 
         if preferred and preferred.lower() != "auto":
             # A specific quality is remembered: resolve everything up front (3
@@ -1448,27 +1452,36 @@ class Backend(QObject):
     def setDubEnglishEnabled(self, value: bool) -> None:
         self._db.set_setting("dub_english", "true" if value else "false")
 
-    def _maybe_add_english_to_dub(self, episode_id: int, episode_number: float,
-                                  dub_info: source.StreamInfo) -> None:
-        if not self.getDubEnglishEnabled():
-            return
+    def _dub_english_url(self, episode_id: int, dub_subtitle: str | None, dub_referer: str) -> str:
+        """The subbed version's English track for a dub episode, when the
+        dub's own is missing or only a fraction of the lines (songs and
+        signs). "" when the dub's own is real dialogue. Blocks: worker
+        threads only. dub_subtitle may be a URL or a saved file."""
         from animeplayer.learn import subtitles
 
-        def lines(url: str, referer: str) -> int:
-            response = self._http.get(url, timeout=20, headers={"Referer": referer})
-            response.raise_for_status()
-            return len(subtitles.parse("s.vtt", response.content))
+        def lines(where: str, referer: str) -> int:
+            if Path(where).exists():
+                data = Path(where).read_bytes()
+            else:
+                response = self._http.get(where, timeout=20, headers={"Referer": referer})
+                response.raise_for_status()
+                data = response.content
+            return len(subtitles.parse("s.vtt", data))
+
+        sub_info = source.resolve_source(episode_id, self._http, dub=False)
+        if not sub_info.subtitle_url:
+            return ""
+        if dub_subtitle and lines(dub_subtitle, dub_referer) >= 0.6 * lines(sub_info.subtitle_url, sub_info.referer):
+            return ""
+        return sub_info.subtitle_url
+
+    def _maybe_add_english_to_dub(self, episode_id: int, episode_number: float,
+                                  dub_subtitle: str | None, dub_referer: str) -> None:
+        if not self.getDubEnglishEnabled():
+            return
 
         def work() -> str:
-            sub_info = source.resolve_source(episode_id, self._http, dub=False)
-            if not sub_info.subtitle_url:
-                return ""
-            if dub_info.subtitle_url:
-                # The dub's own track is kept if it's real dialogue (Slime's
-                # is); replaced when it's a fraction of the subbed one.
-                if lines(dub_info.subtitle_url, dub_info.referer) >= 0.6 * lines(sub_info.subtitle_url, sub_info.referer):
-                    return ""
-            return sub_info.subtitle_url
+            return self._dub_english_url(episode_id, dub_subtitle, dub_referer)
 
         def done(url: str) -> None:
             current = self._current_anime or {}
@@ -1687,10 +1700,19 @@ class Backend(QObject):
             request, destination = self._pending_downloads.pop(0)
             self._active_download = request
         try:
-            self._run_download(request, destination)
-            return request, ""
-        except Exception as exc:  # noqa: BLE001 -- reported per episode below
-            return request, str(exc)
+            # Twice more on failure, each with a fresh link after a pause:
+            # most failures are a CDN hiccup or an expired link, and a
+            # queue of ten shouldn't need babysitting because of one.
+            for attempt in range(3):
+                try:
+                    self._run_download(request, destination)
+                    return request, ""
+                except Exception as exc:  # noqa: BLE001 -- reported per episode below
+                    if str(exc) == "cancelled" or attempt == 2 \
+                            or self._downloader.is_cancelled(request.episode_id, request.dub):
+                        return request, str(exc)
+                    time.sleep(5 * (attempt + 1))
+            return request, "failed"
         finally:
             with self._download_lock:
                 self._active_download = None
@@ -1767,11 +1789,21 @@ class Backend(QObject):
         # same resolve as the video, so they shouldn't wait behind a download
         # that can take ten minutes on a slow CDN day.
         destination.parent.mkdir(parents=True, exist_ok=True)
+        subtitle_url, subtitle_referer = info.subtitle_url, info.referer
+        # A dub's own track is often only the songs, or nothing: keep the
+        # subbed version's English instead, as playback would show.
+        if request.dub and self.getDubEnglishEnabled():
+            try:
+                english = self._dub_english_url(request.episode_id, info.subtitle_url, info.referer)
+            except Exception:  # noqa: BLE001 -- the dub's own track still goes in
+                english = ""
+            if english:
+                subtitle_url = english
         subtitle_path = None
-        if info.subtitle_url:
+        if subtitle_url:
             subtitle_path = download_subtitle(
-                info.subtitle_url, destination.with_suffix(".vtt"), self._http,
-                referer=info.referer,
+                subtitle_url, destination.with_suffix(".vtt"), self._http,
+                referer=subtitle_referer,
             )
         save_skip_times(destination, self._skip_times_of(info))
 
@@ -1860,6 +1892,11 @@ class Backend(QObject):
 
         slug_id = anime["slug_id"]
         self._record_watch_event(slug_id, anime.get("title") or "", watched.number)
+        # Now it counts on AniList. If the AniList match hasn't arrived yet,
+        # it's remembered and sent when it does (_resolve_current_anime_status).
+        anime["_watched_number"] = watched.number
+        if self._anilist_client is not None and anime.get("anilist_id"):
+            self._push_anilist_progress(dict(anime), watched.number)
         self._maybe_ask_for_rating(anime, watched.number)
 
         if self.getDeleteAfterWatchingEnabled():
@@ -2844,7 +2881,8 @@ class Backend(QObject):
         entry = self._db.get_progress(slug_id)
         if entry is None:
             return None
-        return {"episode_number": entry.episode_number, "position_seconds": entry.position_seconds}
+        return {"episode_number": entry.episode_number, "position_seconds": entry.position_seconds,
+                "duration_seconds": entry.duration_seconds}
 
     @Slot(int, float)
     def _save_progress_on_gui_thread(self, episode_id: int, episode_number: float) -> None:
@@ -2861,8 +2899,12 @@ class Backend(QObject):
         )
         self._emit_continue_watching()
 
-    @Slot(int, float, float)
-    def savePlaybackPosition(self, episode_id: int, episode_number: float, position_seconds: float) -> None:
+    # With the episode's length too: without it, "stopped at 12:03" and
+    # "finished it" looked the same, so Continue couldn't resume at the
+    # right second -- or know to move on to the next episode.
+    @Slot(int, float, float, float)
+    def savePlaybackPosition(self, episode_id: int, episode_number: float, position_seconds: float,
+                             duration_seconds: float = 0.0) -> None:
         if not self._current_anime:
             return
         self._db.save_progress(
@@ -2872,7 +2914,7 @@ class Backend(QObject):
             episode_id=episode_id,
             episode_number=episode_number,
             position_seconds=position_seconds,
-            duration_seconds=0,
+            duration_seconds=duration_seconds,
         )
 
     @Slot("QVariantMap", int, float, float)
@@ -3354,12 +3396,13 @@ class Backend(QObject):
                     self._maybe_fetch_skip_times(current_episode_number)
                     if self._current_anime.get("_want_japanese_subs") is not None:
                         self.loadJapaneseSubs(self._current_anime["_want_japanese_subs"])
-                    # An episode that started before the AniList match came
-                    # back -- one picked from the phone opens the player
-                    # straight away -- went unsynced. Catch it up now.
-                    if (media_id is not None and self._anilist_client is not None
-                            and self._current_anime.get("_progress_pushed") != current_episode_number):
-                        self._push_anilist_progress(dict(self._current_anime), current_episode_number)
+                    # An episode watched before the AniList match came back
+                    # -- one picked from the phone opens the player straight
+                    # away -- went unsynced. Catch it up now.
+                    watched = self._current_anime.get("_watched_number")
+                    if (media_id is not None and self._anilist_client is not None and watched is not None
+                            and self._current_anime.get("_progress_pushed") != watched):
+                        self._push_anilist_progress(dict(self._current_anime), watched)
             if status is not None:
                 self.anilistCurrentStatus.emit(
                     _STATUS_LABELS.get(status.status, status.status), status.progress
