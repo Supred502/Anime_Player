@@ -256,6 +256,10 @@ class Backend(QObject):
         self._progressReady.connect(self._save_progress_on_gui_thread)
         self._idle_inhibitor = IdleInhibitor()
         self._spotlight_built = False
+        self._catalog_lock = threading.Lock()
+        self._catalog: dict[int, tuple[str, tuple[str, ...]]] = {}
+        self._catalog_complete = False
+        self._catalog_next_page = 1
         self._discord = discord_presence.DiscordPresence(DISCORD_CLIENT_ID)
         self._discord.set_enabled(self.getDiscordEnabled())
         self._drop_mappings_from_a_previous_source()
@@ -353,6 +357,10 @@ class Backend(QObject):
         ):
             signal.connect(lambda message, name=name: self.noteError(f"{name}: {message}"))
         QTimer.singleShot(8_000, lambda: self.checkForUpdates(False))
+        # The title list behind "did you mean" takes a minute to fetch at
+        # AniList's pace, so it's fetched in the background well before it's
+        # needed (and then kept for a week).
+        QTimer.singleShot(45_000, self._warm_title_catalog)
 
     def _drop_mappings_from_a_previous_source(self) -> None:
         """One-time cache reset when the streaming backend changes underneath
@@ -3899,4 +3907,109 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, lambda cards: self.seasonReady.emit(season, year, cards),
                                  self.seasonFailed.emit))
+
+    # -- search history and "did you mean" -------------------------------------
+
+    _HISTORY_KEEP = 30
+
+    @Slot(result=list)
+    def searchHistory(self) -> list[str]:
+        raw = self._db.get_setting("search_history")
+        return json.loads(raw) if raw else []
+
+    @Slot(str)
+    def addSearchHistory(self, query: str) -> None:
+        query = " ".join(query.split())
+        if not query:
+            return
+        history = [q for q in self.searchHistory() if q.lower() != query.lower()]
+        self._db.set_setting("search_history", json.dumps([query, *history][:self._HISTORY_KEEP]))
+
+    @Slot(str)
+    def removeSearchHistory(self, query: str) -> None:
+        self._db.set_setting("search_history",
+                             json.dumps([q for q in self.searchHistory() if q != query]))
+
+    @Slot()
+    def clearSearchHistory(self) -> None:
+        self._db.delete_setting("search_history")
+
+    searchSuggestion = Signal(str, str)  # (the search that found nothing, what it probably meant)
+
+    _TITLE_CATALOG_PAGES = 30   # 1,500 most popular shows
+    _TITLE_CATALOG_MAX_AGE = 7 * 86400
+
+    def _catalog_path(self) -> Path:
+        return DEFAULT_DB_PATH.parent / "title-catalog.json"
+
+    def _catalog_load(self) -> None:
+        """From disk, if a fresh copy is there. Caller holds the lock."""
+        if self._catalog_complete or self._catalog:
+            return
+        try:
+            path = self._catalog_path()
+            if time.time() - path.stat().st_mtime < self._TITLE_CATALOG_MAX_AGE:
+                self._catalog = {int(k): (v[0], tuple(v[1])) for k, v in json.loads(path.read_text()).items()}
+                self._catalog_complete = True
+        except (OSError, ValueError):
+            pass
+
+    def _catalog_step(self) -> bool:
+        """Fetches the next page of popular titles (on a worker thread).
+        Returns False once the list is complete. One fetch at a time: a
+        suggestion and the background warm-up share the same pages."""
+        with self._catalog_lock:
+            self._catalog_load()
+            if self._catalog_complete:
+                return False
+            media, more = self._anilist_public.get_popular_titles(self._catalog_next_page)
+            for m in media:
+                self._catalog[m.id] = (m.title, tuple(m.titles) or (m.title,))
+            self._catalog_next_page += 1
+            if not more or self._catalog_next_page > self._TITLE_CATALOG_PAGES:
+                self._catalog_complete = True
+                try:
+                    self._catalog_path().write_text(
+                        json.dumps({k: [v[0], list(v[1])] for k, v in self._catalog.items()}))
+                except OSError:
+                    pass
+            return not self._catalog_complete
+
+    def _title_catalog(self) -> list[tuple[str, tuple[str, ...]]]:
+        """(display title, every name) for the most popular shows fetched so
+        far (the whole list is kept on disk for a week), plus every show the
+        app has come across."""
+        with self._catalog_lock:
+            self._catalog_load()
+            entries = dict(self._catalog)
+        for anilist_id, titles in list(self._titles_by_anilist_id.items()):
+            if anilist_id not in entries and titles:
+                entries[anilist_id] = (titles[0], tuple(titles))
+        return list(entries.values())
+
+    def _warm_title_catalog(self) -> None:
+        if os.environ.get("ANIMEPLAYER_DB_PATH"):
+            return
+
+        def work() -> None:
+            while self._catalog_step():
+                pass
+
+        self._pool.start(_Worker(work, lambda _n: None, lambda _m: None))
+
+    @Slot(str)
+    def suggestSearch(self, query: str) -> None:
+        from animeplayer.suggest import closest_title
+
+        def work() -> str:
+            # What's known already; then, if the list is still being built,
+            # a page at a time -- the most popular shows come first, and
+            # they're what people misspell.
+            while True:
+                title = closest_title(query, self._title_catalog())
+                if title or not self._catalog_step():
+                    return title or ""
+
+        self._pool.start(_Worker(work, lambda title: self.searchSuggestion.emit(query, title),
+                                 lambda _msg: None))
 

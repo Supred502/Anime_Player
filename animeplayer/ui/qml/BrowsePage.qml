@@ -264,6 +264,9 @@ Kirigami.ScrollablePage {
             // arrays, for the same reason the home rows are (see HomePage).
             page.results = payload.page <= 1 ? payload.results
                                              : page.results.concat(payload.results)
+            page.suggestion = ""
+            if (payload.page <= 1 && payload.results.length === 0 && queryField.text.trim() !== "")
+                backend.suggestSearch(queryField.text.trim())
         }
         function onBrowseFailed(message) {
             page.loading = false
@@ -280,6 +283,13 @@ Kirigami.ScrollablePage {
             page.errorMessage = ""
             page.hasMore = false
             page.results = list
+            page.suggestion = ""
+            if (list.length === 0 && queryField.text.trim() !== "") backend.suggestSearch(queryField.text.trim())
+        }
+        function onSearchSuggestion(query, title) {
+            if (query !== queryField.text.trim()) return
+            page.suggestionFor = query
+            page.suggestion = title
         }
         function onSearchFailed(message) {
             page.loading = false
@@ -583,6 +593,51 @@ Kirigami.ScrollablePage {
     // into (the live E2E driver types through it).
     function setQuery(text) { queryField.text = text }
 
+    // ---- Search history and "did you mean" -------------------------------
+    property var historyShown: []
+    property string suggestion: ""
+    property string suggestionFor: ""
+    function showHistory() {
+        let typed = queryField.text.trim().toLowerCase()
+        page.historyShown = backend.searchHistory()
+            .filter((q) => typed === "" || (q.toLowerCase().indexOf(typed) >= 0 && q.toLowerCase() !== typed))
+            .slice(0, 8)
+        historyList.currentIndex = -1
+        if (page.historyShown.length > 0 && queryField.activeFocus) historyPopup.open()
+        else historyPopup.close()
+    }
+    function submitSearch() {
+        // Enter on a highlighted history row picks it, as in a browser.
+        if (historyPopup.opened && historyList.currentIndex >= 0) {
+            page.searchFor(page.historyShown[historyList.currentIndex])
+            return
+        }
+        historyPopup.close()
+        if (queryField.text.trim() !== "") backend.addSearchHistory(queryField.text)
+        page.suggestion = ""
+        page.load(1)
+    }
+    function searchFor(text) {
+        queryField.text = text
+        historyPopup.close()
+        backend.addSearchHistory(text)
+        page.suggestion = ""
+        page.load(1)
+    }
+    // Searches everything for the suggestion (the misspelt search may have
+    // been inside a preset's filters) and drops the misspelling from history.
+    function acceptSuggestion() {
+        let title = page.suggestion
+        backend.removeSearchHistory(page.suggestionFor)
+        page.clearFilters(true)
+        page.searchFor(title)
+    }
+    function forgetSearch(text) {
+        backend.removeSearchHistory(text)
+        page.showHistory()
+        queryField.forceActiveFocus()
+    }
+
     function openResult(index) {
         let entry = page.results[index]
         // An AniList-sourced result carries no source slug, so it has to be
@@ -617,7 +672,91 @@ Kirigami.ScrollablePage {
                 id: queryField
                 Layout.fillWidth: true
                 placeholderText: "Search anime..."
-                onAccepted: page.load(1)
+                onAccepted: page.submitSearch()
+                // Recent searches drop down while the box has focus, filtered
+                // by what's typed so far -- as in a browser's address bar.
+                onActiveFocusChanged: if (activeFocus) page.showHistory()
+                onTextEdited: page.showHistory()
+                Keys.onDownPressed: if (historyPopup.opened) historyList.incrementCurrentIndex()
+                Keys.onUpPressed: if (historyPopup.opened) historyList.decrementCurrentIndex()
+                Keys.onEscapePressed: historyPopup.close()
+
+                Controls.Popup {
+                    id: historyPopup
+                    Kirigami.Theme.inherit: true
+                    y: queryField.height + 2
+                    width: queryField.width
+                    padding: 2
+                    closePolicy: Controls.Popup.CloseOnEscape | Controls.Popup.CloseOnPressOutsideParent
+                    // Without this the popup takes focus and typing stops.
+                    focus: false
+
+                    background: Rectangle {
+                        radius: Kirigami.Units.smallSpacing
+                        color: Kirigami.Theme.alternateBackgroundColor
+                        border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g,
+                                              Kirigami.Theme.textColor.b, 0.15)
+                    }
+
+                    contentItem: ColumnLayout {
+                        spacing: 0
+                        ListView {
+                            id: historyList
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: contentHeight
+                            interactive: false
+                            model: page.historyShown
+                            currentIndex: -1
+                            delegate: Rectangle {
+                                id: historyRow
+                                required property string modelData
+                                required property int index
+                                width: historyList.width
+                                height: Kirigami.Units.gridUnit * 1.8
+                                radius: Kirigami.Units.smallSpacing
+                                color: rowHover.hovered || historyList.currentIndex === index
+                                       ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                                                 Kirigami.Theme.highlightColor.b, 0.2) : "transparent"
+                                HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: page.searchFor(historyRow.modelData) }
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: Kirigami.Units.largeSpacing
+                                    spacing: Kirigami.Units.largeSpacing
+                                    Kirigami.Icon {
+                                        source: "clock-symbolic"
+                                        Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                                        Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                                        opacity: 0.6
+                                    }
+                                    Controls.Label {
+                                        Layout.fillWidth: true
+                                        text: historyRow.modelData
+                                        elide: Text.ElideRight
+                                    }
+                                    Controls.ToolButton {
+                                        Kirigami.Theme.inherit: true
+                                        icon.name: "window-close-symbolic"
+                                        icon.width: Kirigami.Units.iconSizes.small
+                                        icon.height: Kirigami.Units.iconSizes.small
+                                        opacity: rowHover.hovered || hovered ? 1 : 0.35
+                                        onClicked: page.forgetSearch(historyRow.modelData)
+                                        Controls.ToolTip.visible: hovered
+                                        Controls.ToolTip.text: "Remove from history"
+                                    }
+                                }
+                            }
+                        }
+                        Controls.ToolButton {
+                            Kirigami.Theme.inherit: true
+                            Layout.alignment: Qt.AlignRight
+                            visible: queryField.text.trim() === ""
+                            text: "Clear history"
+                            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                            onClicked: { backend.clearSearchHistory(); historyPopup.close() }
+                        }
+                    }
+                }
             }
 
             // The rankings, as a menu rather than a row of chips: there are
@@ -1059,11 +1198,23 @@ Kirigami.ScrollablePage {
             anchors.centerIn: parent
             width: parent.width - Kirigami.Units.gridUnit * 4
             visible: !page.loading && grid.count === 0
-            text: page.errorMessage !== "" ? "Nothing to show" : "Nothing matches"
+            text: page.errorMessage !== "" ? "Nothing to show"
+                : page.suggestion !== "" ? "Nothing called \"" + page.suggestionFor + "\""
+                : "Nothing matches"
             explanation: page.errorMessage !== "" ? page.errorMessage
+                : page.suggestion !== "" ? ""
+                : queryField.text.trim() !== "" && !page.filtered ? "Check the spelling, or try fewer words."
                 : "Try clearing a filter or two."
             icon.name: page.errorMessage !== "" ? "network-disconnect-symbolic"
                                                 : "view-filter-symbolic"
+            // AniList and the site both miss on a typo ("freiren"), so the
+            // app compares against the titles it knows -- see suggest.py.
+            helpfulAction: Kirigami.Action {
+                enabled: page.suggestion !== "" && page.errorMessage === ""
+                text: "Did you mean " + page.suggestion + "?"
+                icon.name: "edit-find-symbolic"
+                onTriggered: page.acceptSuggestion()
+            }
         }
     }
 

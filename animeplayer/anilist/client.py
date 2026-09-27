@@ -908,6 +908,14 @@ class AniListClient:
                 break
         return out
 
+    def get_popular_titles(self, page: int) -> tuple[list[MediaSummary], bool]:
+        """One page (50) of the most popular anime ever, for the search
+        suggestions' title list. Returns (entries, whether there's more)."""
+        data = self._request(_POPULAR_TITLES_QUERY, {"page": page})
+        block = data.get("Page") or {}
+        return ([_media_summary_of(m) for m in block.get("media") or []],
+                bool((block.get("pageInfo") or {}).get("hasNextPage")))
+
     def get_media_extras(self, media_id: int) -> "MediaExtras":
         """Everything the detail page shows beside the episode list: related
         entries, what the community recommends next, and reviews."""
@@ -1223,6 +1231,19 @@ class AiringState:
     latest_aired: int           # 0 when nothing has aired, or it can't be told
     next_episode: int | None
     next_airing_at: int | None  # unix seconds
+
+
+_POPULAR_TITLES_QUERY = """
+query ($page: Int) {
+  Page(page: $page, perPage: 50) {
+    pageInfo { hasNextPage }
+    media(type: ANIME, sort: POPULARITY_DESC, isAdult: false) {
+      id idMal title { romaji english } synonyms coverImage { large } bannerImage countryOfOrigin
+      averageScore popularity genres format episodes description(asHtml: false)
+    }
+  }
+}
+"""
 
 
 @dataclass(frozen=True, slots=True)
