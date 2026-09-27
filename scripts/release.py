@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Publishes a new version: every copy of the app then offers it as an update.
 
-    python scripts/release.py patch "Fixed the thing"     0.2.0 -> 0.2.1
-    python scripts/release.py minor "Big new feature"     0.2.1 -> 0.3.0
+    python scripts/release.py minor                        0.3.0 -> 0.4.0
+    python scripts/release.py patch "Fixed the thing"     0.4.0 -> 0.4.1
     python scripts/release.py 1.0.0 "First proper release"
 
-The notes are what people see under "What's new" in the update prompt; use
-"- " lines for a list. This bumps animeplayer/version.py, commits, tags the
+The notes are what people see under "What's new", in the update prompt and
+again after updating. Leave them out and they're made from the commits
+since the last release, one line each -- printed first, so you can see
+them. This bumps animeplayer/version.py, commits, tags the
 commit v<version> and pushes both. GitHub then builds the Windows installer
 and publishes the release (.github/workflows/release.yml, ~10 minutes);
 apps pick it up at their next check, within a few hours, or straight away
@@ -30,6 +32,17 @@ def git(*args: str, capture: bool = False) -> str:
     return result.stdout.strip() if capture else ""
 
 
+def changes_since_last_release() -> str:
+    """One "- " line per commit since the last v* tag: its subject line."""
+    try:
+        last = git("describe", "--tags", "--abbrev=0", "--match", "v*", capture=True)
+        span = f"{last}..HEAD"
+    except subprocess.CalledProcessError:
+        span = "HEAD"
+    subjects = git("log", "--reverse", "--format=%s", span, capture=True).splitlines()
+    return "\n".join(f"- {s}" for s in subjects if s and not s.startswith("Release "))
+
+
 def bump(current: str, how: str) -> str:
     if re.fullmatch(r"\d+\.\d+\.\d+", how):
         return how
@@ -44,11 +57,13 @@ def bump(current: str, how: str) -> str:
 
 
 def main() -> None:
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (2, 3):
         sys.exit(__doc__)
-    how, notes = sys.argv[1], sys.argv[2].strip()
+    how = sys.argv[1]
+    notes = sys.argv[2].strip() if len(sys.argv) == 3 else changes_since_last_release()
     if not notes:
-        sys.exit("Say what changed -- it's what people see before they update.")
+        sys.exit("Nothing has changed since the last release.")
+    print("What's new:\n" + notes + "\n")
 
     if git("status", "--porcelain", capture=True):
         sys.exit("Commit (or stash) your changes first -- the release is built from what's committed.")

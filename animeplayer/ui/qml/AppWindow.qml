@@ -480,6 +480,37 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    // First launch after an update: what changed (see backend's
+    // _maybe_show_whats_new).
+    Connections {
+        target: backend
+        function onWhatsNew(version, notes) {
+            whatsNewDialog.title = "What's new in Anime Player " + version
+            whatsNewText.text = notes
+            whatsNewDialog.open()
+        }
+    }
+    Controls.Dialog {
+        id: whatsNewDialog
+        Kirigami.Theme.inherit: true
+        parent: Controls.Overlay.overlay
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(parent ? parent.width - Kirigami.Units.gridUnit * 2 : 600, Kirigami.Units.gridUnit * 30)
+        standardButtons: Controls.Dialog.Ok
+        Controls.ScrollView {
+            width: parent.width
+            implicitHeight: Math.min(whatsNewText.implicitHeight, Kirigami.Units.gridUnit * 22)
+            Controls.Label {
+                id: whatsNewText
+                width: whatsNewDialog.availableWidth
+                wrapMode: Text.WordWrap
+                textFormat: Text.MarkdownText
+                onLinkActivated: (link) => Qt.openUrlExternally(link)
+            }
+        }
+    }
+
     function toggleMaximised() {
         if (root.maximised) root.showNormal()
         else root.showMaximized()

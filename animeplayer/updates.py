@@ -82,6 +82,19 @@ def latest_release(client: httpx.Client) -> Release | None:
     )
 
 
+def release_notes(client: httpx.Client, version: str) -> str:
+    """The notes published with one version, for "What's new" after an
+    update. "" if there are none or GitHub can't be reached."""
+    try:
+        resp = client.get(f"https://api.github.com/repos/{REPO}/releases/tags/v{version}",
+                          headers={"Accept": "application/vnd.github+json"}, timeout=15)
+    except httpx.HTTPError:
+        return ""
+    if resp.status_code != 200:
+        return ""
+    return (resp.json().get("body") or "").strip()
+
+
 def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
 

@@ -358,6 +358,7 @@ class Backend(QObject):
         ):
             signal.connect(lambda message, name=name: self.noteError(f"{name}: {message}"))
         QTimer.singleShot(8_000, lambda: self.checkForUpdates(False))
+        QTimer.singleShot(2_500, self._maybe_show_whats_new)
         # The title list behind "did you mean" takes a minute to fetch at
         # AniList's pace, so it's fetched in the background well before it's
         # needed (and then kept for a week).
@@ -4124,4 +4125,26 @@ class Backend(QObject):
             return info.master_url, info.referer
         except Exception:  # noqa: BLE001 -- no clip for this one, the card still goes in
             return None
+
+    # -- "What's new" after an update ------------------------------------------
+
+    whatsNew = Signal(str, str)   # (version, release notes)
+
+    def _maybe_show_whats_new(self) -> None:
+        """Once, on the first launch of a new version: that version's notes.
+        Not on a fresh install -- there's nothing it's new compared to."""
+        last = self._db.get_setting("last_run_version")
+        self._db.set_setting("last_run_version", updates.VERSION)
+        if not last or not updates.is_newer(updates.VERSION, last) or os.environ.get("ANIMEPLAYER_DB_PATH"):
+            return
+        version = updates.VERSION
+
+        def work() -> str:
+            return updates.release_notes(self._http, version)
+
+        def done(notes: str) -> None:
+            if notes:
+                self.whatsNew.emit(version, notes)
+
+        self._pool.start(_Worker(work, done, lambda _msg: None))
 
