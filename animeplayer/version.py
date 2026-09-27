@@ -15,4 +15,10 @@ REPO = "Supred502/Anime_Player"
 # name is what Discord displays). Create one at
 # https://discord.com/developers/applications and paste its Application ID
 # here; empty turns the feature off. Not a secret.
-DISCORD_CLIENT_ID = ""
+DISCORD_CLIENT_ID = "1553672127738282025"
+
+# The AniList API client people log in through (anilist.co/settings/developer,
+# redirect URL https://anilist.co/api/v2/oauth/pin). Public, not a secret:
+# the token AniList hands back is what's private, and it stays on each PC.
+# Settings can still point at a different client.
+ANILIST_CLIENT_ID = "49881"

@@ -32,7 +32,7 @@
 - Keyboard shortcuts (press <kbd>?</kbd> in the player), <kbd>F11</kbd> fullscreen
 
 **Keeping track**
-- AniList login: progress, Planning list, ratings and your full history sync both ways
+- One-click AniList login: progress, Planning list, ratings and your full history sync both ways
 - Library tabs of your own, plus Downloads and Planning
 - New-episode alerts and a weekly airing schedule for the shows you follow
 - Stats: time watched, streaks, favourite genres
@@ -90,9 +90,8 @@ Updates from inside the app pull the new code with git and restart.
 
 ## Setting up the optional parts
 
-- **AniList:** Settings → AniList. Make a client at
-  [anilist.co/settings/developer](https://anilist.co/settings/developer) with the redirect URL
-  `https://anilist.co/api/v2/oauth/pin`, paste its Client ID, log in, and paste the token back.
+- **AniList:** Settings → **Log in with AniList**, approve in the browser, and paste the token it
+  shows you back into the app.
 - **Learn Japanese:** Japanese subtitles come from [Jimaku](https://jimaku.cc). Make a free account,
   generate an API key on your account page, and paste it in Settings.
 - **Phone remote:** Settings → Phone remote shows an address and a PIN to open on your phone.
@@ -130,6 +129,10 @@ every installed copy picks up.
 - [Qt](https://www.qt.io) / PySide6 and KDE's [Kirigami](https://develop.kde.org/frameworks/kirigami/);
   Breeze icons (LGPL-3.0)
 - Inspired by [ani-cli](https://github.com/pystardust/ani-cli)
+
+## License
+
+[MIT](LICENSE). See also the [privacy policy](docs/PRIVACY.md) and [terms of use](docs/TERMS.md).
 
 ## Disclaimer
 

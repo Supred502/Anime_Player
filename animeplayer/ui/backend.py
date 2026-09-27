@@ -31,7 +31,7 @@ from PySide6.QtCore import Property, QCoreApplication, QObject, QProcess, QRunna
 
 from animeplayer import discord_presence, platform_setup, updates
 from animeplayer.alerts import find_new_episodes
-from animeplayer.version import DISCORD_CLIENT_ID
+from animeplayer.version import ANILIST_CLIENT_ID, DISCORD_CLIENT_ID
 from animeplayer.anilist import matcher
 from animeplayer.anilist.client import (
     AiringState,
@@ -2852,11 +2852,19 @@ class Backend(QObject):
 
     @Slot(result=str)
     def anilistClientId(self) -> str:
-        return self._db.get_setting("anilist_client_id") or ""
+        return self._db.get_setting("anilist_client_id") or ANILIST_CLIENT_ID
+
+    @Slot(result=str)
+    def builtInAnilistClientId(self) -> str:
+        return ANILIST_CLIENT_ID
 
     @Slot(str)
     def setAnilistClientId(self, value: str) -> None:
-        self._db.set_setting("anilist_client_id", value.strip())
+        # Empty means the built-in one again.
+        if value.strip() and value.strip() != ANILIST_CLIENT_ID:
+            self._db.set_setting("anilist_client_id", value.strip())
+        else:
+            self._db.delete_setting("anilist_client_id")
 
     @Slot(result=bool)
     def isAnilistLoggedIn(self) -> bool:

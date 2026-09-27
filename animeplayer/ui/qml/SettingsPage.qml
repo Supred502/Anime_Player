@@ -61,6 +61,7 @@ Kirigami.ScrollablePage {
     title: "Settings"
 
     property bool loggedIn: false
+    property string builtInClientId: ""
     property string viewerName: ""
     property bool remoteRunning: false
     property string remoteUrl: ""
@@ -70,7 +71,8 @@ Kirigami.ScrollablePage {
     property real dictionaryProgress: 0
 
     Component.onCompleted: {
-        clientIdField.text = backend.anilistClientId()
+        page.builtInClientId = backend.builtInAnilistClientId()
+        clientIdField.text = backend.anilistClientId() === page.builtInClientId ? "" : backend.anilistClientId()
         page.loggedIn = backend.isAnilistLoggedIn()
         page.viewerName = backend.anilistViewerName()
         autoSkipToggle.checked = backend.getAutoSkipEnabled()
@@ -147,6 +149,68 @@ Kirigami.ScrollablePage {
                     Kirigami.Theme.inherit: true
                     text: "Log out"
                     onClicked: backend.logoutAnilist()
+                }
+            }
+        }
+
+        ColumnLayout {
+            visible: !page.loggedIn
+            Layout.fillWidth: true
+            spacing: Kirigami.Units.smallSpacing
+
+            Kirigami.FormLayout {
+                Layout.fillWidth: true
+
+                AppButton {
+                    Kirigami.FormData.label: "1."
+                    text: "Log in with AniList"
+                    icon.name: "im-user-symbolic"
+                    accented: true
+                    onClicked: backend.startAnilistLogin()
+                }
+                Controls.Label {
+                    Kirigami.FormData.label: " "
+                    text: "Opens AniList in your browser. Approve, and it shows you a token."
+                    opacity: 0.7
+                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                }
+
+                Controls.TextField {
+                    Kirigami.Theme.inherit: true
+                    id: tokenField
+                    Kirigami.FormData.label: "2."
+                    placeholderText: "Paste the token here"
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                    onAccepted: backend.confirmAnilistLogin(tokenField.text)
+                    echoMode: TextInput.Password
+                }
+
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    Kirigami.FormData.label: " "
+                    text: "Log in"
+                    enabled: tokenField.text.trim() !== ""
+                    onClicked: backend.confirmAnilistLogin(tokenField.text)
+                }
+
+                // For anyone who'd rather log in through their own AniList
+                // API client than the built-in one.
+                Controls.CheckBox {
+                    id: ownClientToggle
+                    Kirigami.Theme.inherit: true
+                    Kirigami.FormData.label: " "
+                    text: "Use my own AniList API client"
+                    checked: clientIdField.text !== "" && clientIdField.text !== page.builtInClientId
+                    onToggled: if (!checked) { clientIdField.text = ""; backend.setAnilistClientId("") }
+                }
+                Controls.TextField {
+                    Kirigami.Theme.inherit: true
+                    id: clientIdField
+                    visible: ownClientToggle.checked
+                    Kirigami.FormData.label: "Client ID:"
+                    placeholderText: "e.g. 12345 (redirect URL: https://anilist.co/api/v2/oauth/pin)"
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                    onEditingFinished: backend.setAnilistClientId(text)
                 }
             }
         }
@@ -511,60 +575,5 @@ Kirigami.ScrollablePage {
             }
         }
 
-        Kirigami.Separator { Layout.fillWidth: true; visible: !page.loggedIn }
-
-        ColumnLayout {
-            visible: !page.loggedIn
-            Layout.fillWidth: true
-            spacing: Kirigami.Units.smallSpacing
-
-            Controls.Label {
-                Layout.fillWidth: true
-                Layout.maximumWidth: page.width - Kirigami.Units.largeSpacing * 2
-                wrapMode: Text.WordWrap
-                text: "To sync your AniList account:\n" +
-                      "1. Go to anilist.co/settings/developer and create an API client.\n" +
-                      "2. Set its Redirect URL to exactly: https://anilist.co/api/v2/oauth/pin\n" +
-                      "3. Paste the Client ID below, then click \"Open AniList Login\".\n" +
-                      "4. Approve access in the browser, copy the token AniList shows you, and paste it below."
-            }
-
-            Kirigami.FormLayout {
-                Layout.fillWidth: true
-
-                Controls.TextField {
-                    Kirigami.Theme.inherit: true
-                    id: clientIdField
-                    Kirigami.FormData.label: "Client ID:"
-                    placeholderText: "e.g. 12345"
-                    onEditingFinished: backend.setAnilistClientId(text)
-                }
-
-                Controls.Button {
-                    Kirigami.Theme.inherit: true
-                    Kirigami.FormData.label: " "
-                    text: "Open AniList Login"
-                    onClicked: {
-                        backend.setAnilistClientId(clientIdField.text)
-                        backend.startAnilistLogin()
-                    }
-                }
-
-                Controls.TextField {
-                    Kirigami.Theme.inherit: true
-                    id: tokenField
-                    Kirigami.FormData.label: "Access token:"
-                    placeholderText: "Paste token here"
-                    echoMode: TextInput.Password
-                }
-
-                Controls.Button {
-                    Kirigami.Theme.inherit: true
-                    Kirigami.FormData.label: " "
-                    text: "Confirm Login"
-                    onClicked: backend.confirmAnilistLogin(tokenField.text)
-                }
-            }
-        }
     }
 }

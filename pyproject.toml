@@ -3,6 +3,7 @@ name = "animeplayer"
 dynamic = ["version"]
 description = "KDE-native anime player with AniList sync, powered by the same public backend ani-cli uses"
 requires-python = ">=3.11"
+license = "MIT"
 dependencies = [
     "PySide6",
     "httpx",
@@ -29,5 +30,5 @@ version = {attr = "animeplayer.version.VERSION"}
 include = ["animeplayer*"]
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
