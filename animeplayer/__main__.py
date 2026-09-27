@@ -214,7 +214,17 @@ def main() -> int:
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: app.quit())
 
-    return app.exec()
+    code = app.exec()
+    # Past this point nothing of the app's own is left to run: aboutToQuit
+    # has saved everything (Backend.shutdown). The players are stopped, and
+    # then the process ends here rather than through Python's own shutdown,
+    # during which mpv's and Qt's native threads can still call into an
+    # interpreter that is being torn down -- a crash on every quit made
+    # mid-episode, and seconds of waiting before it.
+    MpvVideoItem.close_all()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":

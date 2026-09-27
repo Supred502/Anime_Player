@@ -140,12 +140,49 @@ Kirigami.ApplicationWindow {
     // Deferred: it's called from the Words page, and goTo() clears the page
     // stack -- which destroys that page while its own click handler is still
     // running ("attempted to evaluate a function in an invalid context").
-    function openAt(anime, episodeNumber, seconds) {
-        Qt.callLater(root.openAtNow, anime, episodeNumber, seconds)
+    function openAt(anime, episodeNumber, seconds, section, dub) {
+        Qt.callLater(root.openAtNow, anime, episodeNumber, seconds, section || "words", dub)
     }
-    function openAtNow(anime, episodeNumber, seconds) {
-        let detail = root.goTo("words", "DetailPage.qml", { anime: anime })
-        detail.playWhenLoaded = { number: episodeNumber, at: seconds }
+    function openAtNow(anime, episodeNumber, seconds, section, dub) {
+        let detail = root.goTo(section, "DetailPage.qml", { anime: anime })
+        detail.playWhenLoaded = dub === undefined ? { number: episodeNumber, at: seconds }
+                                                  : { number: episodeNumber, at: seconds, dub: dub }
+    }
+
+    // The mini player (see MiniPlayer.qml): one at a time, over every page,
+    // gone the moment a full player opens.
+    property var miniShow: null
+    readonly property Item miniPlayer: miniLoader.item
+    function startMiniPlayer(show) {
+        root.miniShow = null
+        root.miniShow = show
+    }
+    Connections {
+        target: root.pageStack
+        function onCurrentItemChanged() {
+            let page = root.pageStack.currentItem
+            if (root.miniShow && page && typeof page.toMiniPlayer === "function") root.miniShow = null
+        }
+    }
+    Loader {
+        id: miniLoader
+        active: root.miniShow !== null
+        parent: root.contentItem
+        z: 900
+        anchors.right: parent ? parent.right : undefined
+        anchors.bottom: parent ? parent.bottom : undefined
+        anchors.margins: Kirigami.Units.gridUnit
+        sourceComponent: MiniPlayer {
+            show: root.miniShow
+            onClosed: root.miniShow = null
+            onExpand: (position) => {
+                let s = root.miniShow
+                root.miniShow = null
+                // Through the show's page, as "Watch the line" does: the
+                // player needs the episode list behind it for next/previous.
+                root.openAt(s.anime, s.episodeNumber, position, "browse", s.dub)
+            }
+        }
     }
 
     // Asked once, right after the last episode of a finished show (see

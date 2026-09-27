@@ -2776,6 +2776,20 @@ class Backend(QObject):
             duration_seconds=0,
         )
 
+    @Slot("QVariantMap", int, float, float)
+    def saveProgressFor(self, anime: dict[str, Any], episode_id: int, episode_number: float,
+                        position_seconds: float) -> None:
+        """savePlaybackPosition for a show named explicitly -- the mini
+        player's, which keeps playing while other shows' pages are opened
+        (each of which changes the "current" show)."""
+        if not anime.get("slug_id"):
+            return
+        self._db.save_progress(
+            anime_slug_id=anime["slug_id"], anime_title=anime.get("title") or "",
+            poster_url=anime.get("poster_url") or "", episode_id=episode_id,
+            episode_number=episode_number, position_seconds=position_seconds, duration_seconds=0,
+        )
+
     @Slot()
     def refreshContinueWatching(self) -> None:
         self._emit_continue_watching()

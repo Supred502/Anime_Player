@@ -348,6 +348,7 @@ Kirigami.ScrollablePage {
             if (page.playWhenLoaded) {
                 let target = page.playWhenLoaded
                 page.playWhenLoaded = null
+                if (target.dub !== undefined) page.dub = target.dub
                 Qt.callLater(() => page.playEpisode(target.number, target.at))
             }
 

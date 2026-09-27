@@ -250,6 +250,22 @@ Kirigami.Page {
         onTriggered: page.justSkipped = ""
     }
 
+    // What's loaded, for handing over to the mini player.
+    property string streamUrl: ""
+    property string streamReferer: ""
+    property string streamSubtitle: ""
+    function toMiniPlayer() {
+        if (page.streamUrl === "" || video.duration <= 0) return
+        let win = applicationWindow()
+        win.startMiniPlayer({
+            anime: page.anime, episodeId: page.episodeId, episodeNumber: page.episodeNumber,
+            dub: page.dub, url: page.streamUrl, referer: page.streamReferer,
+            subtitle: page.streamSubtitle, position: video.position
+        })
+        if (page.isFullscreen) page.toggleFullscreen()
+        win.pageStack.goBack()
+    }
+
     function nextEpisode() { backend.loadNextEpisode(page.episodeNumber, page.dub) }
     function previousEpisode() { backend.loadPreviousEpisode(page.episodeNumber, page.dub) }
     function volumeUp() { video.setVolume(video.volume + 10) }
@@ -274,6 +290,9 @@ Kirigami.Page {
             event.accepted = true
         } else if (event.key === Qt.Key_F) {
             page.toggleFullscreen()
+            event.accepted = true
+        } else if (event.key === Qt.Key_I) {
+            page.toMiniPlayer()
             event.accepted = true
         } else if (event.key === Qt.Key_N) {
             page.nextEpisode()
@@ -357,6 +376,9 @@ Kirigami.Page {
             // referer and subtitleUrl are both load-bearing, not optional
             // extras -- see MpvVideoItem.loadUrl.
             video.loadUrl(url, referer, subtitleUrl)
+            page.streamUrl = url
+            page.streamReferer = referer
+            page.streamSubtitle = subtitleUrl
         }
         function onStreamFailed(message) {
             page.loadingStream = false
@@ -849,6 +871,14 @@ Kirigami.Page {
         }
         Controls.Button {
             Kirigami.Theme.inherit: true
+            icon.name: "window-minimize-pip"
+            enabled: page.streamUrl !== "" && video.duration > 0
+            onClicked: page.toMiniPlayer()
+            Controls.ToolTip.visible: hovered
+            Controls.ToolTip.text: "Mini player: keep watching while you browse (I)"
+        }
+        Controls.Button {
+            Kirigami.Theme.inherit: true
             icon.name: page.isFullscreen ? "view-restore-symbolic" : "view-fullscreen-symbolic"
             onClicked: page.toggleFullscreen()
         }
@@ -1064,7 +1094,7 @@ Kirigami.Page {
         implicitHeight: helpGrid.implicitHeight + Kirigami.Units.gridUnit * 2
         readonly property var shortcuts: [
             ["Space", "Play / pause"], ["\u2190 \u2192", "Back / forward 5s"],
-            ["\u2191 \u2193", "Volume"], ["M", "Mute"], ["F", "Fullscreen"],
+            ["\u2191 \u2193", "Volume"], ["M", "Mute"], ["F / F11", "Fullscreen"], ["I", "Mini player"],
             ["S", "Skip intro or outro"], ["N / P", "Next / previous episode"],
             ["[  ]", "Slower / faster"],
             ["L", "Learn Japanese on / off"], ["R", "Replay the Japanese line"],

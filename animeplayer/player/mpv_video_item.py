@@ -10,6 +10,8 @@ identically under X11 and Wayland.
 
 from __future__ import annotations
 
+import weakref
+
 import mpv
 from PySide6.QtCore import Property, QTimer, Signal, Slot
 from PySide6.QtGui import QOpenGLContext
@@ -97,8 +99,12 @@ class MpvVideoItem(QQuickFramebufferObject):
     # Internal: emitted from mpv's event thread, handled on the GUI thread.
     fileLoaded = Signal()
 
+    # Every player alive, so quitting can stop them all -- see close_all().
+    _live: "weakref.WeakSet[MpvVideoItem]" = weakref.WeakSet()
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
+        MpvVideoItem._live.add(self)
         self.frameReady.connect(self.update)
         self.fileLoaded.connect(self._attach_pending_subtitle)
         self.proc_address_fn = _GetProcAddressFn(_get_proc_address)
@@ -250,6 +256,17 @@ class MpvVideoItem(QQuickFramebufferObject):
 
     def createRenderer(self):
         return _MpvRenderer(self)
+
+    @classmethod
+    def close_all(cls) -> None:
+        """Stops every player, for quitting. Qt doesn't destroy the pages on
+        the way out, so their Component.onDestruction -> close() never runs,
+        and mpv kept decoding: its video thread then called back into Python
+        while the interpreter was shutting down, which crashed every quit
+        made during playback (seen in core dumps: PyGILState_Ensure from
+        mpv's vo_thread)."""
+        for item in list(cls._live):
+            item.close()
 
     @Slot()
     def close(self) -> None:
