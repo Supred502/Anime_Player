@@ -16,10 +16,12 @@ existing QThreadPool workers already do (see ui/backend.py's _Worker).
 
 from __future__ import annotations
 
+import hmac
 import json
-import random
+import secrets
 import string
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -449,7 +451,17 @@ function toast(msg) {
 
 
 def _generate_pin() -> str:
-    return "".join(random.choices(string.digits, k=4))
+    return "".join(secrets.choice(string.digits) for _ in range(4))
+
+
+# Guessing the PIN. Four digits are 10,000 tries, which a script on the same
+# Wi-Fi (a friend's laptop at school or in a cafe, where the remote starts
+# with the app) gets through in seconds when nothing stops it. A device is
+# shut out after a few wrong ones; many wrong ones from anywhere change the
+# PIN, so spreading the guesses across devices gets nowhere either.
+WRONG_PINS_PER_DEVICE = 5
+DEVICE_LOCKOUT_SECONDS = 600
+WRONG_PINS_BEFORE_NEW_PIN = 20
 
 
 class RemoteServer:
@@ -498,8 +510,34 @@ class RemoteServer:
         self.pin = _generate_pin()
         self._tokens: set[str] = set(initial_tokens) if initial_tokens else set()
         self._lock = threading.Lock()
+        self._wrong_by_device: dict[str, tuple[int, float]] = {}   # ip -> (wrong PINs, locked until)
+        self._wrong_total = 0
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
+
+    def _check_pin(self, device: str, pin: str) -> tuple[bool, str]:
+        """(right, what to tell the phone if not). See WRONG_PINS_PER_DEVICE."""
+        now = time.monotonic()
+        with self._lock:
+            wrong, locked_until = self._wrong_by_device.get(device, (0, 0.0))
+            if locked_until > now:
+                minutes = int((locked_until - now) // 60) + 1
+                return False, f"Too many wrong PINs -- try again in {minutes} min"
+            if hmac.compare_digest(pin, self.pin):
+                self._wrong_by_device.pop(device, None)
+                return True, ""
+            wrong += 1
+            self._wrong_total += 1
+            if self._wrong_total >= WRONG_PINS_BEFORE_NEW_PIN:
+                self.pin = _generate_pin()
+                self._wrong_total = 0
+                self._wrong_by_device.clear()
+                return False, "Wrong PIN -- the PIN has changed, check the PC"
+            if wrong >= WRONG_PINS_PER_DEVICE:
+                self._wrong_by_device[device] = (0, now + DEVICE_LOCKOUT_SECONDS)
+                return False, "Too many wrong PINs -- try again in 10 min"
+            self._wrong_by_device[device] = (wrong, 0.0)
+            return False, "Wrong PIN"
 
     @property
     def running(self) -> bool:
@@ -750,15 +788,16 @@ class RemoteServer:
                 if self.path == "/api/pair":
                     data = self._read_json_body()
                     pin = str(data.get("pin", "")).strip()
-                    if pin == server.pin:
-                        token = "".join(random.choices(string.ascii_letters + string.digits, k=24))
+                    ok, error = server._check_pin(self.client_address[0], pin)
+                    if ok:
+                        token = secrets.token_urlsafe(18)
                         with server._lock:
                             server._tokens.add(token)
                         if server._on_new_token is not None:
                             server._on_new_token(token)
                         self._send_json(200, {"ok": True, "token": token})
                     else:
-                        self._send_json(200, {"ok": False, "error": "Wrong PIN"})
+                        self._send_json(200, {"ok": False, "error": error})
                 elif self.path == "/api/command":
                     data = self._read_json_body()
                     token = data.get("token")

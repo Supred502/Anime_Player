@@ -182,3 +182,29 @@ def test_apk_range_request_beyond_size_is_416(server):
         resp.read()
     finally:
         conn.close()
+
+
+def _wrong(pin):
+    return "0000" if pin != "0000" else "1111"
+
+
+def test_a_device_is_locked_out_after_a_few_wrong_pins(server):
+    from animeplayer.remote import server as server_module
+    for _ in range(server_module.WRONG_PINS_PER_DEVICE):
+        _, data = _post(server, "/api/pair", {"pin": _wrong(server.pin)})
+        assert not data["ok"]
+    # Now even the right PIN is refused from this device.
+    _, data = _post(server, "/api/pair", {"pin": server.pin})
+    assert not data["ok"] and "Too many" in data["error"]
+
+
+def test_many_wrong_pins_from_anywhere_change_the_pin(server):
+    from animeplayer.remote import server as server_module
+    old = server.pin
+    for i in range(server_module.WRONG_PINS_BEFORE_NEW_PIN):
+        ok, _ = server._check_pin(f"10.0.0.{i}", _wrong(old))   # spread across devices
+        assert not ok
+    assert server._wrong_total == 0
+    # The old PIN (almost certainly) no longer works; the new one does.
+    ok, _ = server._check_pin("10.0.1.1", server.pin)
+    assert ok
