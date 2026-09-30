@@ -74,7 +74,7 @@ jobs:
           $env:ANIMEPLAYER_TEST_SHOTS = "$PWD\shots"
           $env:QT_OPENGL = "software"
           $p = Start-Process dist/AnimePlayer/AnimePlayer.exe -PassThru
-          if (-not $p.WaitForExit(150000)) { $p.Kill() }
+          if (-not $p.WaitForExit(240000)) { $p.Kill() }
           Get-ChildItem shots
 
       - uses: actions/upload-artifact@v4

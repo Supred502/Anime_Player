@@ -61,28 +61,33 @@ AppWindow {
         ["1-home", function() { backend.search("Frieren") }],
         ["1b-continue", function() { root.goContinue() }],
         ["2-browse", function() { root.goBrowse() }],
-        ["2b-seasonal", function() { root.goTo("seasonal", "SeasonalPage.qml") }],
+        ["2b-seasonal", function() { root.goSeasonal("season") }],
         ["3-settings", function() { root.goSettings() }],
         ["4-detail", function() { if (root.found) root.goTo("browse", "DetailPage.qml", { anime: root.found }) }],
-        ["5-stats", function() { root.goTo("stats", "StatsPage.qml") }],
+        ["5-profile", function() { root.goTo("profile", "ProfilePage.qml") }],
         ["6-words", function() { root.goTo("words", "WordsPage.qml") }],
         ["6b-library", function() { root.goTo("library", "LibraryPage.qml") }],
-        ["6c-schedule", function() { root.goTo("schedule", "SchedulePage.qml") }],
+        ["6c-this-week", function() { root.goSeasonal("week") }],
         ["7-update", function() {
             root.goHome()
             backend.updateAvailable("9.9.9", "- A test update\n- With notes", "installer")
         }]
     ]
 
+    // One stop at a time: go there, wait, take the picture, then the next.
+    // Two free-running timers skipped pictures on the Windows build, whose
+    // software rendering can take longer than the interval to draw a page:
+    // the next stop restarted the picture's timer before it fired.
     Timer {
-        interval: 7000
+        id: stopTimer
+        interval: 1000
         running: true
-        repeat: true
         onTriggered: {
             if (root.step >= root.stops.length) { log("done"); Qt.quit(); return }
+            log("stop " + root.stops[root.step][0] + " at " + Date.now())
             root.stops[root.step][1]()
             shotTimer.name = root.stops[root.step][0]
-            shotTimer.restart()
+            shotTimer.start()
             root.step++
         }
     }
@@ -93,6 +98,7 @@ AppWindow {
         onTriggered: {
             root.shoot(name)
             if (name === "4-detail") root.reportOverflow(root.pageStack.currentItem)
+            stopTimer.start()
         }
     }
 }

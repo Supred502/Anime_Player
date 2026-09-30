@@ -55,7 +55,17 @@ def _print_qt_message(_mode, context, message: str) -> None:
     restores them.
     """
     where = f"{Path(context.file).name}:{context.line}" if context.file else "qml"
-    print(f"[qml] {where}: {message}", file=sys.stderr, flush=True)
+    line = f"[qml] {where}: {message}"
+    print(line, file=sys.stderr, flush=True)
+    # A test tour's screenshots folder gets the log too: the Windows build has
+    # no console, so otherwise nothing a page complains about is ever seen.
+    shots = os.environ.get("ANIMEPLAYER_TEST_SHOTS")
+    if shots:
+        try:
+            with open(Path(shots) / "qml-log.txt", "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except OSError:
+            pass
 
 
 # The pure-QML Breeze style, not the default org.kde.desktop one. The latter
