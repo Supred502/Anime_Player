@@ -274,6 +274,7 @@ class Database:
     def __init__(self, db_path: Path = DEFAULT_DB_PATH) -> None:
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        self._anilist_by_status: dict[str, list[AniListStatus]] = {}
         # busy_timeout + WAL: this lock only protects against concurrent access
         # from within one process. If the app is ever accidentally launched
         # twice, both processes open the same file -- these make that degrade
@@ -847,6 +848,7 @@ class Database:
 
     def replace_anilist_list(self, entries: list[AniListStatus]) -> None:
         with self._lock:
+            self._anilist_by_status.clear()
             self._conn.execute("DELETE FROM anilist_list")
             self._conn.executemany(
                 "INSERT INTO anilist_list "
@@ -880,6 +882,7 @@ class Database:
         next sync.
         """
         with self._lock:
+            self._anilist_by_status.clear()
             if not status:
                 self._conn.execute(
                     "DELETE FROM anilist_list WHERE anilist_id = ?", (anilist_id,)
@@ -908,16 +911,23 @@ class Database:
             return [self._row_to_anilist_status(row) for row in rows]
 
     def get_anilist_by_status(self, status: str) -> list[AniListStatus]:
+        # Kept until the list changes: Home, the phone remote (every second
+        # while a phone is paired) and new-episode checks all ask, and a
+        # list of hundreds rebuilt each time was most of Home's Python time.
         with self._lock:
-            rows = self._conn.execute(
-                "SELECT * FROM anilist_list WHERE status = ? ORDER BY title", (status,)
-            ).fetchall()
-            return [self._row_to_anilist_status(row) for row in rows]
+            cached = self._anilist_by_status.get(status)
+            if cached is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM anilist_list WHERE status = ? ORDER BY title", (status,)
+                ).fetchall()
+                cached = self._anilist_by_status[status] = [self._row_to_anilist_status(row) for row in rows]
+            return list(cached)
 
     def upsert_anilist_status(self, entry: AniListStatus) -> None:
         """Updates the cached status for a single anime, unlike
         replace_anilist_list which wipes and repopulates the whole cache."""
         with self._lock:
+            self._anilist_by_status.clear()
             self._conn.execute(
                 "INSERT INTO anilist_list "
                 "(anilist_id, status, progress, score, title, cover_url, genres, popularity, alt_titles) "
@@ -937,6 +947,7 @@ class Database:
 
     def clear_anilist_list(self) -> None:
         with self._lock:
+            self._anilist_by_status.clear()
             self._conn.execute("DELETE FROM anilist_list")
             self._conn.commit()
 

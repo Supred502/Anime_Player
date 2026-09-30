@@ -22,15 +22,16 @@ AppWindow {
             if (root.tick === 26) p.toMiniPlayer()
             if (root.tick >= 32 && root.tick % 3 === 0 && root.miniPlayer)
                 root.log("t=" + root.tick + " mini playing=" + root.miniPlayer.playing)
-            if (root.tick === 34) root.miniPlayer.resizeTo(500)
-            if (root.tick === 35) {
+            if (root.tick === 34) {
                 let w = root.miniPlayer.Window.window
-                root.log("after resizeTo(500): window " + w.width + "x" + w.height + " ratio " + (w.width / w.height).toFixed(3))
-                root.miniPlayer.resizeTo(10)
+                root.log("mini window " + w.width + "x" + w.height)
+                // As the compositor leaves it after a free resize: wider, not taller.
+                w.width = 520
             }
+            if (root.tick === 37) mediaSession.action("pause")
             if (root.tick === 36) {
                 let w = root.miniPlayer.Window.window
-                root.log("after resizeTo(10): window " + w.width + "x" + w.height)
+                root.log("after a free resize to 520 wide: " + w.width + "x" + w.height + " ratio " + (w.width / w.height).toFixed(3))
             }
             if (root.tick === 50) Qt.quit()
         }

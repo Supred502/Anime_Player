@@ -208,3 +208,24 @@ def test_many_wrong_pins_from_anywhere_change_the_pin(server):
     # The old PIN (almost certainly) no longer works; the new one does.
     ok, _ = server._check_pin("10.0.1.1", server.pin)
     assert ok
+
+
+def test_stopping_does_not_wait_for_a_request_still_running(tmp_path):
+    import socket
+    import threading
+    import time
+    from animeplayer.remote.server import RemoteServer
+
+    release = threading.Event()
+    srv = RemoteServer(lambda: (release.wait(10), {})[1], lambda c, a: None, port=18790)
+    srv.start()
+    try:
+        # A request that won't finish until released: a phone mid-request.
+        sock = socket.create_connection(("127.0.0.1", 18790))
+        sock.sendall(b"GET /api/state HTTP/1.0\r\n\r\n")
+        time.sleep(0.3)
+        started = time.time()
+        srv.stop()
+        assert time.time() - started < 2
+    finally:
+        release.set()

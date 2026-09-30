@@ -812,6 +812,12 @@ class RemoteServer:
                     self._send_json(404, {"error": "not found"})
 
         self._httpd = ThreadingHTTPServer(("0.0.0.0", self._port), Handler)
+        # Stopping doesn't wait for requests still being answered. It did, and
+        # a phone mid-request -- relaying a video segment, a slow search --
+        # held the app's quit for as long as that took: 42 seconds, measured,
+        # with a paired phone polling. The app exits right after anyway.
+        self._httpd.daemon_threads = True
+        self._httpd.block_on_close = False
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 

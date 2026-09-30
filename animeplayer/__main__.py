@@ -6,7 +6,7 @@ import signal
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QLibraryInfo, QTimer, qInstallMessageHandler
+from PySide6.QtCore import QCoreApplication, QLibraryInfo, QMetaObject, Qt, QTimer, qInstallMessageHandler
 from PySide6.QtGui import QFont, QFontDatabase, QGuiApplication, QIcon
 from PySide6.QtQml import QQmlApplicationEngine, qmlRegisterType
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -172,6 +172,18 @@ def _selftest(out_path: str) -> int:
     return 1 if any(v.startswith("FAIL") for v in results.values()) else 0
 
 
+def quit_from_event_loop() -> None:
+    """Quits, but from Qt's event loop rather than from here. app.quit()
+    called from Python closes every window right away, inside this call, and
+    a window closing waits for its render thread -- which may be waiting for
+    this interpreter's lock to draw a video frame (MpvVideoItem renders in
+    Python). Neither could go on: SIGTERM with the floating mini player open
+    hung the app. Queued, the quit runs in C++ with the lock free."""
+    app = QCoreApplication.instance()
+    if app is not None:
+        QMetaObject.invokeMethod(app, "quit", Qt.ConnectionType.QueuedConnection)
+
+
 def main() -> int:
     if len(sys.argv) == 3 and sys.argv[1] == "--selftest":
         return _selftest(sys.argv[2])
@@ -263,7 +275,7 @@ def main() -> int:
     signal_wakeup.start(200)
     signal_wakeup.timeout.connect(lambda: None)
     for sig in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(sig, lambda *_: app.quit())
+        signal.signal(sig, lambda *_: quit_from_event_loop())
 
     code = app.exec()
     # Past this point nothing of the app's own is left to run: aboutToQuit

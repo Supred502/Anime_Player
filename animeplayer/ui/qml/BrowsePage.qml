@@ -61,7 +61,11 @@ Kirigami.ScrollablePage {
     property bool loading: false
     property bool loadingMore: false
     property string errorMessage: ""
-    property bool filtersOpen: false
+    // Open or closed as it was last left; closed the first time. Its own
+    // setting, saved the moment it's toggled -- as part of the page state it
+    // was only saved when a filter changed, so closing it never stuck.
+    property bool filtersOpen: backend.learnOption("browse_filters_open") === "true"
+    onFiltersOpenChanged: backend.setLearnOption("browse_filters_open", page.filtersOpen ? "true" : "false")
     property bool showingRecommendations: false
 
     // Single-choice filters. Season, year and sort are single by nature --
@@ -217,7 +221,6 @@ Kirigami.ScrollablePage {
         page.formatStates = saved.formatStates || ({})
         page.airingStates = saved.airingStates || ({})
         page.countryStates = saved.countryStates || ({})
-        page.filtersOpen = !!saved.filtersOpen
         page.load(1)
     }
 
@@ -261,11 +264,9 @@ Kirigami.ScrollablePage {
             page.loadRecommendations()
         } else if (page.startGenre !== "") {
             page.genreStates = { [page.startGenre]: 1 }
-            page.filtersOpen = true
             page.applyPreset(page.startCategory)
         } else if (page.startListStatus !== "") {
             page.listStates = { [page.startListStatus]: 1 }
-            page.filtersOpen = true
             page.applyPreset(page.startCategory)
         } else if (page.startLabel !== "" || page.startCategory !== "top-airing") {
             // Arrived from a "See all" or the Continue nav entry: that names

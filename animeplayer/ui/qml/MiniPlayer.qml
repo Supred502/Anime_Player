@@ -22,8 +22,7 @@ Rectangle {
     signal expand(real position)
     signal closed()
     signal moveRequested()
-    // Floating: the corner grip asks for a width; the window keeps 16:9.
-    signal resizeTo(real width)
+    signal resizeRequested()
 
     implicitWidth: Kirigami.Units.gridUnit * 20
     implicitHeight: Math.round(implicitWidth * 9 / 16)
@@ -107,7 +106,9 @@ Rectangle {
     // compositor does the moving (startSystemMove), which is the only way a
     // Wayland window can be moved, and gives snapping for free.
     DragHandler {
-        enabled: mini.floating
+        // Not from the resize grip: this took drags that started there (or
+        // left it as the pointer moved on) and moved the window instead.
+        enabled: mini.floating && !gripHover.hovered && !gripDrag.active
         target: null
         onActiveChanged: if (active) { mini.movedAt = Date.now(); mini.moveRequested() }
     }
@@ -152,7 +153,7 @@ Rectangle {
             anchors.margins: Kirigami.Units.smallSpacing
             Controls.Label {
                 Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.smallSpacing
+                Layout.leftMargin: mini.floating ? Kirigami.Units.gridUnit * 1.2 : Kirigami.Units.smallSpacing
                 elide: Text.ElideRight
                 color: "white"
                 font.bold: true
@@ -174,34 +175,72 @@ Rectangle {
             }
         }
 
-        Controls.ToolButton {
-            anchors.centerIn: parent
-            icon.name: video.paused ? "media-playback-start-symbolic" : "media-playback-pause-symbolic"
-            icon.color: "white"
-            icon.width: Kirigami.Units.iconSizes.medium
-            icon.height: Kirigami.Units.iconSizes.medium
-            onClicked: video.togglePause()
-        }
-
-        Controls.Label {
+        // The media buttons, along the bottom: back and forward ten seconds
+        // either side of play/pause, the time, and mute. Clear of the
+        // bottom-right corner, where the resize grip is.
+        RowLayout {
             anchors.left: parent.left
+            anchors.right: parent.right
             anchors.bottom: parent.bottom
-            anchors.margins: Kirigami.Units.smallSpacing * 2
-            color: "white"
-            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-            function clock(s) {
-                s = Math.max(0, Math.floor(s))
-                return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0")
+            anchors.leftMargin: Kirigami.Units.smallSpacing
+            anchors.rightMargin: Kirigami.Units.smallSpacing
+            anchors.bottomMargin: Kirigami.Units.smallSpacing
+            spacing: 0
+            MiniButton {
+                iconName: "media-seek-backward-symbolic"
+                tip: "Back 10 seconds (\u2190: 5)"
+                onClicked: video.seekAbsolute(Math.max(0, video.position - 10))
             }
-            text: clock(video.position) + " / " + clock(video.duration)
+            MiniButton {
+                iconName: video.paused ? "media-playback-start-symbolic" : "media-playback-pause-symbolic"
+                tip: video.paused ? "Play (Space)" : "Pause (Space)"
+                onClicked: video.togglePause()
+            }
+            MiniButton {
+                iconName: "media-seek-forward-symbolic"
+                tip: "Forward 10 seconds (\u2192: 5)"
+                onClicked: video.seekAbsolute(video.position + 10)
+            }
+            Controls.Label {
+                Layout.leftMargin: Kirigami.Units.smallSpacing
+                color: "white"
+                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                function clock(s) {
+                    s = Math.max(0, Math.floor(s))
+                    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0")
+                }
+                text: clock(video.position) + " / " + clock(video.duration)
+            }
+            Item { Layout.fillWidth: true }
+            MiniButton {
+                iconName: video.muted || video.volume === 0 ? "audio-volume-muted-symbolic"
+                        : video.volume < 50 ? "audio-volume-low-symbolic" : "audio-volume-high-symbolic"
+                tip: (video.muted ? "Unmute" : "Mute (M)") + " \u2014 scroll for volume ("
+                     + Math.round(video.volume) + "%)"
+                onClicked: video.setMuted(!video.muted)
+            }
         }
     }
 
-    // Floating: a grip in the bottom-right corner resizes the window.
+    component MiniButton: Controls.ToolButton {
+        property string iconName: ""
+        property string tip: ""
+        icon.name: iconName
+        icon.color: "white"
+        Controls.ToolTip.visible: hovered
+        Controls.ToolTip.text: tip
+    }
+
+    // Floating: a grip in the top-left corner resizes the window. Top-left,
+    // not bottom-right: the window lives in the screen's bottom-right corner,
+    // where a bottom-right grip can only be pulled off the screen -- it could
+    // shrink, never grow. The compositor does the resizing (the only way a
+    // Wayland window's position can move with its edge); AppWindow puts the
+    // shape back to 16:9 when it's let go.
     Item {
         visible: mini.floating && (mini.hovered || video.paused)
-        anchors.right: parent.right
-        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.top: parent.top
         width: Kirigami.Units.gridUnit * 1.2
         height: width
         z: 5
@@ -213,25 +252,21 @@ Rectangle {
                 c.lineWidth = 1.5
                 for (let i = 1; i <= 3; i++) {
                     c.beginPath()
-                    c.moveTo(width - i * 5, height - 2)
-                    c.lineTo(width - 2, height - i * 5)
+                    c.moveTo(i * 5, 2)
+                    c.lineTo(2, i * 5)
                     c.stroke()
                 }
             }
         }
-        HoverHandler { cursorShape: Qt.SizeFDiagCursor }
-        // Done here rather than by the compositor (startSystemResize), which
-        // resizes freely: the window's left edge stays put, so where the
-        // pointer is across the window is the width it wants.
+        HoverHandler { id: gripHover; cursorShape: Qt.SizeFDiagCursor }
         DragHandler {
             id: gripDrag
             target: null
-            property real grabbedAt: 0     // how far in from the right edge it was taken
+            grabPermissions: PointerHandler.TakeOverForbidden
             onActiveChanged: if (active) {
                 mini.movedAt = Date.now()
-                grabbedAt = mini.width - centroid.scenePressPosition.x
+                mini.resizeRequested()
             }
-            onCentroidChanged: if (active) mini.resizeTo(centroid.scenePosition.x + grabbedAt)
         }
     }
 

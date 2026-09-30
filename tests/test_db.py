@@ -217,3 +217,19 @@ def test_library_lists_and_items(tmp_path):
     db.delete_library_list(soon)
     assert [l["name"] for l in db.library_lists()] == ["Someday"]
     assert db.lists_containing("frieren-1") == []
+
+
+def test_anilist_by_status_follows_every_change(tmp_path):
+    from animeplayer.storage.db import AniListStatus, Database
+    db = Database(tmp_path / "test.db")
+    entry = lambda i, status: AniListStatus(anilist_id=i, status=status, progress=0, score=0.0,
+                                            title=f"Show {i}", cover_url=None)
+    db.replace_anilist_list([entry(1, "PLANNING"), entry(2, "CURRENT")])
+    assert [e.anilist_id for e in db.get_anilist_by_status("PLANNING")] == [1]
+    db.set_anilist_status(1, "CURRENT")                     # moved from Planning
+    assert db.get_anilist_by_status("PLANNING") == []
+    assert sorted(e.anilist_id for e in db.get_anilist_by_status("CURRENT")) == [1, 2]
+    db.replace_anilist_list([entry(3, "PLANNING")])         # a refresh
+    assert [e.anilist_id for e in db.get_anilist_by_status("PLANNING")] == [3]
+    db.clear_anilist_list()                                 # logged out
+    assert db.get_anilist_by_status("PLANNING") == []

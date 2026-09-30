@@ -309,6 +309,10 @@ Kirigami.ApplicationWindow {
             id: miniWindow
             title: "Anime Player \u2013 mini player"
             flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            // A window of its own, not the main window's child: as a child
+            // (Qt makes one declared inside another so), clicking it --
+            // to move it, say -- brought the whole app to the front.
+            transientParent: null
             color: "black"
             minimumWidth: 240
             minimumHeight: 135
@@ -330,8 +334,18 @@ Kirigami.ApplicationWindow {
                 interval: 250
                 onTriggered: windowChrome.keepAbove(miniWindow, miniWindow.width, miniWindow.height)
             }
-            onWidthChanged: geometrySave.restart()
-            onHeightChanged: geometrySave.restart()
+            onWidthChanged: { geometrySave.restart(); aspectFix.restart() }
+            onHeightChanged: { geometrySave.restart(); aspectFix.restart() }
+            // Back to 16:9 once a resize has settled: the compositor resizes
+            // freely, the picture doesn't.
+            Timer {
+                id: aspectFix
+                interval: 300
+                onTriggered: {
+                    let h = Math.round(miniWindow.width * 9 / 16)
+                    if (Math.abs(miniWindow.height - h) > 1) miniWindow.height = h
+                }
+            }
             onXChanged: geometrySave.restart()
             onYChanged: geometrySave.restart()
             Timer {
@@ -353,11 +367,7 @@ Kirigami.ApplicationWindow {
                 onClosed: root.miniShow = null
                 onExpand: (position) => root.miniExpand(position)
                 onMoveRequested: windowChrome.startMove(miniWindow)
-                onResizeTo: (w) => {
-                    let width = Math.round(Math.max(miniWindow.minimumWidth, Math.min(w, Screen.width * 0.9)))
-                    miniWindow.width = width
-                    miniWindow.height = Math.round(width * 9 / 16)
-                }
+                onResizeRequested: windowChrome.startResize(miniWindow, "topleft")
             }
         }
     }

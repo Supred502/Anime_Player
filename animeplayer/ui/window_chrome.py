@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, Slot
-from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent, QWindow
+from PySide6.QtGui import QGuiApplication, QKeyEvent, QMouseEvent, QWheelEvent, QWindow
 from PySide6.QtQuick import QQuickWindow
 
 
@@ -128,6 +128,38 @@ class WindowChrome(QObject):
             return
         for kind in (QEvent.Type.KeyPress, QEvent.Type.KeyRelease):
             QGuiApplication.sendEvent(window, QKeyEvent(kind, key, Qt.KeyboardModifier.NoModifier))
+
+    @Slot(QObject, float, float, float, float)
+    def testDrag(self, window: QObject, x1: float, y1: float, x2: float, y2: float) -> None:
+        """A left-button drag from (x1, y1) to (x2, y2), in steps, as a mouse
+        makes it. For the test drivers only."""
+        if not isinstance(window, QQuickWindow):
+            return
+        left, none = Qt.MouseButton.LeftButton, Qt.MouseButton.NoButton
+
+        def send(kind, x, y, button, buttons):
+            pos = QPointF(x, y)
+            QGuiApplication.sendEvent(window, QMouseEvent(kind, pos, window.mapToGlobal(pos), button,
+                                                          buttons, Qt.KeyboardModifier.NoModifier))
+
+        send(QEvent.Type.MouseMove, x1, y1, none, none)
+        send(QEvent.Type.MouseButtonPress, x1, y1, left, left)
+        for i in range(1, 21):
+            send(QEvent.Type.MouseMove, x1 + (x2 - x1) * i / 20, y1 + (y2 - y1) * i / 20, none, left)
+            QGuiApplication.processEvents()
+        send(QEvent.Type.MouseButtonRelease, x2, y2, left, none)
+
+    @Slot(QObject, float, float, int)
+    def testWheel(self, window: QObject, x: float, y: float, delta: int) -> None:
+        """One notch of a mouse wheel (delta 120 up, -120 down) at (x, y).
+        For the test drivers only."""
+        if not isinstance(window, QQuickWindow):
+            return
+        from PySide6.QtCore import QPoint
+        pos = QPointF(x, y)
+        QGuiApplication.sendEvent(window, QWheelEvent(
+            pos, window.mapToGlobal(pos), QPoint(0, 0), QPoint(0, delta), Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False))
 
     @Slot(QObject, int, int)
     def testKey(self, window: QObject, key: int, modifiers: int) -> None:

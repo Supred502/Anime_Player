@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 import httpx
 import qrcode
-from PySide6.QtCore import Property, QCoreApplication, QObject, QProcess, QRunnable, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import Property, QCoreApplication, QMetaObject, QObject, QProcess, QRunnable, QThreadPool, Qt, QTimer, Signal, Slot
 
 from animeplayer import discord_presence, library_sync, platform_setup, updates
 from animeplayer.alerts import find_new_episodes
@@ -3793,7 +3793,9 @@ class Backend(QObject):
             # A fresh copy of the updated code, started the same way this one was.
             QProcess.startDetached(sys.executable, ["-m", "animeplayer", *sys.argv[1:]],
                                    str(updates.source_checkout() or Path.cwd()))
-        QCoreApplication.quit()
+        # Queued, not QCoreApplication.quit() from here: see
+        # __main__.quit_from_event_loop for the hang that avoids.
+        QMetaObject.invokeMethod(QCoreApplication.instance(), "quit", Qt.ConnectionType.QueuedConnection)
 
     # -- reporting problems --------------------------------------------------
     # For testers: one click opens a GitHub issue with what the app knows --
