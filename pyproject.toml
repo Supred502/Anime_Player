@@ -36,7 +36,7 @@ include = ["animeplayer*"]
 
 # The QML, icons, fonts and images the UI loads at run time.
 [tool.setuptools.package-data]
-animeplayer = ["ui/qml/*", "ui/qml_compat/**/*", "ui/assets/**/*"]
+animeplayer = ["ui/qml/*", "ui/qml_compat/**/*", "ui/assets/**/*", "remote/*.apk"]
 
 [build-system]
 requires = ["setuptools>=77"]

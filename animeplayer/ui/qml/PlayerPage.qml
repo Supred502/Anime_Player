@@ -433,6 +433,7 @@ Kirigami.Page {
 
     // Volume keys change something invisible, so they say what they did.
     property bool volumeShown: false
+    property real volumeTarget: 0
     // What the centre flash says; volume by default.
     property string flashText: ""
     function flashVolume() {
@@ -697,8 +698,12 @@ Kirigami.Page {
         // to the same over the same distance.
         onWheel: (wheel) => {
             if (wheel.angleDelta.y === 0) return
+            // From where the last notch left it: the player reports its
+            // volume back a moment later, and quick notches read the old one.
+            let base = page.volumeShown ? page.volumeTarget : video.volume
+            page.volumeTarget = Math.max(0, Math.min(130, base + wheel.angleDelta.y / 120 * 5))
             video.setMuted(false)
-            video.setVolume(video.volume + wheel.angleDelta.y / 120 * 5)
+            video.setVolume(page.volumeTarget)
             page.flashVolume()
         }
     }

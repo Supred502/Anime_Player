@@ -14,6 +14,8 @@ datas = [
     (str(UI / "qml"), "animeplayer/ui/qml"),
     (str(UI / "qml_compat"), "animeplayer/ui/qml_compat"),
     (str(UI / "assets"), "animeplayer/ui/assets"),
+    # The Android remote app, served to phones on the LAN.
+    (str(ROOT / "animeplayer" / "remote" / "AnimePlayerRemote.apk"), "animeplayer/remote"),
 ]
 datas += collect_data_files("unidic_lite")
 datas += collect_data_files("cutlet")

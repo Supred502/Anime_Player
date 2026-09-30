@@ -48,7 +48,10 @@ echo "== linking resources =="
   --auto-add-overlay
 
 echo "== compiling java =="
+# Java 17 class files: d8 can't read what a newer JDK makes by default
+# ("Unsupported class file major version 69" from JDK 25).
 "$JAVA_HOME/bin/javac" \
+  --release 17 \
   -classpath "$PLATFORM/android.jar" \
   -d build/classes \
   src/com/supred/animeplayerremote/MainActivity.java \
@@ -77,3 +80,10 @@ echo "== signing =="
 
 echo "== done: build/AnimePlayerRemote.apk =="
 "$BUILD_TOOLS/apksigner" verify build/AnimePlayerRemote.apk
+
+# Into the Python package, so every build of the PC app (Windows installer,
+# Flatpak, a source checkout) carries it and serves it to phones over the
+# LAN. Bump REMOTE_APP_VERSION in animeplayer/remote/server.py to match
+# AndroidManifest's versionCode: that's what tells phones there's a newer one.
+cp build/AnimePlayerRemote.apk ../animeplayer/remote/AnimePlayerRemote.apk
+echo "== copied to animeplayer/remote/ =="

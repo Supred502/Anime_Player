@@ -33,6 +33,7 @@ Rectangle {
     clip: true
 
     property bool seeked: false
+    function volumeNow() { return Math.round(video.volume) + (video.muted ? " (muted)" : "") }
     readonly property bool hovered: hover.hovered
 
     MpvVideoItem {
@@ -112,11 +113,41 @@ Rectangle {
         target: null
         onActiveChanged: if (active) { mini.movedAt = Date.now(); mini.moveRequested() }
     }
-    WheelHandler {
-        onWheel: (event) => {
-            if (event.angleDelta.y === 0) return
+    // The scroll wheel anywhere on it is volume. A MouseArea taking only
+    // the wheel (clicks pass through to the handlers below): a WheelHandler
+    // here never saw the wheel at all.
+    MouseArea {
+        anchors.fill: parent
+        z: 10
+        acceptedButtons: Qt.NoButton
+        onWheel: (wheel) => {
+            if (wheel.angleDelta.y === 0) return
+            // From where the last notch left it: the player reports its
+            // volume back a moment later, and quick notches read the old one.
+            let base = volumeFlash.running ? mini.volumeTarget : video.volume
+            mini.volumeTarget = Math.max(0, Math.min(130, base + wheel.angleDelta.y / 120 * 5))
             video.setMuted(false)
-            video.setVolume(video.volume + event.angleDelta.y / 120 * 5)
+            video.setVolume(mini.volumeTarget)
+            volumeFlash.restart()
+        }
+    }
+    // What the wheel just did, on the picture for a moment.
+    property real volumeTarget: 0
+    Timer { id: volumeFlash; interval: 1000 }
+    Rectangle {
+        anchors.centerIn: parent
+        z: 9
+        visible: volumeFlash.running
+        radius: Kirigami.Units.smallSpacing * 2
+        color: Qt.rgba(0, 0, 0, 0.7)
+        implicitWidth: volumeText.implicitWidth + Kirigami.Units.gridUnit
+        implicitHeight: volumeText.implicitHeight + Kirigami.Units.smallSpacing * 2
+        Controls.Label {
+            id: volumeText
+            anchors.centerIn: parent
+            color: "white"
+            font.bold: true
+            text: video.muted ? "Muted" : "Volume " + Math.round(mini.volumeTarget || video.volume) + "%"
         }
     }
     focus: true

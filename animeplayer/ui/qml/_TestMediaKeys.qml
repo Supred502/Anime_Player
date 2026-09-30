@@ -28,7 +28,13 @@ AppWindow {
                 // As the compositor leaves it after a free resize: wider, not taller.
                 w.width = 520
             }
-            if (root.tick === 37) mediaSession.action("pause")
+            if (root.tick === 37) {
+                let w = root.miniPlayer.Window.window
+                root.log("volume before wheel: " + root.miniPlayer.volumeNow())
+                windowChrome.testWheel(w, w.width / 2, w.height / 2, 120)
+                windowChrome.testWheel(w, w.width / 2, w.height / 2, 120)
+            }
+            if (root.tick === 38) root.log("volume after 2 notches up: " + root.miniPlayer.volumeNow())
             if (root.tick === 36) {
                 let w = root.miniPlayer.Window.window
                 root.log("after a free resize to 520 wide: " + w.width + "x" + w.height + " ratio " + (w.width / w.height).toFixed(3))

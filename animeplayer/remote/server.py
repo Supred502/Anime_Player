@@ -38,7 +38,7 @@ _REMOTE_PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>Anime Player Remote</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --accent: #4c8bf5; --accent-press: #3a75dd; --accent-soft: #2e3b52; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
   body {
     margin: 0; font-family: -apple-system, system-ui, sans-serif;
@@ -59,8 +59,8 @@ _REMOTE_PAGE = """<!doctype html>
     background: #3a3a3f; color: #fff; font-weight: 600;
   }
   button:active { background: #4e4e55; }
-  button.primary { background: #4c8bf5; }
-  button.primary:active { background: #3a75dd; }
+  button.primary { background: var(--accent); }
+  button.primary:active { background: var(--accent-press); }
   .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 8px; }
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
   .grid1 { display: grid; grid-template-columns: 1fr; gap: 8px; margin-bottom: 8px; }
@@ -68,15 +68,15 @@ _REMOTE_PAGE = """<!doctype html>
   button.big { padding: 20px; font-size: 18px; }
   .dpad { display: grid; grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr 1fr; gap: 8px; width: 220px; margin: 8px auto; }
   .dpad button { padding: 18px 0; font-size: 20px; }
-  .dpad .mid { grid-column: 2; grid-row: 2; background: #4c8bf5; }
+  .dpad .mid { grid-column: 2; grid-row: 2; background: var(--accent); }
   .tabs { display: flex; gap: 8px; margin-bottom: 12px; }
   .tabs button { flex: 1; background: #232326; }
-  .tabs button.active { background: #4c8bf5; }
+  .tabs button.active { background: var(--accent); }
   .list-item {
     display: flex; align-items: center; gap: 10px; padding: 10px; border-radius: 8px; margin-bottom: 6px;
     background: #232326;
   }
-  .list-item.selected { outline: 2px solid #4c8bf5; background: #2e3b52; }
+  .list-item.selected { outline: 2px solid var(--accent); background: var(--accent-soft); }
   .list-item img { width: 40px; height: 56px; object-fit: cover; border-radius: 4px; background: #111; }
   .list-item .name { font-size: 14px; }
   .hidden { display: none !important; }
@@ -87,13 +87,13 @@ _REMOTE_PAGE = """<!doctype html>
   .section-title { font-size: 13px; opacity: .6; margin: 12px 0 6px; text-transform: uppercase; letter-spacing: .5px; }
   .ep-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: 6px; }
   .ep-grid button { padding: 12px 0; font-size: 15px; }
-  .ep-grid button.resume { outline: 2px solid #4c8bf5; }
+  .ep-grid button.resume { outline: 2px solid var(--accent); }
   .ep-grid button.filler { background: #4a3a22; }
   .seg { display: flex; gap: 0; margin: 8px 0; }
   .seg button { flex: 1; border-radius: 0; background: #232326; }
   .seg button:first-child { border-radius: 10px 0 0 10px; }
   .seg button:last-child { border-radius: 0 10px 10px 0; }
-  .seg button.active { background: #4c8bf5; }
+  .seg button.active { background: var(--accent); }
   #watch { position: fixed; inset: 0; background: #000; z-index: 10; display: flex; flex-direction: column; }
   #watch video { flex: 1; width: 100%; background: #000; }
   #watch .bar { display: flex; gap: 8px; padding: 10px; background: #111; }
@@ -106,6 +106,11 @@ _REMOTE_PAGE = """<!doctype html>
 </style>
 </head>
 <body>
+
+<div id="updateBanner" class="card hidden">
+  <div style="margin-bottom:10px">A newer version of the remote app is on your PC.</div>
+  <button class="primary" style="width:100%" onclick="getUpdate()">Update the app</button>
+</div>
 
 <div id="pairBox" class="card">
   <h1>Pair with Anime Player</h1>
@@ -186,6 +191,44 @@ _REMOTE_PAGE = """<!doctype html>
 <div class="toast" id="toast"></div>
 
 <script>
+// The PC's accent colour and the remote app it carries (/api/info). Inside
+// the Android app, `AnimePlayerApp` is that app (see MainActivity's Bridge):
+// it takes the colour for its own bar, and says its version, so a newer one
+// can be offered. 1.0 had no bridge: a WebView without it is that version.
+const APP = window.AnimePlayerApp;
+function shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16);
+  const c = [n >> 16, (n >> 8) & 255, n & 255].map((v) => Math.max(0, Math.min(255, Math.round(f < 0 ? v * (1 + f) : v + (255 - v) * f))));
+  return '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
+}
+function mix(hex, base, t) {
+  const a = parseInt(hex.slice(1), 16), b = parseInt(base.slice(1), 16);
+  const c = [16, 8, 0].map((s) => Math.round(((a >> s) & 255) * t + ((b >> s) & 255) * (1 - t)));
+  return '#' + c.map((v) => v.toString(16).padStart(2, '0')).join('');
+}
+async function loadInfo() {
+  try {
+    const info = await (await fetch('/api/info')).json();
+    if (info.accent && /^#[0-9a-fA-F]{6}$/.test(info.accent)) {
+      const root = document.documentElement.style;
+      root.setProperty('--accent', info.accent);
+      root.setProperty('--accent-press', shade(info.accent, -0.15));
+      root.setProperty('--accent-soft', mix(info.accent, '#232326', 0.3));
+      if (APP && APP.setTheme) APP.setTheme(info.accent);
+    }
+    const inApp = !!APP || /; wv\)/.test(navigator.userAgent);
+    const have = APP && APP.version ? APP.version() : 1;
+    document.getElementById('updateBanner').classList.toggle('hidden',
+      !(inApp && info.apk && info.app_version > have));
+  } catch (e) { /* an older PC app: no colours, no update check */ }
+}
+function getUpdate() {
+  const url = location.origin + '/app.apk';
+  if (APP && APP.openExternal) APP.openExternal(url); else location.href = url;
+}
+loadInfo();
+setInterval(loadInfo, 30000);
+
 let token = localStorage.getItem('remoteToken') || null;
 let browseItems = [];
 let selIndex = 0;
@@ -450,6 +493,11 @@ function toast(msg) {
 """
 
 
+# The remote app's versionCode (android-remote/AndroidManifest.xml) of the
+# APK in this package. A phone running an older one is offered this one.
+REMOTE_APP_VERSION = 2
+
+
 def _generate_pin() -> str:
     return "".join(secrets.choice(string.digits) for _ in range(4))
 
@@ -480,7 +528,10 @@ class RemoteServer:
         stream_provider: Callable[[], dict[str, Any] | None] | None = None,
         search_provider: Callable[[str], list[dict[str, Any]]] | None = None,
         episodes_provider: Callable[[str], dict[str, Any]] | None = None,
+        info_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
+        # The PC's accent colour, for the phone page to match (/api/info).
+        self._info_provider = info_provider
         # The "second screen" half: what's playing on the PC (for continue
         # on phone), and searching / listing episodes from the phone. All
         # optional, so the server still stands up in tests without them.
@@ -779,6 +830,13 @@ class RemoteServer:
                     self.wfile.write(body)
                 elif self.path == "/api/state":
                     self._send_json(200, server._state_provider())
+                elif self.path == "/api/info":
+                    # Unpaired too: the colours and the app version are for
+                    # the PIN screen as much as anything.
+                    info = dict(server._info_provider()) if server._info_provider else {}
+                    has_apk = server._apk_path is not None and server._apk_path.is_file()
+                    info.update({"apk": has_apk, "app_version": REMOTE_APP_VERSION if has_apk else 0})
+                    self._send_json(200, info)
                 elif self.path == "/app.apk":
                     self._serve_apk(include_body=True)
                 else:

@@ -229,3 +229,31 @@ def test_stopping_does_not_wait_for_a_request_still_running(tmp_path):
         assert time.time() - started < 2
     finally:
         release.set()
+
+
+def test_info_gives_the_accent_and_the_app_version(tmp_path):
+    import json
+    import urllib.request
+    from animeplayer.remote.server import REMOTE_APP_VERSION, RemoteServer
+
+    apk = tmp_path / "app.apk"
+    apk.write_bytes(b"PK")
+    srv = RemoteServer(lambda: {}, lambda c, a: None, port=18791, apk_path=apk,
+                       info_provider=lambda: {"accent": "#e85d75"})
+    srv.start()
+    try:
+        info = json.loads(urllib.request.urlopen("http://127.0.0.1:18791/api/info").read())
+    finally:
+        srv.stop()
+    assert info == {"accent": "#e85d75", "apk": True, "app_version": REMOTE_APP_VERSION}
+
+
+def test_the_bundled_app_is_the_version_phones_are_offered():
+    import re
+    from pathlib import Path
+    from animeplayer.remote.server import REMOTE_APP_VERSION
+
+    root = Path(__file__).resolve().parent.parent
+    manifest = (root / "android-remote" / "AndroidManifest.xml").read_text()
+    assert int(re.search(r'versionCode="(\d+)"', manifest).group(1)) == REMOTE_APP_VERSION
+    assert (root / "animeplayer" / "remote" / "AnimePlayerRemote.apk").is_file()

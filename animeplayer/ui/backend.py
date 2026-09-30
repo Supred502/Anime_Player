@@ -75,7 +75,9 @@ from animeplayer.storage.db import DEFAULT_DB_PATH, AniDBMapping, AniListStatus,
 # directly (see _apk_path below) is a same-origin, single-hop download that
 # doesn't have that problem, and is what the QR code actually points at.
 _REMOTE_APK_URL = "https://github.com/Supred502/Anime_Player/releases/download/v1.0-remote/AnimePlayerRemote.apk"
-_REMOTE_APK_PATH = Path(__file__).resolve().parent.parent.parent / "android-remote" / "build" / "AnimePlayerRemote.apk"
+# In the package itself (android-remote/build.sh puts it there), so every
+# build -- the Windows installer and the Flatpak too -- serves it to phones.
+_REMOTE_APK_PATH = Path(__file__).resolve().parent.parent / "remote" / "AnimePlayerRemote.apk"
 
 
 def _lan_ip() -> str:
@@ -2979,6 +2981,7 @@ class Backend(QObject):
                 stream_provider=self._phone_stream,
                 search_provider=self._phone_search,
                 episodes_provider=self._phone_episodes,
+                info_provider=lambda: {"accent": self.theme.get("accent", "")},
             )
         try:
             self._remote_server.start()

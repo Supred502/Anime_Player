@@ -73,14 +73,30 @@ class WindowChrome(QObject):
         though, so on KDE one is sent over D-Bus that finds this window by
         its title and process and keeps it above -- and, since a Wayland app
         can't place its own windows either, puts it in the bottom-right
-        corner at `width` x `height`. Returns whether that was needed and
-        worked."""
+        corner at `width` x `height`, and pulls it back onto the screen
+        whenever a move or resize leaves part of it off. Returns whether
+        that was needed and worked."""
         if not isinstance(window, QWindow):
             return False
         if QGuiApplication.platformName() != "wayland" \
                 or "KDE" not in os.environ.get("XDG_CURRENT_DESKTOP", "").upper():
             return False
         return _kwin_keep_above(window.title(), os.getpid(), width, height)
+
+    @Slot()
+    def releaseKeepAbove(self) -> None:
+        """Unloads keepAbove's KWin script once its window has closed."""
+        if QGuiApplication.platformName() != "wayland" \
+                or "KDE" not in os.environ.get("XDG_CURRENT_DESKTOP", "").upper():
+            return
+        try:
+            from PySide6.QtDBus import QDBusConnection, QDBusMessage
+        except ImportError:
+            return
+        message = QDBusMessage.createMethodCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting",
+                                                "unloadScript")
+        message.setArguments([f"animeplayer_keepabove_{os.getpid()}"])
+        QDBusConnection.sessionBus().call(message)
 
     @Slot(QObject, str, result=bool)
     def saveScreenshot(self, window: QObject, path: str) -> bool:
@@ -172,6 +188,14 @@ class WindowChrome(QObject):
 
 _KWIN_SCRIPT = """
 const title = %(title)s, pid = %(pid)d, width = %(width)d, height = %(height)d;
+// Back fully on screen, against the edge it went past.
+function onScreen(w) {
+    const area = workspace.clientArea(KWin.MaximizeArea, w);
+    const g = w.frameGeometry;
+    const x = Math.min(Math.max(g.x, area.x), area.x + area.width - g.width);
+    const y = Math.min(Math.max(g.y, area.y), area.y + area.height - g.height);
+    if (x !== g.x || y !== g.y) w.frameGeometry = { x: x, y: y, width: g.width, height: g.height };
+}
 for (const w of workspace.windowList()) {
     if (w.caption !== title || w.pid !== pid) continue;
     w.keepAbove = true;
@@ -180,6 +204,12 @@ for (const w of workspace.windowList()) {
         w.frameGeometry = { x: area.x + area.width - width - 24, y: area.y + area.height - height - 24,
                             width: width, height: height };
     }
+    // Every time it's let go after a move or a resize. The script stays
+    // loaded while the window is open for this (see releaseKeepAbove).
+    w.interactiveMoveResizeFinished.connect(function() { onScreen(w); });
+    // And after any other change -- the app putting a resized window back
+    // to 16:9 can push its edge off -- but never mid-drag.
+    w.frameGeometryChanged.connect(function() { if (!w.move && !w.resize) onScreen(w); });
 }
 """
 
@@ -218,7 +248,9 @@ def _kwin_keep_above(title: str, pid: int, width: int, height: int) -> bool:
         if script_id < 0:
             return False
         run = call(f"/Scripting/Script{script_id}", "org.kde.kwin.Script", "run")
-        call("/Scripting", "org.kde.kwin.Scripting", "unloadScript", name)
+        # Left loaded: it keeps the window on screen after each move (see the
+        # script). Unloaded when the window goes (releaseKeepAbove), or by the
+        # next load, which clears a leftover of the same name first.
         return run.type() == QDBusMessage.MessageType.ReplyMessage
     finally:
         try:

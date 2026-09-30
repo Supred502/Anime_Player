@@ -334,8 +334,8 @@ Kirigami.ApplicationWindow {
                 interval: 250
                 onTriggered: windowChrome.keepAbove(miniWindow, miniWindow.width, miniWindow.height)
             }
-            onWidthChanged: { geometrySave.restart(); aspectFix.restart() }
-            onHeightChanged: { geometrySave.restart(); aspectFix.restart() }
+            onWidthChanged: { geometrySave.restart(); aspectFix.restart(); keepOnScreen.restart() }
+            onHeightChanged: { geometrySave.restart(); aspectFix.restart(); keepOnScreen.restart() }
             // Back to 16:9 once a resize has settled: the compositor resizes
             // freely, the picture doesn't.
             Timer {
@@ -346,8 +346,26 @@ Kirigami.ApplicationWindow {
                     if (Math.abs(miniWindow.height - h) > 1) miniWindow.height = h
                 }
             }
-            onXChanged: geometrySave.restart()
-            onYChanged: geometrySave.restart()
+            onXChanged: { geometrySave.restart(); keepOnScreen.restart() }
+            onYChanged: { geometrySave.restart(); keepOnScreen.restart() }
+            Component.onDestruction: windowChrome.releaseKeepAbove()
+            // Where the app places its own windows (Windows, X11): moved or
+            // resized partly off the screen, it's pulled back against the
+            // edge once it has stayed put a moment. (On KDE's Wayland, KWin
+            // does this -- see window_chrome.keepAbove.)
+            Timer {
+                id: keepOnScreen
+                interval: 600
+                onTriggered: {
+                    if (Qt.platform.pluginName === "wayland") return
+                    let left = miniWindow.screen.virtualX, top = miniWindow.screen.virtualY
+                    let right = left + miniWindow.screen.width, bottom = top + miniWindow.screen.height
+                    let x = Math.min(Math.max(miniWindow.x, left), right - miniWindow.width)
+                    let y = Math.min(Math.max(miniWindow.y, top), bottom - miniWindow.height)
+                    if (x !== miniWindow.x) miniWindow.x = x
+                    if (y !== miniWindow.y) miniWindow.y = y
+                }
+            }
             Timer {
                 id: geometrySave
                 interval: 800
