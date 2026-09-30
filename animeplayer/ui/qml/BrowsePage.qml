@@ -43,6 +43,9 @@ Kirigami.ScrollablePage {
     // model -- every card rebuilt and the grid back at the top, under the
     // reader and a controller's highlight alike.
     ListModel { id: resultRows }
+    readonly property var blankResult: ({ poster_url: "", anilist_id: 0, slug_id: "", numeric_id: "",
+                                          title: "", reason: "", kind: "", duration: "", rating: "",
+                                          dub_count: 0, sub_count: 0 })
     property string rowsFirst: ""
     // By what it is: results from the backend come back as new objects on
     // every read, so comparing the objects themselves never matches.
@@ -186,13 +189,15 @@ Kirigami.ScrollablePage {
         }
     }
 
-    function restoreBrowseState(saved) {
+    // `withKeyword` for a saved preset, which may include a search. What
+    // Browse reopens on never does (see rememberState).
+    function restoreBrowseState(saved, withKeyword) {
         // A state saved on Continue Watching or Downloaded (see the preset
         // menu) is from before those moved out of Browse: start fresh.
         if (saved.localKey) { page.applyPreset("top-airing"); return }
         page.localKey = ""
         page.presetLabel = saved.presetLabel || ""
-        queryField.text = saved.keyword || ""
+        queryField.text = withKeyword ? (saved.keyword || "") : ""
         page.filterSeason = saved.season || ""
         page.filterYear = saved.year || ""
         page.filterSort = saved.sort || ""
@@ -215,7 +220,13 @@ Kirigami.ScrollablePage {
         // "See all") is a one-off destination, not the user's own working
         // set, so it doesn't overwrite what they had.
         if (page.openedAtTarget || page.showingRecommendations) return
-        backend.saveBrowseState(page.browseState())
+        // Without the search: a search is a one-off. Kept, it came back on
+        // every visit -- and only filter changes saved, so emptying the box
+        // and pressing Enter never replaced it: a friend's Browse opened on
+        // the same "slime" search every time, whatever he did.
+        let state = page.browseState()
+        state.keyword = ""
+        backend.saveBrowseState(state)
     }
 
     // True when this page was opened pointing at something particular.
@@ -368,6 +379,7 @@ Kirigami.ScrollablePage {
         // it is one request rather than a search plus a match. Anything with a
         // filter on it goes to AniList, which is the only side that can
         // exclude, and knows tags, origin and scores.
+        page.lastSearch = page.localKey === "" ? queryField.text.trim() : ""
         if (page.localKey !== "") {
             backend.browseLocal(page.localKey)
         } else if (!page.filtered && queryField.text.trim() !== "") {
@@ -439,7 +451,7 @@ Kirigami.ScrollablePage {
         let state = Object.assign({}, preset.state)
         state.presetLabel = preset.name
         state.filtersOpen = page.filtersOpen
-        page.restoreBrowseState(state)
+        page.restoreBrowseState(state, true)
         page.rememberState()
     }
 
@@ -632,6 +644,8 @@ Kirigami.ScrollablePage {
         page.suggestion = ""
         page.load(1)
     }
+    // The search the results on screen are for ("" for none).
+    property string lastSearch: ""
     function searchFor(text) {
         queryField.text = text
         historyPopup.close()
@@ -691,7 +705,11 @@ Kirigami.ScrollablePage {
                 // Recent searches drop down while the box has focus, filtered
                 // by what's typed so far -- as in a browser's address bar.
                 onActiveFocusChanged: if (activeFocus) page.showHistory()
-                onTextEdited: page.showHistory()
+                // Emptied by hand: back to the listing, as if never searched.
+                onTextEdited: {
+                    page.showHistory()
+                    if (text.trim() === "" && page.lastSearch !== "") page.submitSearch()
+                }
                 Keys.onDownPressed: if (historyPopup.opened) historyList.incrementCurrentIndex()
                 Keys.onUpPressed: if (historyPopup.opened) historyList.decrementCurrentIndex()
                 Keys.onEscapePressed: historyPopup.close()
@@ -1166,7 +1184,9 @@ Kirigami.ScrollablePage {
 
         delegate: Item {
             required property int index
-            readonly property var modelData: page.results[index] || ({})
+            // For the moment between the results being cleared and the rows
+            // following, a blank card rather than a screenful of warnings.
+            readonly property var modelData: page.results[index] || page.blankResult
 
             width: grid.cellWidth
             height: grid.cellHeight

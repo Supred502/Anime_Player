@@ -258,6 +258,7 @@ Kirigami.ApplicationWindow {
     // gone the moment a full player opens.
     property var miniShow: null
     readonly property Item miniPlayer: miniLoader.item
+        || (miniWindowLoader.item ? miniWindowLoader.item.player : null)
     function startMiniPlayer(show) {
         root.miniShow = null
         root.miniShow = show
@@ -269,9 +270,81 @@ Kirigami.ApplicationWindow {
             if (root.miniShow && page && typeof page.toMiniPlayer === "function") root.miniShow = null
         }
     }
+    // In its own window over other apps where that works (not in the
+    // Deck's Gaming Mode, which shows one window at a time).
+    readonly property bool miniFloats: windowChrome.separateWindowsWork() && testMode !== "mini-inside"
+    function miniExpand(position) {
+        let s = root.miniShow
+        root.miniShow = null
+        // Through the show's page, as "Watch the line" does: the player
+        // needs the episode list behind it for next/previous.
+        root.openAt(s.anime, s.episodeNumber, position, "browse", s.dub)
+        // From another app, the full player comes to the front.
+        if (root.visibility === Window.Minimized) root.showNormal()
+        root.raise()
+        root.requestActivate()
+    }
+    // The main window closing ends the app, the floating one included:
+    // otherwise Qt keeps running for as long as any window is open.
+    onClosing: if (root.miniShow !== null) root.miniShow = null
+    Loader {
+        id: miniWindowLoader
+        active: root.miniShow !== null && root.miniFloats
+        sourceComponent: Window {
+            id: miniWindow
+            title: "Anime Player \u2013 mini player"
+            flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            color: "black"
+            minimumWidth: 240
+            minimumHeight: 135
+            // Its last size (and, where an app may place its windows, its
+            // last spot), else a corner of the screen.
+            readonly property var saved: {
+                try { return JSON.parse(backend.learnOption("mini_geometry") || "{}") } catch (e) { return {} }
+            }
+            width: saved.w || Kirigami.Units.gridUnit * 24
+            height: saved.h || Math.round((saved.w || Kirigami.Units.gridUnit * 24) * 9 / 16)
+            x: saved.x !== undefined ? saved.x : Screen.desktopAvailableWidth - width - Kirigami.Units.gridUnit * 2
+            y: saved.y !== undefined ? saved.y : Screen.desktopAvailableHeight - height - Kirigami.Units.gridUnit * 2
+            visible: true
+            onClosing: root.miniShow = null
+            Component.onCompleted: keepAboveTimer.start()
+            // Once it's on screen (KWin can only find a window that's there).
+            Timer {
+                id: keepAboveTimer
+                interval: 250
+                onTriggered: windowChrome.keepAbove(miniWindow, miniWindow.width, miniWindow.height)
+            }
+            onWidthChanged: geometrySave.restart()
+            onHeightChanged: geometrySave.restart()
+            onXChanged: geometrySave.restart()
+            onYChanged: geometrySave.restart()
+            Timer {
+                id: geometrySave
+                interval: 800
+                onTriggered: {
+                    let g = { w: miniWindow.width, h: miniWindow.height }
+                    // Wayland never says where a window is (x and y stay 0).
+                    if (Qt.platform.pluginName !== "wayland") { g.x = miniWindow.x; g.y = miniWindow.y }
+                    backend.setLearnOption("mini_geometry", JSON.stringify(g))
+                }
+            }
+            property Item player: floatingMini
+            MiniPlayer {
+                id: floatingMini
+                anchors.fill: parent
+                floating: true
+                show: root.miniShow
+                onClosed: root.miniShow = null
+                onExpand: (position) => root.miniExpand(position)
+                onMoveRequested: windowChrome.startMove(miniWindow)
+                onResizeRequested: windowChrome.startResize(miniWindow, "bottomright")
+            }
+        }
+    }
     Loader {
         id: miniLoader
-        active: root.miniShow !== null
+        active: root.miniShow !== null && !root.miniFloats
         parent: root.contentItem
         z: 900
         anchors.right: parent ? parent.right : undefined
@@ -280,13 +353,7 @@ Kirigami.ApplicationWindow {
         sourceComponent: MiniPlayer {
             show: root.miniShow
             onClosed: root.miniShow = null
-            onExpand: (position) => {
-                let s = root.miniShow
-                root.miniShow = null
-                // Through the show's page, as "Watch the line" does: the
-                // player needs the episode list behind it for next/previous.
-                root.openAt(s.anime, s.episodeNumber, position, "browse", s.dub)
-            }
+            onExpand: (position) => root.miniExpand(position)
         }
     }
 

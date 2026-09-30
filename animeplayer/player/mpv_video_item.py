@@ -315,7 +315,8 @@ class MpvVideoItem(QQuickFramebufferObject):
     @Slot(float)
     def setVolume(self, value: float) -> None:
         if not self.closed:
-            self.mpv.volume = max(0.0, min(100.0, value))
+            # 130: mpv's own ceiling (volume-max), a boost for quiet audio.
+            self.mpv.volume = max(0.0, min(130.0, value))
 
     @Slot(bool)
     def setMuted(self, value: bool) -> None:

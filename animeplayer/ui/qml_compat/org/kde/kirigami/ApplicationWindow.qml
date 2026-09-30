@@ -53,10 +53,14 @@ QQC2.ApplicationWindow {
     function applicationWindow() { return root }
 
 
+    // With actionText and callBack, a button on it (Kirigami's own does the
+    // same): "Stopped saving episode 5 -- Undo".
     function showPassiveNotification(message, timeout, actionText, callBack) {
-        toast.text = message
+        toastText.text = message
+        toast.actionText = typeof actionText === "string" ? actionText : ""
+        toast.callBack = typeof callBack === "function" ? callBack : null
         let ms = typeof timeout === "number" ? timeout : (timeout === "long" ? 4500 : 2500)
-        toastTimer.interval = ms
+        toastTimer.interval = toast.actionText ? Math.max(ms, 5000) : ms
         toast.opacity = 1
         toastTimer.restart()
     }
@@ -68,8 +72,10 @@ QQC2.ApplicationWindow {
     }
 
     // Passive notifications: a pill near the bottom, over everything.
-    QQC2.Label {
+    QQC2.Control {
         id: toast
+        property string actionText: ""
+        property var callBack: null
         parent: QQC2.Overlay.overlay
         z: 1000
         anchors.horizontalCenter: parent ? parent.horizontalCenter : undefined
@@ -78,13 +84,31 @@ QQC2.ApplicationWindow {
         width: Math.min(implicitWidth, (parent ? parent.width : 600) - K.Units.gridUnit * 4)
         opacity: 0
         visible: opacity > 0
-        wrapMode: Text.WordWrap
         padding: K.Units.largeSpacing
         leftPadding: K.Units.gridUnit
-        rightPadding: K.Units.gridUnit
-        color: K.Theme.textColor
+        rightPadding: toast.actionText ? K.Units.largeSpacing : K.Units.gridUnit
+        contentItem: RowLayout {
+            spacing: K.Units.largeSpacing
+            QQC2.Label {
+                id: toastText
+                Layout.fillWidth: true
+                Layout.maximumWidth: (toast.parent ? toast.parent.width : 600) - K.Units.gridUnit * 12
+                wrapMode: Text.WordWrap
+                color: K.Theme.textColor
+            }
+            QQC2.Button {
+                visible: toast.actionText !== ""
+                text: toast.actionText
+                flat: true
+                onClicked: {
+                    let f = toast.callBack
+                    toast.opacity = 0
+                    if (f) f()
+                }
+            }
+        }
         background: Rectangle {
-            radius: height / 2
+            radius: Math.min(height / 2, K.Units.gridUnit * 1.2)
             color: K.Theme.alternateBackgroundColor
             border.color: K.Theme.disabledTextColor
             border.width: 1

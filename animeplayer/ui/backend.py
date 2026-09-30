@@ -166,6 +166,22 @@ def _strip_html(text: str) -> str:
 
 
 
+
+def _plain_download_error(error: str) -> str:
+    """A download's error as the person reading the row would say it."""
+    text = error.casefold()
+    if any(k in text for k in ("connection refused", "name or service not known",
+                               "temporary failure in name resolution", "network is unreachable",
+                               "no address associated", "getaddrinfo failed", "connecterror")):
+        return "couldn't reach the streaming site, check your internet"
+    if "timed out" in text or "timeout" in text:
+        return "the streaming site took too long to answer"
+    if "403" in text or "forbidden" in text:
+        return "the video server refused, try again in a while"
+    if "no space left" in text:
+        return "the disk is full"
+    return error
+
 def _token_rejected(message: str) -> bool:
     """Whether a failed AniList call means the login itself is no good, as
     opposed to the network or AniList having a bad moment."""
@@ -341,6 +357,7 @@ class Backend(QObject):
         self._download_lock = threading.Lock()
         self._pending_downloads: list[tuple[DownloadRequest, Path]] = []
         self._active_download: DownloadRequest | None = None
+        self._downloads_failed_in_row = 0
         # Anything left mid-flight when the app was last closed is not
         # running any more, whatever the database says.
         for entry in self._db.all_downloads():
@@ -1740,17 +1757,31 @@ class Backend(QObject):
             # queue of ten shouldn't need babysitting because of one.
             for attempt in range(3):
                 try:
-                    self._run_download(request, destination)
+                    self._run_download(request, destination,
+                                       retrying=f"Trying again ({attempt + 1} of 3)..." if attempt else "")
                     return request, ""
                 except Exception as exc:  # noqa: BLE001 -- reported per episode below
                     if str(exc) == "cancelled" or attempt == 2 \
                             or self._downloader.is_cancelled(request.episode_id, request.dub):
                         return request, str(exc)
+                    # Said on the row: a retry that looked like "Downloading
+                    # 0%" for a minute got clicked (which cancels it), then
+                    # clicked again to start it -- the "click every episode
+                    # twice" a friend hit when a whole queue was failing.
+                    self._db.set_download_status(
+                        request.episode_id, request.dub, "downloading",
+                        message=f"Having trouble -- trying again ({attempt + 2} of 3)")
+                    self.downloadsChanged.emit()
                     time.sleep(5 * (attempt + 1))
             return request, "failed"
         finally:
             with self._download_lock:
                 self._active_download = None
+
+    # Downloads that failed back to back before the rest of the line is
+    # stopped: by then it's the source or the network, not the episode, and
+    # each one left would spend a minute retrying for nothing.
+    DOWNLOAD_FAILURES_BEFORE_STOPPING = 2
 
     def _download_finished(self, result: tuple[DownloadRequest, str] | None) -> None:
         if result is not None:
@@ -1758,11 +1789,32 @@ class Backend(QObject):
             # "cancelled" is the user's own doing, not something to report at
             # them -- the row is already gone by the time this runs.
             if error and error != "cancelled":
+                error = _plain_download_error(error)
                 self._db.set_download_status(request.episode_id, request.dub, "failed",
                                              message=error)
-                self.downloadFailed.emit(f"{request.anime_title} episode "
-                                         f"{request.episode_number:g}: {error}")
+                self._downloads_failed_in_row += 1
+                stopped = 0
+                if self._downloads_failed_in_row >= self.DOWNLOAD_FAILURES_BEFORE_STOPPING:
+                    stopped = self._stop_waiting_downloads(
+                        "didn't start, the ones before it failed too")
+                if stopped:
+                    self.downloadFailed.emit(
+                        f"Downloads keep failing ({error}), so the {stopped} still waiting were stopped. "
+                        "\"Retry all\" in Library > Downloads starts them again.")
+                else:
+                    self.downloadFailed.emit(f"{request.anime_title} episode "
+                                             f"{request.episode_number:g}: {error}")
+            elif not error:
+                self._downloads_failed_in_row = 0
         self.downloadsChanged.emit()
+
+    def _stop_waiting_downloads(self, message: str) -> int:
+        """Takes everything still waiting out of the line, marked failed."""
+        with self._download_lock:
+            waiting, self._pending_downloads = self._pending_downloads, []
+        for request, _destination in waiting:
+            self._db.set_download_status(request.episode_id, request.dub, "failed", message=message)
+        return len(waiting)
 
     @Slot(result=list)
     def downloadQueue(self) -> list[dict[str, Any]]:
@@ -1790,6 +1842,17 @@ class Backend(QObject):
             self._pending_downloads.insert(to_index, item)
         self.downloadsChanged.emit()
 
+    @Slot(result=int)
+    def retryFailedDownloads(self) -> int:
+        """Starts every failed download again, in the order they were first
+        queued. Returns how many."""
+        failed = sorted((e for e in self._db.all_downloads() if e.status == "failed"),
+                        key=lambda e: (e.created_at, e.anime_title, e.episode_number))
+        self._downloads_failed_in_row = 0
+        for entry in failed:
+            self.retryDownload(entry.episode_id, entry.dub)
+        return len(failed)
+
     @Slot(int, bool)
     def retryDownload(self, episode_id: int, dub: bool) -> None:
         entry = self._db.get_download(episode_id, dub)
@@ -1804,13 +1867,14 @@ class Backend(QObject):
 
     DOWNLOAD_READRATE_WHILE_PLAYING = 3.0
 
-    def _run_download(self, request: DownloadRequest, destination: Path) -> None:
+    def _run_download(self, request: DownloadRequest, destination: Path, retrying: str = "") -> None:
         """Runs on the download thread. Raises to report failure -- _Worker
-        turns that into the failed() callback above."""
+        turns that into the failed() callback above. `retrying` is shown on
+        the row until the video starts arriving."""
         if self._downloader.is_cancelled(request.episode_id, request.dub):
             raise DownloadError("cancelled")
 
-        self._db.set_download_status(request.episode_id, request.dub, "downloading")
+        self._db.set_download_status(request.episode_id, request.dub, "downloading", message=retrying)
         self.downloadsChanged.emit()
 
         info = source.resolve_stream(request.episode_id, self._http, dub=request.dub)
@@ -1842,9 +1906,15 @@ class Backend(QObject):
             )
         save_skip_times(destination, self._skip_times_of(info))
 
+        cleared = [not retrying]
+
         def on_progress(fraction: float, written: int) -> None:
             # Already throttled to roughly one call per percent by the
             # downloader -- see the note in Downloader.fetch.
+            if not cleared[0]:
+                cleared[0] = True
+                self._db.set_download_status(request.episode_id, request.dub, "downloading")
+                self.downloadsChanged.emit()
             self.downloadProgress.emit(request.episode_id, request.dub, fraction, written)
 
         # Held to a few times playback speed while an episode is playing, so

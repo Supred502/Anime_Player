@@ -37,8 +37,11 @@ Kirigami.ScrollablePage {
         page.lists = backend.libraryLists()
         if (page.tab !== "downloads" && page.tab !== "planning" && !page.currentList) page.tab = "downloads"
         if (page.tab === "downloads") {
+            // The failed ones after what's running, by show and episode.
             page.queue = backend.downloadQueue().concat(
-                backend.allDownloads().filter((d) => d.status === "failed"))
+                backend.allDownloads().filter((d) => d.status === "failed")
+                    .sort((a, b) => a.title.localeCompare(b.title) || a.episode_number - b.episode_number
+                                    || (a.dub ? 1 : 0) - (b.dub ? 1 : 0)))
             page.cards = backend.downloadedShows()
         } else if (page.tab === "planning") {
             page.queue = []
@@ -222,10 +225,24 @@ Kirigami.ScrollablePage {
         }
 
         // ---- Downloads: the queue -------------------------------------------
-        Kirigami.Heading {
-            level: 3
+        RowLayout {
+            Layout.fillWidth: true
             visible: page.tab === "downloads" && page.queue.length > 0
-            text: "Download queue"
+            Kirigami.Heading {
+                Layout.fillWidth: true
+                level: 3
+                text: "Download queue"
+            }
+            AppButton {
+                readonly property int failedCount: page.queue.filter((d) => d.status === "failed").length
+                visible: failedCount > 0
+                text: failedCount > 1 ? "Retry all " + failedCount + " failed" : "Retry failed"
+                icon.name: "view-refresh-symbolic"
+                onClicked: {
+                    let n = backend.retryFailedDownloads()
+                    showPassiveNotification("Trying " + n + (n === 1 ? " download" : " downloads") + " again")
+                }
+            }
         }
         Repeater {
             model: page.tab === "downloads" ? page.queue : []
@@ -272,7 +289,9 @@ Kirigami.ScrollablePage {
                             elide: Text.ElideRight
                             opacity: 0.7
                             color: row.failed ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.textColor
-                            text: row.active
+                            text: row.active && row.modelData.message
+                                  ? row.modelData.message
+                                  : row.active
                                   ? "Downloading " + Math.round((page.progress[row.modelData.episode_id + ":" + row.modelData.dub] || 0) * 100) + "%"
                                   : row.failed ? "Failed: " + row.modelData.message
                                   : row.waitingIndex === 0 ? "Next up" : "Waiting (" + (row.waitingIndex + 1) + " in line)"

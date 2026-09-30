@@ -111,6 +111,12 @@ Kirigami.Page {
         page.learnMode = backend.getLearnMode()
         let savedSpeed = parseFloat(backend.learnOption("speed"))
         if (savedSpeed > 0 && savedSpeed !== 1) page.speed = savedSpeed
+        // Volume and mute carry over from the last episode: every one
+        // started at full volume before.
+        let savedVolume = parseFloat(backend.learnOption("volume"))
+        if (savedVolume >= 0) video.setVolume(savedVolume)
+        video.setMuted(backend.learnOption("muted") === "true")
+        page.volumeRestored = true
         let style = backend.subtitleStyle()
         page.subScale = style.scale
         page.subPosition = style.position
@@ -304,8 +310,24 @@ Kirigami.Page {
 
     function nextEpisode() { backend.loadNextEpisode(page.episodeNumber, page.dub) }
     function previousEpisode() { backend.loadPreviousEpisode(page.episodeNumber, page.dub) }
-    function volumeUp() { video.setVolume(video.volume + 10) }
+    function volumeUp() { video.setMuted(false); video.setVolume(video.volume + 10) }
     function volumeDown() { video.setVolume(video.volume - 10) }
+    // Saved a moment after it stops changing (a slider drag is dozens of
+    // changes), and only once the saved one has been put back.
+    property bool volumeRestored: false
+    Connections {
+        target: video
+        function onVolumeChanged() { if (page.volumeRestored) volumeSave.restart() }
+        function onMutedChanged() { if (page.volumeRestored) volumeSave.restart() }
+    }
+    Timer {
+        id: volumeSave
+        interval: 600
+        onTriggered: {
+            backend.setLearnOption("volume", String(Math.round(video.volume)))
+            backend.setLearnOption("muted", video.muted ? "true" : "false")
+        }
+    }
     function escapeAction() {
         video.setPaused(true)
         if (page.isFullscreen) page.toggleFullscreen()
@@ -348,6 +370,19 @@ Kirigami.Page {
         } else if (event.key === Qt.Key_Down) {
             page.volumeDown()
             page.flashVolume()
+            event.accepted = true
+        } else if (event.key === Qt.Key_MediaTogglePlayPause || event.key === Qt.Key_MediaPlay
+                   || event.key === Qt.Key_MediaPause) {
+            // A keyboard's media keys, and headset buttons, which send the same.
+            if (event.key === Qt.Key_MediaPause) video.setPaused(true)
+            else if (event.key === Qt.Key_MediaPlay) video.setPaused(false)
+            else video.togglePause()
+            event.accepted = true
+        } else if (event.key === Qt.Key_MediaNext) {
+            page.nextEpisode()
+            event.accepted = true
+        } else if (event.key === Qt.Key_MediaPrevious) {
+            page.previousEpisode()
             event.accepted = true
         } else if (event.key === Qt.Key_M) {
             video.setMuted(!video.muted)
@@ -632,6 +667,15 @@ Kirigami.Page {
         cursorShape: page.pointerHidden ? Qt.BlankCursor : Qt.ArrowCursor
         onPositionChanged: { page.controlsVisible = true; hideTimer.restart() }
         onClicked: video.togglePause()
+        // The scroll wheel over the picture is volume, as in most players.
+        // 5% a notch of a mouse wheel; a touchpad's many small steps add up
+        // to the same over the same distance.
+        onWheel: (wheel) => {
+            if (wheel.angleDelta.y === 0) return
+            video.setMuted(false)
+            video.setVolume(video.volume + wheel.angleDelta.y / 120 * 5)
+            page.flashVolume()
+        }
     }
 
     LearnOverlay {
@@ -959,6 +1003,20 @@ Kirigami.Page {
         }
     }
 
+    // A dark fade behind the controls: over a bright scene (snow, a white
+    // flash) the time and the slider were white on white.
+    Rectangle {
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: bottomBar.height + Kirigami.Units.gridUnit * 3
+        visible: bottomBar.visible
+        gradient: Gradient {
+            GradientStop { position: 0; color: "transparent" }
+            GradientStop { position: 1; color: Qt.rgba(0, 0, 0, 0.7) }
+        }
+    }
+
     ColumnLayout {
         id: bottomBar
         anchors.left: parent.left
@@ -1043,6 +1101,30 @@ Kirigami.Page {
                 onClicked: page.nextEpisode()
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: "Next episode"
+            }
+            // Volume: the speaker mutes, the slider sets it. Up to 130%,
+            // mpv's own ceiling, for the quiet dubs.
+            Controls.Button {
+                Kirigami.Theme.inherit: true
+                icon.name: video.muted || video.volume === 0 ? "audio-volume-muted-symbolic"
+                         : video.volume < 34 ? "audio-volume-low-symbolic"
+                         : video.volume < 67 ? "audio-volume-medium-symbolic"
+                         : "audio-volume-high-symbolic"
+                onClicked: video.setMuted(!video.muted)
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: video.muted ? "Unmute (M)" : "Mute (M)"
+            }
+            Controls.Slider {
+                id: volumeSlider
+                Kirigami.Theme.inherit: true
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 6
+                from: 0
+                to: 130
+                stepSize: 1
+                value: video.muted ? 0 : video.volume
+                onMoved: { video.setMuted(false); video.setVolume(value) }
+                Controls.ToolTip.visible: hovered || pressed
+                Controls.ToolTip.text: (video.muted ? "Muted" : Math.round(video.volume) + "%") + "  (\u2191 \u2193)"
             }
             Controls.Label {
                 text: page.formatTime(video.position) + " / " + page.formatTime(video.duration)
@@ -1131,7 +1213,7 @@ Kirigami.Page {
         implicitHeight: helpGrid.implicitHeight + Kirigami.Units.gridUnit * 2
         readonly property var shortcuts: [
             ["Space", "Play / pause"], ["\u2190 \u2192", "Back / forward 5s"],
-            ["\u2191 \u2193", "Volume"], ["M", "Mute"], ["F / F11", "Fullscreen"], ["I", "Mini player"],
+            ["\u2191 \u2193 / wheel", "Volume"], ["M", "Mute"], ["F / F11", "Fullscreen"], ["I", "Mini player"],
             ["S", "Skip intro or outro"], ["N / P", "Next / previous episode"],
             ["[  ]", "Slower / faster"],
             ["L", "Learn Japanese on / off"], ["R", "Replay the Japanese line"],

@@ -242,7 +242,13 @@ Kirigami.ScrollablePage {
         } else if (existing.status === "ready") {
             backend.removeDownload(episodeId, page.dub)
         } else {
+            // Said out loud, with a way back: a silent cancel of an episode
+            // that looked stuck read as "the click did nothing", and got a
+            // second click that queued it again at the back of the line.
+            let spec = page.episodeSpec(episodeId, number)
             backend.cancelDownload(episodeId, page.dub)
+            showPassiveNotification("Stopped saving episode " + number, "long", "Undo",
+                                    function() { backend.downloadEpisode(spec) })
         }
     }
 
@@ -1342,7 +1348,8 @@ Kirigami.ScrollablePage {
                             if (model.title !== "") parts.push(model.title)
                             let state = page.downloadFor(model.episode_id)
                             if (state && state.status === "ready") parts.push("Saved -- right-click to remove")
-                            else if (state && state.status === "downloading") parts.push("Saving... right-click to cancel")
+                            else if (state && state.status === "downloading")
+                                parts.push((state.message || "Saving...") + " -- right-click to cancel")
                             else if (state && state.status === "queued") parts.push("Queued -- right-click to cancel")
                             else if (state && state.status === "failed") parts.push("Failed: " + state.message)
                             else if (page.canDownload) parts.push("Right-click to save offline")
@@ -1459,6 +1466,7 @@ Kirigami.ScrollablePage {
                                         if (row.model.filler) parts.push("Filler")
                                         if (row.saved) {
                                             parts.push(row.saved.status === "ready" ? "Saved offline"
+                                                     : row.saved.status === "downloading" && row.saved.message ? "Save retrying"
                                                      : row.saved.status === "downloading" ? "Saving " + Math.round(row.saved.progress * 100) + "%"
                                                      : row.saved.status === "failed" ? "Save failed" : "Queued to save")
                                         }

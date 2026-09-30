@@ -1,7 +1,12 @@
-// The episode, still playing, in the corner of the window while you browse.
-// Started from the player (its mini player button, or I); it picks up at the
-// same second, keeps saving your place, and the expand button goes back to
-// the full player at wherever it has got to.
+// The episode, still playing, while you do something else. Started from the
+// player (its mini player button, or I); it picks up at the same second,
+// keeps saving your place, and the expand button goes back to the full
+// player at wherever it has got to.
+//
+// Normally in a window of its own, over other apps (`floating`: dragged to
+// move, pulled at the corner to resize -- see AppWindow). Where a second
+// window can't work -- the Steam Deck's Gaming Mode shows one at a time --
+// it sits in the corner of the app's window instead.
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Controls as Controls
@@ -13,12 +18,15 @@ Rectangle {
 
     // { anime, episodeId, episodeNumber, dub, url, referer, subtitle, position }
     required property var show
+    property bool floating: false
     signal expand(real position)
     signal closed()
+    signal moveRequested()
+    signal resizeRequested()
 
-    width: Kirigami.Units.gridUnit * 20
-    height: Math.round(width * 9 / 16)
-    radius: Kirigami.Units.smallSpacing * 2
+    implicitWidth: Kirigami.Units.gridUnit * 20
+    implicitHeight: Math.round(implicitWidth * 9 / 16)
+    radius: mini.floating ? 0 : Kirigami.Units.smallSpacing * 2
     color: "black"
     border.width: 1
     border.color: Qt.rgba(1, 1, 1, 0.15)
@@ -32,7 +40,13 @@ Rectangle {
         anchors.fill: parent
         anchors.margins: 1
         Component.onDestruction: close()
-        Component.onCompleted: video.loadUrl(mini.show.url, mini.show.referer, mini.show.subtitle)
+        Component.onCompleted: {
+            // The volume the full player was at (see PlayerPage).
+            let saved = parseFloat(backend.learnOption("volume"))
+            if (saved >= 0) video.setVolume(saved)
+            video.setMuted(backend.learnOption("muted") === "true")
+            video.loadUrl(mini.show.url, mini.show.referer, mini.show.subtitle)
+        }
         onDurationChanged: (value) => {
             if (value > 0 && !mini.seeked) {
                 mini.seeked = true
@@ -61,6 +75,34 @@ Rectangle {
     TapHandler {
         onTapped: video.togglePause()
         onDoubleTapped: mini.expand(video.position)
+    }
+    // Floating: dragged anywhere on the picture moves the window. The
+    // compositor does the moving (startSystemMove), which is the only way a
+    // Wayland window can be moved, and gives snapping for free.
+    DragHandler {
+        enabled: mini.floating
+        target: null
+        onActiveChanged: if (active) mini.moveRequested()
+    }
+    WheelHandler {
+        onWheel: (event) => {
+            if (event.angleDelta.y === 0) return
+            video.setMuted(false)
+            video.setVolume(video.volume + event.angleDelta.y / 120 * 5)
+        }
+    }
+    focus: true
+    Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_Space || event.key === Qt.Key_MediaTogglePlayPause) video.togglePause()
+        else if (event.key === Qt.Key_Left) video.seekAbsolute(Math.max(0, video.position - 5))
+        else if (event.key === Qt.Key_Right) video.seekAbsolute(video.position + 5)
+        else if (event.key === Qt.Key_Up) { video.setMuted(false); video.setVolume(video.volume + 10) }
+        else if (event.key === Qt.Key_Down) video.setVolume(video.volume - 10)
+        else if (event.key === Qt.Key_M) video.setMuted(!video.muted)
+        else if (event.key === Qt.Key_Escape) mini.closed()
+        else if (event.key === Qt.Key_Return || event.key === Qt.Key_F) mini.expand(video.position)
+        else return
+        event.accepted = true
     }
 
     // Controls, over the video while the pointer is on it.
@@ -123,6 +165,35 @@ Rectangle {
                 return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0")
             }
             text: clock(video.position) + " / " + clock(video.duration)
+        }
+    }
+
+    // Floating: a grip in the bottom-right corner resizes the window.
+    Item {
+        visible: mini.floating && (mini.hovered || video.paused)
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        width: Kirigami.Units.gridUnit * 1.2
+        height: width
+        z: 5
+        Canvas {
+            anchors.fill: parent
+            onPaint: {
+                let c = getContext("2d")
+                c.strokeStyle = "rgba(255,255,255,0.8)"
+                c.lineWidth = 1.5
+                for (let i = 1; i <= 3; i++) {
+                    c.beginPath()
+                    c.moveTo(width - i * 5, height - 2)
+                    c.lineTo(width - 2, height - i * 5)
+                    c.stroke()
+                }
+            }
+        }
+        HoverHandler { cursorShape: Qt.SizeFDiagCursor }
+        DragHandler {
+            target: null
+            onActiveChanged: if (active) mini.resizeRequested()
         }
     }
 

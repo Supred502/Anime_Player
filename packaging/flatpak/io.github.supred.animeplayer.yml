@@ -33,6 +33,9 @@ finish-args:
   # Updating itself: installs the next release's bundle through the host's
   # flatpak (see animeplayer/updates.py).
   - --talk-name=org.freedesktop.Flatpak
+  # Keeping the floating mini player above other windows on KDE (see
+  # window_chrome.keepAbove).
+  - --talk-name=org.kde.KWin
   # Discord status (animeplayer/discord_presence.py).
   - --filesystem=xdg-run/discord-ipc-0
   - --filesystem=xdg-run/app/com.discordapp.Discord:ro

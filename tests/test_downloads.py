@@ -204,3 +204,10 @@ def test_disk_usage_counts_listed_files_wherever_they_are(tmp_path):
     a.write_bytes(b"1" * 10)
     b.write_bytes(b"1" * 5)
     assert downloads.disk_usage([str(a), str(b), str(tmp_path / "gone.mp4")]) == 15
+
+
+def test_download_errors_read_as_plain_words():
+    from animeplayer.ui.backend import _plain_download_error
+    assert _plain_download_error("[Errno 111] Connection refused").startswith("couldn't reach")
+    assert _plain_download_error("The read operation timed out") == "the streaming site took too long to answer"
+    assert _plain_download_error("ffmpeg exited with 1") == "ffmpeg exited with 1"
