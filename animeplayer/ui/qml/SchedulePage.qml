@@ -1,4 +1,4 @@
-// The week ahead: every episode airing in the next seven days, by day, with
+// The week ahead (Seasonal's "This week" tab): every episode airing in the next seven days, by day, with
 // the shows you're watching or planning marked -- and a switch to see only
 // those. Times are the Japanese broadcast (subs usually follow within hours).
 import QtQuick
@@ -10,7 +10,7 @@ Kirigami.ScrollablePage {
     id: page
 
     AppTheming {}
-    title: "Schedule"
+    title: "This week"
 
     property var items: []
     property bool loading: true
@@ -91,6 +91,8 @@ Kirigami.ScrollablePage {
     ColumnLayout {
         width: page.availableWidth
         spacing: Kirigami.Units.largeSpacing
+
+        SeasonTabs { current: "week" }
 
         Placeholders {
             Layout.fillWidth: true

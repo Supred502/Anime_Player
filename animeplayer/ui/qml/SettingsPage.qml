@@ -181,21 +181,26 @@ Kirigami.ScrollablePage {
         }
     }
 
-    ColumnLayout {
-        width: page.width
-        spacing: Kirigami.Units.largeSpacing
+    // Grouped into cards, two to a row on a wide window, one on a narrow one
+    // (the Steam Deck in portrait, a half-screen window).
+    readonly property int columns: page.availableWidth > Kirigami.Units.gridUnit * 52 ? 2 : 1
 
-        Kirigami.FormLayout {
-            Layout.fillWidth: true
+    GridLayout {
+        width: page.availableWidth
+        columns: page.columns
+        columnSpacing: Kirigami.Units.largeSpacing * 2
+        rowSpacing: Kirigami.Units.largeSpacing * 2
+
+        // ---- AniList --------------------------------------------------------
+        SettingsCard {
+            title: "AniList"
+            iconName: "im-user-symbolic"
 
             Controls.Label {
-                Kirigami.FormData.label: "AniList:"
                 text: page.loggedIn ? ("Logged in as " + page.viewerName) : "Not logged in"
                 font.bold: true
             }
-
             RowLayout {
-                Kirigami.FormData.label: " "
                 visible: page.loggedIn
                 Controls.Button {
                     // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
@@ -205,6 +210,7 @@ Kirigami.ScrollablePage {
                     // every control in the app. See AppTheming.qml.
                     Kirigami.Theme.inherit: true
                     text: "Refresh lists"
+                    icon.name: "view-refresh-symbolic"
                     onClicked: backend.refreshAnilistList()
                 }
                 Controls.Button {
@@ -213,54 +219,39 @@ Kirigami.ScrollablePage {
                     onClicked: backend.logoutAnilist()
                 }
             }
-        }
-
-        ColumnLayout {
-            visible: !page.loggedIn
-            Layout.fillWidth: true
-            spacing: Kirigami.Units.smallSpacing
-
-            Kirigami.FormLayout {
+            ColumnLayout {
+                visible: !page.loggedIn
                 Layout.fillWidth: true
-
+                spacing: Kirigami.Units.smallSpacing
                 AppButton {
-                    Kirigami.FormData.label: "1."
-                    text: "Log in with AniList"
+                    text: "1. Log in with AniList"
                     icon.name: "im-user-symbolic"
                     accented: true
                     onClicked: backend.startAnilistLogin()
                 }
-                Controls.Label {
-                    Kirigami.FormData.label: " "
-                    text: "Opens AniList in your browser. Approve, and it shows you a token."
-                    opacity: 0.7
-                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                Hint { text: "Opens AniList in your browser. Approve, and it shows you a token." }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Controls.TextField {
+                        Kirigami.Theme.inherit: true
+                        id: tokenField
+                        Layout.fillWidth: true
+                        placeholderText: "2. Paste the token here"
+                        onAccepted: backend.confirmAnilistLogin(tokenField.text)
+                        echoMode: TextInput.Password
+                    }
+                    Controls.Button {
+                        Kirigami.Theme.inherit: true
+                        text: "Log in"
+                        enabled: tokenField.text.trim() !== ""
+                        onClicked: backend.confirmAnilistLogin(tokenField.text)
+                    }
                 }
-
-                Controls.TextField {
-                    Kirigami.Theme.inherit: true
-                    id: tokenField
-                    Kirigami.FormData.label: "2."
-                    placeholderText: "Paste the token here"
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 18
-                    onAccepted: backend.confirmAnilistLogin(tokenField.text)
-                    echoMode: TextInput.Password
-                }
-
-                Controls.Button {
-                    Kirigami.Theme.inherit: true
-                    Kirigami.FormData.label: " "
-                    text: "Log in"
-                    enabled: tokenField.text.trim() !== ""
-                    onClicked: backend.confirmAnilistLogin(tokenField.text)
-                }
-
                 // For anyone who'd rather log in through their own AniList
                 // API client than the built-in one.
                 Controls.CheckBox {
                     id: ownClientToggle
                     Kirigami.Theme.inherit: true
-                    Kirigami.FormData.label: " "
                     text: "Use my own AniList API client"
                     checked: clientIdField.text !== "" && clientIdField.text !== page.builtInClientId
                     onToggled: if (!checked) { clientIdField.text = ""; backend.setAnilistClientId("") }
@@ -269,25 +260,24 @@ Kirigami.ScrollablePage {
                     Kirigami.Theme.inherit: true
                     id: clientIdField
                     visible: ownClientToggle.checked
-                    Kirigami.FormData.label: "Client ID:"
-                    placeholderText: "e.g. 12345 (redirect URL: https://anilist.co/api/v2/oauth/pin)"
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 18
+                    Layout.fillWidth: true
+                    placeholderText: "Client ID, e.g. 12345 (redirect URL: https://anilist.co/api/v2/oauth/pin)"
                     onEditingFinished: backend.setAnilistClientId(text)
                 }
             }
         }
 
-        Kirigami.Separator { Layout.fillWidth: true }
+        // ---- Appearance -----------------------------------------------------
+        // The swatches are AniList's own profile colours, and the default is
+        // its blue, so the app and the site it syncs with read as the same
+        // product. Light/dark follows the desktop -- see AppTheming.qml.
+        SettingsCard {
+            title: "Appearance"
+            iconName: "preferences-desktop-color-symbolic"
 
-        // Appearance. The swatches are AniList's own profile colours, and the
-        // default is its blue, so the app and the site it syncs with read as
-        // the same product. Light/dark follows the desktop -- see
-        // AppTheming.qml for why this app does not override that itself.
-        Kirigami.FormLayout {
-            Layout.fillWidth: true
-
-            RowLayout {
-                Kirigami.FormData.label: "Accent:"
+            Controls.Label { text: "Accent colour" }
+            Flow {
+                Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing
                 Repeater {
                     // Assigned once, not bound: the swatch list never changes,
@@ -314,278 +304,114 @@ Kirigami.ScrollablePage {
                     }
                 }
             }
-        }
-
-        Kirigami.Separator { Layout.fillWidth: true }
-
-        Kirigami.FormLayout {
-            Layout.fillWidth: true
-
-            // Japanese subtitles come from Jimaku, which needs a free
-            // account's API key; the dictionary is JMdict, downloaded once.
-            RowLayout {
-                Kirigami.FormData.label: "Learn Japanese:"
-                Controls.TextField {
-                    id: jimakuField
-                    Kirigami.Theme.inherit: true
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 18
-                    echoMode: TextInput.Password
-                    placeholderText: page.hasJimakuKey ? "Key saved \u2014 paste a new one to replace it"
-                                                       : "Paste your Jimaku API key"
-                    onAccepted: saveKeyButton.clicked()
-                }
-                Controls.Button {
-                    id: saveKeyButton
-                    Kirigami.Theme.inherit: true
-                    text: "Save"
-                    enabled: jimakuField.text.trim() !== ""
-                    onClicked: {
-                        backend.setJimakuKey(jimakuField.text)
-                        jimakuField.text = ""
-                        page.hasJimakuKey = backend.hasJimakuKey()
-                        showPassiveNotification("Jimaku key saved")
-                    }
-                }
-            }
-            Controls.Label {
-                Kirigami.FormData.label: " "
-                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
-                wrapMode: Text.WordWrap
-                textFormat: Text.StyledText
-                onLinkActivated: (link) => Qt.openUrlExternally(link)
-                text: (page.hasJimakuKey ? "Key saved. " : "")
-                    + "Japanese subtitles come from <a href=\"https://jimaku.cc\">jimaku.cc</a>: "
-                    + "make a free account, then generate a key on its <a href=\"https://jimaku.cc/account\">account page</a>."
-                opacity: 0.8
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
-            }
-            RowLayout {
-                Kirigami.FormData.label: "Dictionary:"
-                Controls.Label {
-                    text: page.dictionaryState === "ready" ? "Ready (works offline)"
-                        : page.dictionaryState === "building"
-                          ? (page.dictionaryProgress >= 1 ? "Building\u2026"
-                             : "Downloading " + Math.round(page.dictionaryProgress * 100) + "%")
-                          : "Not set up yet (10 MB, one-time)"
-                }
-                Controls.Button {
-                    Kirigami.Theme.inherit: true
-                    visible: page.dictionaryState === "missing"
-                    text: "Set up now"
-                    onClicked: { page.dictionaryState = "building"; backend.prepareDictionary() }
-                }
-            }
-            Controls.Label {
-                Kirigami.FormData.label: " "
-                text: "JMdict, from the Electronic Dictionary Research and Development Group (CC BY-SA 4.0)."
-                opacity: 0.6
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-            }
-        }
-
-        Kirigami.Separator { Layout.fillWidth: true }
-
-        Kirigami.FormLayout {
-            Layout.fillWidth: true
-
-            AppCheckBox {
-                id: autoSkipToggle
-                Kirigami.FormData.label: "Playback:"
-                text: "Auto-skip intro/outro"
-                onToggled: backend.setAutoSkipEnabled(checked)
-            }
-            AppCheckBox {
-                id: skipFinalToggle
-                Kirigami.FormData.label: " "
-                text: "Also auto-skip on the last episode"
-                onToggled: backend.setSkipFinalEpisodeEnabled(checked)
-            }
-            AppCheckBox {
-                id: autoNextToggle
-                Kirigami.FormData.label: " "
-                text: "Auto-play next episode"
-                onToggled: backend.setAutoNextEnabled(checked)
-            }
-            AppCheckBox {
-                id: autoFullscreenToggle
-                Kirigami.FormData.label: " "
-                text: "Go fullscreen when an episode starts"
-                onToggled: backend.setAutoFullscreenEnabled(checked)
-            }
-
-            RowLayout {
-                Kirigami.FormData.label: "Subtitle size:"
-                Controls.Slider {
-                    id: subScaleSlider
-                    Kirigami.Theme.inherit: true
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                    from: 0.5; to: 2.0; stepSize: 0.05; value: 1.0
-                    onMoved: backend.setSubtitleStyle(value, subPosSlider.value)
-                }
-                Controls.Label { text: Math.round(subScaleSlider.value * 100) + "%" }
-            }
-            RowLayout {
-                Kirigami.FormData.label: "Subtitle height:"
-                Controls.Slider {
-                    id: subPosSlider
-                    Kirigami.Theme.inherit: true
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 12
-                    from: 60; to: 100; stepSize: 1; value: 100
-                    onMoved: backend.setSubtitleStyle(subScaleSlider.value, value)
-                }
-                Controls.Label {
-                    text: subPosSlider.value >= 100 ? "bottom" : (100 - subPosSlider.value) + "% up"
-                }
-            }
-
-            AppCheckBox {
-                id: dubEnglishToggle
-                Kirigami.FormData.label: " "
-                text: "English subtitles on dubs"
-                onToggled: backend.setDubEnglishEnabled(checked)
-            }
-
-            AppCheckBox {
-                id: discordToggle
-                Kirigami.FormData.label: "Discord:"
-                visible: backend.discordAvailable()
-                text: "Show what I'm watching on my Discord profile"
-                onToggled: backend.setDiscordEnabled(checked)
-            }
-            Controls.Label {
-                Kirigami.FormData.label: " "
-                visible: backend.discordAvailable()
-                text: "Title, episode and time left, while an episode plays and Discord is open on this PC."
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
-                opacity: 0.7
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-            }
-
             AppCheckBox {
                 id: previewToggle
-                Kirigami.FormData.label: "Posters:"
                 text: "Show details when the pointer rests on a poster"
                 onToggled: {
                     backend.setHoverPreviewEnabled(checked)
                     applicationWindow().previewsOn = checked
                 }
             }
+        }
+
+        // ---- Playback -------------------------------------------------------
+        SettingsCard {
+            title: "Playback"
+            iconName: "media-playback-start-symbolic"
 
             AppCheckBox {
-                id: newEpisodeToggle
-                Kirigami.FormData.label: "Alerts:"
-                text: "Tell me when a show I'm watching gets a new episode"
-                onToggled: backend.setNewEpisodeAlertsEnabled(checked)
-            }
-            Controls.Label {
-                Kirigami.FormData.label: " "
-                text: "Checked every half hour while the app is open, for everything in "
-                    + "Continue Watching. Uses AniList's airing schedule, which is for the sub."
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
-                opacity: 0.7
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-            }
-
-            RowLayout {
-                Kirigami.FormData.label: "Updates:"
-                spacing: Kirigami.Units.largeSpacing
-                Controls.Label { text: "Version " + backend.appVersion() }
-                Controls.Button {
-                    Kirigami.Theme.inherit: true
-                    text: "Check now"
-                    icon.name: "view-refresh-symbolic"
-                    onClicked: {
-                        updateStatusLabel.text = "Checking..."
-                        backend.checkForUpdates(true)
-                    }
-                }
+                id: autoSkipToggle
+                text: "Auto-skip intro/outro"
+                onToggled: backend.setAutoSkipEnabled(checked)
             }
             AppCheckBox {
-                id: updateChecksToggle
-                Kirigami.FormData.label: " "
-                text: "Tell me when a new version is out"
-                onToggled: backend.setUpdateChecksEnabled(checked)
-            }
-            Controls.Label {
-                id: updateStatusLabel
-                Kirigami.FormData.label: " "
-                visible: text !== ""
-                opacity: 0.7
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                Connections {
-                    target: backend
-                    function onUpdateStatus(message) { updateStatusLabel.text = message }
-                    function onUpdateAvailable(version) {
-                        updateStatusLabel.text = "Version " + version + " is available."
-                    }
-                }
-            }
-
-            RowLayout {
-                Kirigami.FormData.label: "Problems:"
-                spacing: Kirigami.Units.largeSpacing
-                Controls.Button {
-                    Kirigami.Theme.inherit: true
-                    text: "Report a problem"
-                    icon.name: "tools-report-bug-symbolic"
-                    onClicked: Qt.openUrlExternally(backend.problemReportUrl(""))
-                }
-                Controls.Button {
-                    Kirigami.Theme.inherit: true
-                    text: "Copy details"
-                    icon.name: "edit-copy-symbolic"
-                    onClicked: applicationWindow().copyText(backend.problemReport())
-                }
-            }
-            Controls.Label {
-                Kirigami.FormData.label: " "
-                text: "Opens a GitHub issue with your app version and recent errors filled in "
-                    + "(needs a GitHub account). No account? Copy the details and send them to the developer."
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
-                opacity: 0.7
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                id: skipFinalToggle
+                text: "Also auto-skip on the last episode"
+                onToggled: backend.setSkipFinalEpisodeEnabled(checked)
             }
             AppCheckBox {
-                id: deleteWatchedToggle
-                Kirigami.FormData.label: "Downloads:"
-                enabled: page.canDownload
-                text: "Clear saved episodes as I watch (keeps the one before)"
-                onToggled: backend.setDeleteAfterWatchingEnabled(checked)
+                id: autoNextToggle
+                text: "Auto-play next episode"
+                onToggled: backend.setAutoNextEnabled(checked)
             }
-            Controls.Label {
-                Kirigami.FormData.label: " "
+            AppCheckBox {
+                id: autoFullscreenToggle
+                text: "Go fullscreen when an episode starts"
+                onToggled: backend.setAutoFullscreenEnabled(checked)
+            }
+            AppCheckBox {
+                id: dubEnglishToggle
+                text: "English subtitles on dubs"
+                onToggled: backend.setDubEnglishEnabled(checked)
+            }
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 3
+                columnSpacing: Kirigami.Units.largeSpacing
+                Controls.Label { text: "Subtitle size" }
+                Controls.Slider {
+                    id: subScaleSlider
+                    Kirigami.Theme.inherit: true
+                    Layout.fillWidth: true
+                    from: 0.5; to: 2.0; stepSize: 0.05; value: 1.0
+                    onMoved: backend.setSubtitleStyle(value, subPosSlider.value)
+                }
+                Controls.Label {
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 4
+                    text: Math.round(subScaleSlider.value * 100) + "%"
+                }
+                Controls.Label { text: "Subtitle height" }
+                Controls.Slider {
+                    id: subPosSlider
+                    Kirigami.Theme.inherit: true
+                    Layout.fillWidth: true
+                    from: 60; to: 100; stepSize: 1; value: 100
+                    onMoved: backend.setSubtitleStyle(subScaleSlider.value, value)
+                }
+                Controls.Label {
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 4
+                    text: subPosSlider.value >= 100 ? "bottom" : (100 - subPosSlider.value) + "% up"
+                }
+            }
+        }
+
+        // ---- Downloads ------------------------------------------------------
+        SettingsCard {
+            title: "Downloads"
+            iconName: "download-symbolic"
+
+            Hint {
                 text: !page.canDownload
                     ? "ffmpeg isn't installed, so episodes can't be saved for offline watching."
                     : page.downloadBytes > 0
                       ? page.formatSize(page.downloadBytes) + " saved on disk"
                       : "Nothing saved right now."
-                opacity: 0.7
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
-            Controls.Button {
-                Kirigami.Theme.inherit: true
-                Kirigami.FormData.label: " "
-                text: "Delete all downloads"
-                enabled: page.downloadBytes > 0
-                icon.name: "edit-delete-symbolic"
-                onClicked: clearDownloadsPrompt.open()
+            AppCheckBox {
+                id: deleteWatchedToggle
+                enabled: page.canDownload
+                text: "Clear saved episodes as I watch (keeps the one before)"
+                onToggled: backend.setDeleteAfterWatchingEnabled(checked)
             }
             RowLayout {
-                Kirigami.FormData.label: "Save to:"
+                Layout.fillWidth: true
                 enabled: page.canDownload
                 spacing: Kirigami.Units.smallSpacing
+                Controls.Label { text: "Save to" }
                 Controls.Label {
-                    Layout.maximumWidth: Kirigami.Units.gridUnit * 16
+                    Layout.fillWidth: true
                     elide: Text.ElideMiddle
                     text: page.downloadFolder
+                    opacity: 0.8
                     Controls.ToolTip.visible: folderHover.hovered && truncated
                     Controls.ToolTip.text: page.downloadFolder
                     HoverHandler { id: folderHover }
                 }
+            }
+            Flow {
+                Layout.fillWidth: true
+                enabled: page.canDownload
+                spacing: Kirigami.Units.smallSpacing
                 Controls.Button {
                     Kirigami.Theme.inherit: true
                     text: "Change..."
@@ -594,10 +420,9 @@ Kirigami.ScrollablePage {
                 }
                 Controls.Button {
                     Kirigami.Theme.inherit: true
+                    text: "Open"
                     icon.name: "folder-open-symbolic"
                     onClicked: backend.openDownloadFolder()
-                    Controls.ToolTip.visible: hovered
-                    Controls.ToolTip.text: "Open the folder"
                 }
                 Controls.Button {
                     Kirigami.Theme.inherit: true
@@ -605,25 +430,52 @@ Kirigami.ScrollablePage {
                     text: "Default"
                     onClicked: page.chooseFolder("")
                 }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    text: "Delete all downloads"
+                    enabled: page.downloadBytes > 0
+                    icon.name: "edit-delete-symbolic"
+                    onClicked: clearDownloadsPrompt.open()
+                }
             }
-            Controls.Label {
+            Hint {
                 id: folderStatus
-                Kirigami.FormData.label: " "
                 visible: text !== ""
-                wrapMode: Text.WordWrap
-                Layout.maximumWidth: Kirigami.Units.gridUnit * 28
-                opacity: 0.7
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
             }
         }
 
-        Kirigami.Separator { Layout.fillWidth: true }
+        // ---- Notifications & Discord ---------------------------------------
+        SettingsCard {
+            title: "Notifications & Discord"
+            iconName: "notifications-symbolic"
 
-        Kirigami.FormLayout {
-            Layout.fillWidth: true
+            AppCheckBox {
+                id: newEpisodeToggle
+                text: "Tell me when a show I'm watching gets a new episode"
+                onToggled: backend.setNewEpisodeAlertsEnabled(checked)
+            }
+            Hint {
+                text: "Checked every half hour while the app is open, for everything in "
+                    + "Continue Watching. Uses AniList's airing schedule, which is for the sub."
+            }
+            AppCheckBox {
+                id: discordToggle
+                visible: backend.discordAvailable()
+                text: "Show what I'm watching on my Discord profile"
+                onToggled: backend.setDiscordEnabled(checked)
+            }
+            Hint {
+                visible: backend.discordAvailable()
+                text: "Title, episode and time left, while an episode plays and Discord is open on this PC."
+            }
+        }
+
+        // ---- Phone remote ---------------------------------------------------
+        SettingsCard {
+            title: "Phone remote"
+            iconName: "phone-symbolic"
 
             RowLayout {
-                Kirigami.FormData.label: "Phone remote:"
                 Controls.Button {
                     Kirigami.Theme.inherit: true
                     text: page.remoteRunning ? "Stop" : "Start"
@@ -646,47 +498,218 @@ Kirigami.ScrollablePage {
                     opacity: 0.7
                 }
             }
-
-            ColumnLayout {
-                Kirigami.FormData.label: " "
-                visible: page.remoteRunning
-                spacing: Kirigami.Units.smallSpacing
-
-                Controls.Label {
-                    text: "On your phone (same Wi-Fi), open:"
-                    opacity: 0.7
-                }
-                Controls.Label {
-                    text: page.remoteUrl
-                    font.bold: true
-                    font.family: "monospace"
-                }
-                Controls.Label {
-                    text: "PIN: " + page.remotePin
-                    font.bold: true
-                    font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.4
-                }
-            }
-
-            ColumnLayout {
-                Kirigami.FormData.label: "Remote app:"
-                spacing: Kirigami.Units.smallSpacing
-
-                Controls.Label {
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.largeSpacing * 2
+                ColumnLayout {
                     Layout.fillWidth: true
-                    Layout.maximumWidth: page.width - Kirigami.Units.largeSpacing * 2
-                    wrapMode: Text.WordWrap
-                    opacity: 0.7
-                    text: "Scan with your phone's camera to install the Android remote app, then open it and enter the address and PIN above."
+                    Layout.alignment: Qt.AlignTop
+                    spacing: Kirigami.Units.smallSpacing
+                    visible: page.remoteRunning
+                    Hint { text: "On your phone (same Wi-Fi), open:" }
+                    Controls.Label {
+                        text: page.remoteUrl
+                        font.bold: true
+                        font.family: "monospace"
+                    }
+                    Controls.Label {
+                        text: "PIN: " + page.remotePin
+                        font.bold: true
+                        font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.4
+                    }
+                    Hint {
+                        text: "Scan the code with your phone's camera to install the Android remote app, "
+                            + "then enter the address and PIN."
+                    }
                 }
                 Image {
                     id: qrImage
-                    sourceSize.width: 220
-                    sourceSize.height: 220
+                    Layout.alignment: Qt.AlignTop
+                    sourceSize.width: 160
+                    sourceSize.height: 160
                     smooth: false // keep QR modules crisp, no blur filtering
                 }
             }
         }
 
+        // ---- Learn Japanese -------------------------------------------------
+        // Off unless switched on (see backend.learnFeatures): the player's あ
+        // button, the Words page and what's below only exist with it on.
+        SettingsCard {
+            title: "Learn Japanese"
+            iconName: "education-language-symbolic"
+
+            AppCheckBox {
+                text: "Learn Japanese while watching"
+                checked: backend.learnFeatures
+                onToggled: backend.setLearnFeatures(checked)
+            }
+            Hint {
+                visible: !backend.learnFeatures
+                text: "Japanese subtitles you can hover for meanings, furigana and romaji, "
+                    + "saved words and Anki export. Adds a \u3042 button to the player and a Words page."
+            }
+            // Japanese subtitles come from Jimaku, which needs a free
+            // account's API key; the dictionary is JMdict, downloaded once.
+            ColumnLayout {
+                visible: backend.learnFeatures
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+                RowLayout {
+                    Layout.fillWidth: true
+                    Controls.TextField {
+                        id: jimakuField
+                        Kirigami.Theme.inherit: true
+                        Layout.fillWidth: true
+                        echoMode: TextInput.Password
+                        placeholderText: page.hasJimakuKey ? "Jimaku key saved \u2014 paste a new one to replace it"
+                                                           : "Paste your Jimaku API key"
+                        onAccepted: saveKeyButton.clicked()
+                    }
+                    Controls.Button {
+                        id: saveKeyButton
+                        Kirigami.Theme.inherit: true
+                        text: "Save"
+                        enabled: jimakuField.text.trim() !== ""
+                        onClicked: {
+                            backend.setJimakuKey(jimakuField.text)
+                            jimakuField.text = ""
+                            page.hasJimakuKey = backend.hasJimakuKey()
+                            showPassiveNotification("Jimaku key saved")
+                        }
+                    }
+                }
+                Hint {
+                    textFormat: Text.StyledText
+                    onLinkActivated: (link) => Qt.openUrlExternally(link)
+                    text: (page.hasJimakuKey ? "Key saved. " : "")
+                        + "Japanese subtitles come from <a href=\"https://jimaku.cc\">jimaku.cc</a>: "
+                        + "make a free account, then generate a key on its <a href=\"https://jimaku.cc/account\">account page</a>."
+                    HoverHandler { cursorShape: parent.hoveredLink ? Qt.PointingHandCursor : Qt.ArrowCursor }
+                }
+                RowLayout {
+                    Controls.Label {
+                        text: "Dictionary: " + (page.dictionaryState === "ready" ? "ready (works offline)"
+                            : page.dictionaryState === "building"
+                              ? (page.dictionaryProgress >= 1 ? "building\u2026"
+                                 : "downloading " + Math.round(page.dictionaryProgress * 100) + "%")
+                              : "not set up yet (10 MB, one-time)")
+                    }
+                    Controls.Button {
+                        Kirigami.Theme.inherit: true
+                        visible: page.dictionaryState === "missing"
+                        text: "Set up now"
+                        onClicked: { page.dictionaryState = "building"; backend.prepareDictionary() }
+                    }
+                }
+                Hint { text: "JMdict, from the Electronic Dictionary Research and Development Group (CC BY-SA 4.0)." }
+            }
+        }
+
+        // ---- About & updates ------------------------------------------------
+        SettingsCard {
+            title: "About & updates"
+            iconName: "help-about-symbolic"
+
+            RowLayout {
+                spacing: Kirigami.Units.largeSpacing
+                Controls.Label { text: "Version " + backend.appVersion() }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    text: "Check now"
+                    icon.name: "view-refresh-symbolic"
+                    onClicked: {
+                        updateStatusLabel.text = "Checking..."
+                        backend.checkForUpdates(true)
+                    }
+                }
+            }
+            AppCheckBox {
+                id: updateChecksToggle
+                text: "Tell me when a new version is out"
+                onToggled: backend.setUpdateChecksEnabled(checked)
+            }
+            Hint {
+                id: updateStatusLabel
+                visible: text !== ""
+                Connections {
+                    target: backend
+                    function onUpdateStatus(message) { updateStatusLabel.text = message }
+                    function onUpdateAvailable(version) {
+                        updateStatusLabel.text = "Version " + version + " is available."
+                    }
+                }
+            }
+            Kirigami.Separator { Layout.fillWidth: true }
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    text: "Report a problem"
+                    icon.name: "tools-report-bug-symbolic"
+                    onClicked: Qt.openUrlExternally(backend.problemReportUrl(""))
+                }
+                Controls.Button {
+                    Kirigami.Theme.inherit: true
+                    text: "Copy details"
+                    icon.name: "edit-copy-symbolic"
+                    onClicked: applicationWindow().copyText(backend.problemReport())
+                }
+            }
+            Hint {
+                text: "Opens a GitHub issue with your app version and recent errors filled in "
+                    + "(needs a GitHub account). No account? Copy the details and send them to the developer."
+            }
+        }
+    }
+
+    // One group of settings: an icon and a heading over its controls.
+    component SettingsCard: Rectangle {
+        id: card
+        property string title: ""
+        property string iconName: ""
+        default property alias content: cardBody.data
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        Layout.alignment: Qt.AlignTop
+        implicitHeight: cardColumn.implicitHeight + Kirigami.Units.largeSpacing * 3
+        radius: Kirigami.Units.smallSpacing * 2
+        color: Kirigami.Theme.alternateBackgroundColor
+
+        ColumnLayout {
+            id: cardColumn
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: Kirigami.Units.largeSpacing * 1.5
+            spacing: Kirigami.Units.largeSpacing
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+                Kirigami.Icon {
+                    source: card.iconName
+                    implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                    implicitHeight: Kirigami.Units.iconSizes.smallMedium
+                    color: Kirigami.Theme.highlightColor
+                    isMask: true
+                }
+                Kirigami.Heading {
+                    level: 3
+                    text: card.title
+                }
+            }
+            ColumnLayout {
+                id: cardBody
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+            }
+        }
+    }
+
+    // The grey small print under a setting.
+    component Hint: Controls.Label {
+        Layout.fillWidth: true
+        wrapMode: Text.WordWrap
+        opacity: 0.7
+        font.pixelSize: Kirigami.Theme.smallFont.pixelSize
     }
 }

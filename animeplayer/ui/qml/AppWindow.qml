@@ -78,6 +78,12 @@ Kirigami.ApplicationWindow {
     }
 
     function goHome() { return root.goTo("home", "HomePage.qml") }
+    // Seasonal's two tabs (see SeasonTabs.qml); no tab given, the last one.
+    function goSeasonal(tab) {
+        if (tab) backend.setLearnOption("seasonal_tab", tab)
+        else tab = backend.learnOption("seasonal_tab") || "season"
+        return root.goTo("seasonal", tab === "week" ? "SchedulePage.qml" : "SeasonalPage.qml")
+    }
     function goBrowse(properties) { return root.goTo("browse", "BrowsePage.qml", properties) }
     function goSettings() { return root.goTo("settings", "SettingsPage.qml") }
     // Its own section rather than a Browse preset arrived at sideways, so the
@@ -287,6 +293,15 @@ Kirigami.ApplicationWindow {
     // The main window closing ends the app, the floating one included:
     // otherwise Qt keeps running for as long as any window is open.
     onClosing: if (root.miniShow !== null) root.miniShow = null
+    // The media widget's "raise" (clicking it in KDE's panel).
+    Connections {
+        target: mediaSession
+        function onRaiseRequested() {
+            if (root.visibility === Window.Minimized) root.showNormal()
+            root.raise()
+            root.requestActivate()
+        }
+    }
     Loader {
         id: miniWindowLoader
         active: root.miniShow !== null && root.miniFloats
@@ -338,7 +353,11 @@ Kirigami.ApplicationWindow {
                 onClosed: root.miniShow = null
                 onExpand: (position) => root.miniExpand(position)
                 onMoveRequested: windowChrome.startMove(miniWindow)
-                onResizeRequested: windowChrome.startResize(miniWindow, "bottomright")
+                onResizeTo: (w) => {
+                    let width = Math.round(Math.max(miniWindow.minimumWidth, Math.min(w, Screen.width * 0.9)))
+                    miniWindow.width = width
+                    miniWindow.height = Math.round(width * 9 / 16)
+                }
             }
         }
     }
@@ -830,7 +849,7 @@ Kirigami.ApplicationWindow {
                 text: "Seasonal"
                 iconName: "view-calendar-month-symbolic"
                 current: root.section === "seasonal"
-                onClicked: root.goTo("seasonal", "SeasonalPage.qml")
+                onClicked: root.goSeasonal()
             }
 
             NavButton {
@@ -847,28 +866,33 @@ Kirigami.ApplicationWindow {
                 onClicked: root.goTo("library", "LibraryPage.qml")
             }
 
+            // Only with Learn Japanese switched on (Settings).
             NavButton {
-                text: "Schedule"
-                iconName: "view-calendar-symbolic"
-                current: root.section === "schedule"
-                onClicked: root.goTo("schedule", "SchedulePage.qml")
-            }
-
-            NavButton {
+                visible: backend.learnFeatures
                 text: "Words"
                 iconName: "bookmarks-symbolic"
                 current: root.section === "words"
                 onClicked: root.goTo("words", "WordsPage.qml")
             }
 
-            NavButton {
-                text: "Stats"
-                iconName: "office-chart-bar-symbolic"
-                current: root.section === "stats"
-                onClicked: root.goTo("stats", "StatsPage.qml")
-            }
-
             Item { Layout.fillWidth: true }
+
+            // Your profile (ProfilePage): stats, and what friends are into.
+            // Shows your AniList picture once there's one to show.
+            NavButton {
+                id: profileNav
+                text: backend.anilistViewerName() || "Profile"
+                iconName: "im-user-symbolic"
+                current: root.section === "profile"
+                onClicked: root.goTo("profile", "ProfilePage.qml")
+                avatarUrl: backend.profileAvatar()
+                Connections {
+                    target: backend
+                    function onAnilistLoggedIn(name) { profileNav.text = name; profileNav.avatarUrl = backend.profileAvatar() }
+                    function onAnilistLoggedOut() { profileNav.text = "Profile"; profileNav.avatarUrl = "" }
+                    function onProfileReady(result) { if (result.avatar) profileNav.avatarUrl = result.avatar }
+                }
+            }
 
             NavButton {
                 text: "Settings"
@@ -999,6 +1023,8 @@ Kirigami.ApplicationWindow {
         // itself, and reading back a grouped property nothing renders is a
         // trap for whoever edits this next.
         property string iconName: ""
+        // A round picture instead of the icon (the profile entry's avatar).
+        property string avatarUrl: ""
 
         hoverEnabled: true
         // Padding on both sides rather than just extra width: the content is
@@ -1015,7 +1041,13 @@ Kirigami.ApplicationWindow {
             id: navContent
             spacing: Kirigami.Units.smallSpacing
 
+            Avatar {
+                visible: nav.avatarUrl !== ""
+                source: nav.avatarUrl
+                size: Kirigami.Units.iconSizes.small + 4
+            }
             Kirigami.Icon {
+                visible: nav.avatarUrl === ""
                 source: nav.iconName
                 isMask: true
                 color: nav.current ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor

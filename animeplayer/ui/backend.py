@@ -299,6 +299,7 @@ class Backend(QObject):
         self._discord = discord_presence.DiscordPresence(DISCORD_CLIENT_ID)
         self._discord.set_enabled(self.getDiscordEnabled())
         self._drop_mappings_from_a_previous_source()
+        self._switch_learning_off_once()
 
         self._anilist_client: AniListClient | None = None
         self._anilist_user_id: int | None = None
@@ -2285,6 +2286,43 @@ class Backend(QObject):
 
         self._pool.start(_Worker(work, self.anilistStatsReady.emit, failed))
 
+    # -- Profile (ProfilePage.qml) --------------------------------------------
+
+    profileReady = Signal("QVariantMap")   # {name, avatar, banner, site_url}; {} when logged out
+    friendsReady = Signal("QVariantMap")   # {friends: [...], activity: [...]}; see AniListClient
+    friendsFailed = Signal(str)
+
+    @Slot()
+    def loadProfile(self) -> None:
+        client = self._anilist_client
+        if client is None:
+            self.profileReady.emit({})
+            return
+        self._pool.start(_Worker(client.get_profile, self.profileReady.emit,
+                                 lambda _m: self.profileReady.emit({})))
+
+    @Slot()
+    def loadFriends(self) -> None:
+        client, user_id = self._anilist_client, self._anilist_user_id
+        if client is None or user_id is None:
+            self.friendsReady.emit({"friends": [], "activity": []})
+            return
+
+        def work() -> dict[str, Any]:
+            return {"friends": client.get_friends(user_id), "activity": client.get_following_activity(),
+                    "me": user_id}
+
+        self._pool.start(_Worker(work, self.friendsReady.emit, self.friendsFailed.emit))
+
+    @Slot(result=str)
+    def profileAvatar(self) -> str:
+        """The avatar for the top bar, remembered from the last profile load."""
+        return self._db.get_setting("anilist_avatar") or ""
+
+    @Slot(str)
+    def rememberProfileAvatar(self, url: str) -> None:
+        self._db.set_setting("anilist_avatar", url)
+
     # -- Learn Japanese ------------------------------------------------------
     #
     # Japanese subtitles from Jimaku, split into words with readings and
@@ -2465,9 +2503,35 @@ class Backend(QObject):
         self._db.delete_saved_word(word_id)
         self.savedWordsChanged.emit()
 
+    # The whole Learn Japanese feature -- the player's あ button, Words, the
+    # Settings for Jimaku and the dictionary. Off unless turned on: nobody
+    # was using it yet, and it's a lot of interface for something unused.
+    # Existing users had it switched off once, by the version that added
+    # this (see _switch_learning_off_once); turned back on, it stays on.
+    learnFeaturesChanged = Signal()
+
+    def _get_learn_features(self) -> bool:
+        return self._db.get_setting("learn_features") == "true"
+
+    learnFeatures = Property(bool, _get_learn_features, notify=learnFeaturesChanged)
+
+    @Slot(bool)
+    def setLearnFeatures(self, on: bool) -> None:
+        self._db.set_setting("learn_features", "true" if on else "false")
+        if not on:
+            self._db.set_setting("learn_mode", "false")
+        self.learnFeaturesChanged.emit()
+
+    def _switch_learning_off_once(self) -> None:
+        if self._db.get_setting("learn_features_migrated"):
+            return
+        self._db.set_setting("learn_features", "false")
+        self._db.set_setting("learn_mode", "false")
+        self._db.set_setting("learn_features_migrated", "1")
+
     @Slot(result=bool)
     def getLearnMode(self) -> bool:
-        return self._db.get_setting("learn_mode") == "true"
+        return self._get_learn_features() and self._db.get_setting("learn_mode") == "true"
 
     @Slot(bool)
     def setLearnMode(self, on: bool) -> None:

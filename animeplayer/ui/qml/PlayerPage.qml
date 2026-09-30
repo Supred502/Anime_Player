@@ -194,7 +194,32 @@ Kirigami.Page {
         backend.episodeWatched(page.episodeId, page.dub)
     }
 
+    // The desktop's media controls (see media_session.py): what's playing,
+    // for the media widget, and the media keys from any app.
+    function publishMedia() {
+        if (video.duration <= 0) return
+        mediaSession.update(page.anime.title || "", "Episode " + page.episodeNumber,
+                            page.anime.poster_url || "", video.duration, !video.paused,
+                            !page.isLastEpisode, page.episodeNumber > page.firstEpisodeNumber)
+    }
+    Connections {
+        target: video
+        function onPausedChanged() { page.publishMedia() }
+        function onDurationChanged() { page.publishMedia() }
+    }
+    Connections {
+        target: mediaSession
+        function onAction(name) {
+            if (name === "playpause") video.togglePause()
+            else if (name === "play") video.setPaused(false)
+            else if (name === "pause") video.setPaused(true)
+            else if (name === "next" && !page.isLastEpisode) page.nextEpisode()
+            else if (name === "previous" && page.episodeNumber > page.firstEpisodeNumber) page.previousEpisode()
+        }
+    }
+
     Component.onDestruction: {
+        mediaSession.clear()
         // Leaving part-way through the credits still counts -- see above.
         if (video && video.duration > 0
                 && video.position >= video.duration * page.watchedThreshold) {
@@ -302,7 +327,7 @@ Kirigami.Page {
             if (page.skipOp && video.position >= page.skipOp.start && video.position < page.skipOp.end) page.skipIntroNow()
             else if (page.skipEd && video.position >= page.skipEd.start && video.position < page.skipEd.end) page.skipOutroNow()
             break
-        case "x": page.learnMode = !page.learnMode; break
+        case "x": if (backend.learnFeatures) page.learnMode = !page.learnMode; break
         case "menu": page.toggleFullscreen(); break
         case "back": applicationWindow().pageStack.goBack(); break
         }
@@ -394,7 +419,7 @@ Kirigami.Page {
         } else if (event.key === Qt.Key_BracketRight) {
             page.stepSpeed(1)
             event.accepted = true
-        } else if (event.key === Qt.Key_L) {
+        } else if (event.key === Qt.Key_L && backend.learnFeatures) {
             page.learnMode = !page.learnMode
             event.accepted = true
         } else if (event.key === Qt.Key_R && page.learnMode) {
@@ -765,6 +790,7 @@ Kirigami.Page {
         visible: !page.loadingStream && page.controlsVisible
 
         AppButton {
+            visible: backend.learnFeatures
             text: "\u3042"
             Layout.preferredWidth: implicitHeight * 1.3
             leftPadding: 0
@@ -1216,7 +1242,7 @@ Kirigami.Page {
             ["\u2191 \u2193 / wheel", "Volume"], ["M", "Mute"], ["F / F11", "Fullscreen"], ["I", "Mini player"],
             ["S", "Skip intro or outro"], ["N / P", "Next / previous episode"],
             ["[  ]", "Slower / faster"],
-            ["L", "Learn Japanese on / off"], ["R", "Replay the Japanese line"],
+            ...(backend.learnFeatures ? [["L", "Learn Japanese on / off"], ["R", "Replay the Japanese line"]] : []),
             ["Esc", "Pause and leave fullscreen"], ["?", "This list"]
         ]
         GridLayout {

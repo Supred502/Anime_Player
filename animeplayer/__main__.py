@@ -17,6 +17,7 @@ platform_setup.before_imports()
 
 from animeplayer.player.mpv_video_item import MpvVideoItem  # noqa: E402 -- needs the DLL path set up first
 from animeplayer.gamepad import Gamepad  # noqa: E402
+from animeplayer.media_session import MediaSession  # noqa: E402
 from animeplayer.ui import kirigami_compat  # noqa: E402
 from animeplayer.ui.backend import Backend  # noqa: E402
 from animeplayer.ui.window_chrome import WindowChrome  # noqa: E402
@@ -139,6 +140,24 @@ def _selftest(out_path: str) -> int:
         return "SDL %d.%d.%d" % gamepad.sdl2.dll.version_tuple
 
     check("controllers", controller_support)
+
+    def media_keys() -> str:
+        from PySide6.QtCore import QCoreApplication
+        from animeplayer import media_session
+        _app = QCoreApplication.instance() or QCoreApplication([])
+        session = media_session.MediaSession()
+        if session._win is not None:
+            import ctypes
+            claimed = sum(bool(ctypes.windll.user32.RegisterHotKey(None, 0x7000 + vk, 0x4000, vk))
+                          for vk in media_session._KEYS)
+            for vk in media_session._KEYS:
+                ctypes.windll.user32.UnregisterHotKey(None, 0x7000 + vk)
+            return f"Windows media keys: {claimed} of {len(media_session._KEYS)} free to claim"
+        if session._mpris is not None:
+            return "MPRIS"
+        raise RuntimeError("no media key support on this system")
+
+    check("media_keys", media_keys)
     Path(out_path).write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     return 1 if any(v.startswith("FAIL") for v in results.values()) else 0
 
@@ -195,6 +214,10 @@ def main() -> int:
     # Controllers (see gamepad.py). Held here for the same reason.
     game_controller = Gamepad()
     engine.rootContext().setContextProperty("gamepad", game_controller)
+    # The desktop's media keys and media widget (see media_session.py).
+    media_session = MediaSession()
+    engine.rootContext().setContextProperty("mediaSession", media_session)
+    app.aboutToQuit.connect(media_session.shutdown)
     app.aboutToQuit.connect(game_controller.shutdown)
     app.aboutToQuit.connect(backend.shutdown)
 

@@ -342,6 +342,49 @@ mutation ($mediaId: Int, $names: [String], $status: MediaListStatus) {
 """
 
 
+# The profile page (ProfilePage.qml): who you are on AniList, and what the
+# people you follow are watching.
+_PROFILE_QUERY = """
+query {
+  Viewer { id name siteUrl avatar { large } bannerImage }
+}
+"""
+
+_FOLLOWING_QUERY = """
+query ($id: Int!) {
+  Page(perPage: 50) { following(userId: $id) { id name siteUrl avatar { large } } }
+}
+"""
+
+# Their list entries most recently changed first; score in the 10-point
+# scale whatever each of them uses.
+_FRIENDS_RECENT_QUERY = """
+query ($ids: [Int]) {
+  Page(perPage: 50) {
+    mediaList(userId_in: $ids, type: ANIME, sort: UPDATED_TIME_DESC) {
+      userId status progress updatedAt score(format: POINT_10_DECIMAL)
+      media { id title { romaji english } coverImage { large } }
+    }
+  }
+}
+"""
+
+# AniList's own "Following" feed -- which includes the viewer's own activity.
+_FOLLOWING_ACTIVITY_QUERY = """
+query {
+  Page(perPage: 30) {
+    activities(isFollowing: true, type_in: [ANIME_LIST, MANGA_LIST], sort: ID_DESC) {
+      ... on ListActivity {
+        id type status progress createdAt siteUrl
+        user { id name avatar { large } }
+        media { id type siteUrl title { romaji english } coverImage { large } }
+      }
+    }
+  }
+}
+"""
+
+
 _DELETE_MEDIA_LIST_ENTRY_MUTATION = """
 mutation ($id: Int) {
   DeleteMediaListEntry(id: $id) { deleted }
@@ -1165,6 +1208,56 @@ class AniListClient:
             self._request(_SET_ENTRY_CUSTOM_LISTS_MUTATION,
                           {"mediaId": media_id, "names": names}, cache=False)
         self.clear_cache()
+
+    def get_profile(self) -> dict[str, Any]:
+        viewer = self._request(_PROFILE_QUERY, cache=False)["Viewer"]
+        return {"id": viewer["id"], "name": viewer["name"], "site_url": viewer.get("siteUrl") or "",
+                "avatar": (viewer.get("avatar") or {}).get("large") or "",
+                "banner": viewer.get("bannerImage") or ""}
+
+    def get_friends(self, user_id: int, per_friend: int = 8) -> list[dict[str, Any]]:
+        """The people the viewer follows, each with the anime they changed
+        most recently (newest first) and how they rated it."""
+        following = self._request(_FOLLOWING_QUERY, {"id": user_id}, cache=False)["Page"]["following"]
+        if not following:
+            return []
+        friends = {f["id"]: {"id": f["id"], "name": f["name"], "site_url": f.get("siteUrl") or "",
+                             "avatar": (f.get("avatar") or {}).get("large") or "", "recent": []}
+                   for f in following}
+        entries = self._request(_FRIENDS_RECENT_QUERY, {"ids": list(friends)}, cache=False)["Page"]["mediaList"]
+        for entry in entries:
+            friend = friends.get(entry["userId"])
+            if friend is None or len(friend["recent"]) >= per_friend:
+                continue
+            media = entry["media"]
+            friend["recent"].append({
+                "anilist_id": media["id"], "title": _primary_title(media),
+                "poster_url": (media.get("coverImage") or {}).get("large") or "",
+                "status": entry.get("status") or "", "progress": entry.get("progress") or 0,
+                "score": entry.get("score") or 0, "updated_at": entry.get("updatedAt") or 0,
+            })
+        # Most recently active first.
+        return sorted(friends.values(),
+                      key=lambda f: -(f["recent"][0]["updated_at"] if f["recent"] else 0))
+
+    def get_following_activity(self) -> list[dict[str, Any]]:
+        items = self._request(_FOLLOWING_ACTIVITY_QUERY, cache=False)["Page"]["activities"]
+        out = []
+        for a in items:
+            if not a or not a.get("media") or not a.get("user"):
+                continue      # a text or message activity: no fields asked for
+            media = a["media"]
+            out.append({
+                "id": a["id"], "kind": "manga" if a.get("type") == "MANGA_LIST" else "anime",
+                "status": a.get("status") or "", "progress": a.get("progress") or "",
+                "created_at": a.get("createdAt") or 0, "site_url": a.get("siteUrl") or "",
+                "user": a["user"]["name"], "user_id": a["user"]["id"],
+                "avatar": (a["user"].get("avatar") or {}).get("large") or "",
+                "anilist_id": media["id"], "title": _primary_title(media),
+                "media_url": media.get("siteUrl") or "",
+                "poster_url": (media.get("coverImage") or {}).get("large") or "",
+            })
+        return out
 
     def get_list_entry(self, media_id: int, user_id: int) -> tuple[int, str] | None:
         """(entry id, status) for this viewer's list entry, or None if the

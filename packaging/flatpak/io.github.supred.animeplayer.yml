@@ -36,6 +36,8 @@ finish-args:
   # Keeping the floating mini player above other windows on KDE (see
   # window_chrome.keepAbove).
   - --talk-name=org.kde.KWin
+  # The desktop's media keys and media widget (MPRIS, see media_session.py).
+  - --own-name=org.mpris.MediaPlayer2.animeplayer
   # Discord status (animeplayer/discord_presence.py).
   - --filesystem=xdg-run/discord-ipc-0
   - --filesystem=xdg-run/app/com.discordapp.Discord:ro

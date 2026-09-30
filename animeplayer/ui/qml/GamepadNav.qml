@@ -303,13 +303,14 @@ Item {
 
     function stepSection(delta) {
         let order = [["home", function() { nav.window.goHome() }], ["browse", function() { nav.window.goBrowse() }],
-                     ["seasonal", function() { nav.window.goTo("seasonal", "SeasonalPage.qml") }],
+                     ["seasonal", function() { nav.window.goSeasonal() }],
                      ["continue", function() { nav.window.goContinue() }],
                      ["library", function() { nav.window.goTo("library", "LibraryPage.qml") }],
-                     ["schedule", function() { nav.window.goTo("schedule", "SchedulePage.qml") }],
                      ["words", function() { nav.window.goTo("words", "WordsPage.qml") }],
-                     ["stats", function() { nav.window.goTo("stats", "StatsPage.qml") }],
+                     ["profile", function() { nav.window.goTo("profile", "ProfilePage.qml") }],
                      ["settings", function() { nav.window.goSettings() }]]
+        // Words only exists with Learn Japanese on.
+        if (!backend.learnFeatures) order = order.filter((e) => e[0] !== "words")
         let i = order.findIndex((e) => e[0] === nav.window.section)
         i = (Math.max(0, i) + delta + order.length) % order.length
         nav.forget()

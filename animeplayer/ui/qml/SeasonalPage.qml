@@ -124,6 +124,8 @@ Kirigami.ScrollablePage {
         width: page.availableWidth
         spacing: Kirigami.Units.gridUnit
 
+        SeasonTabs { current: "season" }
+
         Placeholders {
             Layout.fillWidth: true
             visible: page.loading

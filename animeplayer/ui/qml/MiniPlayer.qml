@@ -22,7 +22,8 @@ Rectangle {
     signal expand(real position)
     signal closed()
     signal moveRequested()
-    signal resizeRequested()
+    // Floating: the corner grip asks for a width; the window keeps 16:9.
+    signal resizeTo(real width)
 
     implicitWidth: Kirigami.Units.gridUnit * 20
     implicitHeight: Math.round(implicitWidth * 9 / 16)
@@ -66,15 +67,41 @@ Rectangle {
     // The screen stays on while it plays, as in the full player.
     readonly property bool playing: video.duration > 0 && !video.paused
     onPlayingChanged: backend.setKeepScreenAwake(mini.playing)
+    // The media keys, from whatever app is in front (see media_session.py).
+    function publishMedia() {
+        if (video.duration <= 0) return
+        mediaSession.update(mini.show.anime.title || "", "Episode " + mini.show.episodeNumber,
+                            mini.show.anime.poster_url || "", video.duration, !video.paused, false, false)
+    }
+    Connections {
+        target: video
+        function onPausedChanged() { mini.publishMedia() }
+        function onDurationChanged() { mini.publishMedia() }
+    }
+    Connections {
+        target: mediaSession
+        function onAction(name) {
+            if (name === "playpause") video.togglePause()
+            else if (name === "play") video.setPaused(false)
+            else if (name === "pause") video.setPaused(true)
+        }
+    }
     Component.onDestruction: {
+        mediaSession.clear()
         mini.savePlace()
         backend.setKeepScreenAwake(false)
     }
 
     HoverHandler { id: hover }
+    // When the window was last picked up to move. The compositor does the
+    // move and hands the press back afterwards, which read as a click (and
+    // a second one as a double-click, which opened the full player): a
+    // click that soon after a move is ignored.
+    property real movedAt: 0
     TapHandler {
-        onTapped: video.togglePause()
-        onDoubleTapped: mini.expand(video.position)
+        onTapped: if (Date.now() - mini.movedAt > 700) video.togglePause()
+        // In the app's corner only; the floating window has its button.
+        onDoubleTapped: if (!mini.floating && Date.now() - mini.movedAt > 700) mini.expand(video.position)
     }
     // Floating: dragged anywhere on the picture moves the window. The
     // compositor does the moving (startSystemMove), which is the only way a
@@ -82,7 +109,7 @@ Rectangle {
     DragHandler {
         enabled: mini.floating
         target: null
-        onActiveChanged: if (active) mini.moveRequested()
+        onActiveChanged: if (active) { mini.movedAt = Date.now(); mini.moveRequested() }
     }
     WheelHandler {
         onWheel: (event) => {
@@ -94,6 +121,8 @@ Rectangle {
     focus: true
     Keys.onPressed: (event) => {
         if (event.key === Qt.Key_Space || event.key === Qt.Key_MediaTogglePlayPause) video.togglePause()
+        else if (event.key === Qt.Key_MediaPlay) video.setPaused(false)
+        else if (event.key === Qt.Key_MediaPause) video.setPaused(true)
         else if (event.key === Qt.Key_Left) video.seekAbsolute(Math.max(0, video.position - 5))
         else if (event.key === Qt.Key_Right) video.seekAbsolute(video.position + 5)
         else if (event.key === Qt.Key_Up) { video.setMuted(false); video.setVolume(video.volume + 10) }
@@ -191,9 +220,18 @@ Rectangle {
             }
         }
         HoverHandler { cursorShape: Qt.SizeFDiagCursor }
+        // Done here rather than by the compositor (startSystemResize), which
+        // resizes freely: the window's left edge stays put, so where the
+        // pointer is across the window is the width it wants.
         DragHandler {
+            id: gripDrag
             target: null
-            onActiveChanged: if (active) mini.resizeRequested()
+            property real grabbedAt: 0     // how far in from the right edge it was taken
+            onActiveChanged: if (active) {
+                mini.movedAt = Date.now()
+                grabbedAt = mini.width - centroid.scenePressPosition.x
+            }
+            onCentroidChanged: if (active) mini.resizeTo(centroid.scenePosition.x + grabbedAt)
         }
     }
 
@@ -203,6 +241,8 @@ Rectangle {
         anchors.bottom: parent.bottom
         height: 3
         width: video.duration > 0 ? parent.width * video.position / video.duration : 0
-        color: Kirigami.Theme.highlightColor
+        // The app's accent itself: in a window of its own the pages'
+        // theming (AppTheming) doesn't reach it.
+        color: backend.theme.accent || Kirigami.Theme.highlightColor
     }
 }

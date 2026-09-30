@@ -139,6 +139,15 @@ Kirigami.ScrollablePage {
         + (filterSort !== "" ? 1 : 0) + (filterMinScore > 0 ? 1 : 0)
 
     readonly property bool filtered: filterCount > 0
+    // Whether the filters have been touched since Browse was opened. A search
+    // looks everywhere until they have: the filters Browse reopens with are
+    // left over from last time, and a title typed straight in shouldn't be
+    // quietly limited to "Top Airing". Once a filter or preset is picked, a
+    // search is within them -- and says so (see the note under the box).
+    property bool filtersTouched: false
+    function touchFilters() { page.filtersTouched = true }
+    readonly property bool searchingWithinFilters: page.filtersTouched && page.filtered
+        && page.lastSearch !== "" && page.localKey === ""
 
     title: showingRecommendations ? "Recommended for you"
          : (presetLabel || "Browse")
@@ -241,6 +250,7 @@ Kirigami.ScrollablePage {
         || page.startLabel !== "" || page.startCategory !== "top-airing"
 
     Component.onCompleted: {
+        page.filtersTouched = page.openedAtTarget
         page.catalogPresets = backend.catalogs()
         page.userPresets = backend.filterPresets()
         page.localCatalogs = backend.localCatalogs()
@@ -382,7 +392,7 @@ Kirigami.ScrollablePage {
         page.lastSearch = page.localKey === "" ? queryField.text.trim() : ""
         if (page.localKey !== "") {
             backend.browseLocal(page.localKey)
-        } else if (!page.filtered && queryField.text.trim() !== "") {
+        } else if ((!page.filtered || !page.filtersTouched) && queryField.text.trim() !== "") {
             backend.search(queryField.text.trim())
         } else {
             backend.searchByFilters(page.filterSpec(), pageNumber)
@@ -393,7 +403,7 @@ Kirigami.ScrollablePage {
     // three filters in a row is three clicks in about as many hundred
     // milliseconds, and firing a request per click means three page loads of
     // which only the last matters.
-    function reload() { reloadDebounce.restart() }
+    function reload() { page.touchFilters(); reloadDebounce.restart() }
 
     Timer {
         id: reloadDebounce
@@ -820,7 +830,7 @@ Kirigami.ScrollablePage {
                             text: modelData.label
                             icon.name: modelData.key === "downloaded"
                                 ? "folder-download-symbolic" : "media-playback-start-symbolic"
-                            onTriggered: page.applyPreset(modelData.key)
+                            onTriggered: { page.touchFilters(); page.applyPreset(modelData.key) }
                         }
                     }
                     Instantiator {
@@ -835,7 +845,7 @@ Kirigami.ScrollablePage {
                         delegate: Controls.MenuItem {
                             required property var modelData
                             text: modelData.label
-                            onTriggered: page.applyPreset(modelData.key)
+                            onTriggered: { page.touchFilters(); page.applyPreset(modelData.key) }
                         }
                     }
                 }
@@ -861,7 +871,7 @@ Kirigami.ScrollablePage {
                             id: presetItem
                             required property var modelData
                             text: modelData.name
-                            onTriggered: page.applyUserPreset(modelData)
+                            onTriggered: { page.touchFilters(); page.applyUserPreset(modelData) }
                             contentItem: RowLayout {
                                 spacing: Kirigami.Units.smallSpacing
                                 Controls.Label {
@@ -906,6 +916,31 @@ Kirigami.ScrollablePage {
 
         // The filter drawer. Collapsed by default: the point of this page is
         // the grid, and the whole panel would otherwise push it below the fold.
+        // A search limited by the filters says so, with the way out.
+        RowLayout {
+            Layout.fillWidth: true
+            Layout.leftMargin: Kirigami.Units.largeSpacing
+            Layout.rightMargin: Kirigami.Units.largeSpacing
+            Layout.bottomMargin: Kirigami.Units.smallSpacing
+            visible: page.searchingWithinFilters
+            spacing: Kirigami.Units.smallSpacing
+            Kirigami.Icon {
+                source: "view-filter-symbolic"
+                implicitWidth: Kirigami.Units.iconSizes.small
+                implicitHeight: Kirigami.Units.iconSizes.small
+                opacity: 0.7
+            }
+            Controls.Label {
+                text: "Searching within your filters" + (page.presetLabel ? " (" + page.presetLabel + ")" : "")
+                opacity: 0.8
+            }
+            Controls.ToolButton {
+                Kirigami.Theme.inherit: true
+                text: "Search everywhere"
+                onClicked: { page.filtersTouched = false; page.load(1) }
+            }
+            Item { Layout.fillWidth: true }
+        }
         ColumnLayout {
             Layout.fillWidth: true
             Layout.leftMargin: Kirigami.Units.smallSpacing
