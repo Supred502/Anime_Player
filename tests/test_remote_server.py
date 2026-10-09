@@ -66,8 +66,16 @@ def test_root_serves_html(server):
         assert "<title>Anime Player Remote</title>" in body
 
 
+def test_state_needs_pairing(server):
+    import urllib.error
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        _get(server, "/api/state")
+    assert refused.value.code == 403
+
+
 def test_state_endpoint_reflects_provider(server):
-    status, data = _get(server, "/api/state")
+    _, pair_data = _post(server, "/api/pair", {"pin": server.pin})
+    status, data = _get(server, "/api/state?t=" + pair_data["token"])
     assert status == 200
     assert data["title"] == "Test Anime"
     assert data["episode_number"] == 3
@@ -217,12 +225,13 @@ def test_stopping_does_not_wait_for_a_request_still_running(tmp_path):
     from animeplayer.remote.server import RemoteServer
 
     release = threading.Event()
-    srv = RemoteServer(lambda: (release.wait(10), {})[1], lambda c, a: None, port=18790)
+    srv = RemoteServer(lambda: (release.wait(10), {})[1], lambda c, a: None, port=18790,
+                       initial_tokens={"paired"})
     srv.start()
     try:
         # A request that won't finish until released: a phone mid-request.
         sock = socket.create_connection(("127.0.0.1", 18790))
-        sock.sendall(b"GET /api/state HTTP/1.0\r\n\r\n")
+        sock.sendall(b"GET /api/state?t=paired HTTP/1.0\r\n\r\n")
         time.sleep(0.3)
         started = time.time()
         srv.stop()

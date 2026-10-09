@@ -298,7 +298,14 @@ function fmtTime(s) {
 
 async function poll() {
   try {
-    const resp = await fetch('/api/state');
+    const resp = await fetch('/api/state?t=' + encodeURIComponent(token));
+    if (resp.status === 403) {
+      // The PC no longer knows this phone: back to the PIN.
+      token = null;
+      localStorage.removeItem('remoteToken');
+      location.reload();
+      return;
+    }
     const data = await resp.json();
     if (data.title) {
       document.getElementById('npTitle').textContent = data.title;
@@ -828,8 +835,13 @@ class RemoteServer:
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
-                elif self.path == "/api/state":
-                    self._send_json(200, server._state_provider())
+                elif parts.path == "/api/state":
+                    # Paired phones only: it says what's playing and what's
+                    # on your lists, to anything on the same network otherwise.
+                    if self._authorised(parse_qs(parts.query)):
+                        self._send_json(200, server._state_provider())
+                    else:
+                        self._send_json(403, {"error": "Not paired -- enter the PIN again"})
                 elif self.path == "/api/info":
                     # Unpaired too: the colours and the app version are for
                     # the PIN screen as much as anything.

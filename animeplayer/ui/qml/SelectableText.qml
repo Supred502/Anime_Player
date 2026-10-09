@@ -12,6 +12,7 @@
 // `maxLines` instead -- the text is clipped to that many lines until
 // `expanded`, and `overflowing` says whether there is more to show.
 import QtQuick
+import QtQuick.Effects
 import QtQuick.Controls as Controls
 import org.kde.kirigami as Kirigami
 
@@ -36,6 +37,22 @@ Item {
         ? Math.min(area.contentHeight, Math.ceil(lineHeight * maxLines))
         : area.contentHeight
     clip: maxLines > 0 && !expanded
+
+    // Cut short, the last line fades out: a TextEdit can't end in "…" as a
+    // Label does, and a synopsis that just stopped mid-sentence looked broken.
+    layer.enabled: overflowing && !expanded
+    layer.effect: MultiEffect { maskEnabled: true; maskSource: fade }
+    Rectangle {
+        id: fade
+        anchors.fill: parent
+        visible: false
+        layer.enabled: true
+        gradient: Gradient {
+            GradientStop { position: 0; color: "white" }
+            GradientStop { position: Math.max(0, 1 - root.lineHeight / Math.max(1, root.height)); color: "white" }
+            GradientStop { position: 1; color: "transparent" }
+        }
+    }
 
     FontMetrics { id: fontMetrics; font: area.font }
 
