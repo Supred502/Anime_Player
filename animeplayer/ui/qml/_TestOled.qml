@@ -18,8 +18,8 @@ AppWindow {
         onTriggered: {
             root.step++
             if (root.step === 1) root.goSettings()
-            if (root.step === 2) backend.setThemeOled(true)
-            if (root.step === 3) { windowChrome.saveScreenshot(root, testShots + "/on.png"); backend.setThemeOled(false) }
+            if (root.step === 2) { console.warn("[test] refs before " + [0,1,2,6].map((i) => root.platformSurfaces(i)[0])); backend.setThemeOled(true) }
+            if (root.step === 3) { console.warn("[test] refs while on " + [0,1,2,6].map((i) => root.platformSurfaces(i)[0])); windowChrome.saveScreenshot(root, testShots + "/on.png"); backend.setThemeOled(false) }
             if (root.step === 4) {
                 windowChrome.saveScreenshot(root, testShots + "/off.png")
                 root.walk(root.windowRoot, 0)

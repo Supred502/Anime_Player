@@ -47,8 +47,27 @@ Kirigami.ApplicationWindow {
     // The accent has to be painted onto the window's own root item: the
     // header is a sibling of the whole page stack, so nothing a page sets can
     // reach it. Pages paint themselves (see AppTheming.qml).
-    // item -> its surface colours before "Pure black" (see AppTheming.applyTo).
-    property var themeSurfaces: new WeakMap()
+    // For switching "Pure black" off again (see AppTheming.applyTo): one
+    // untouched item per Kirigami colour set (View, Window, Button, ...
+    // Header), holding the desktop's own surface colours.
+    property bool surfacesBlackened: false
+    Repeater {
+        id: themeReference
+        model: 7
+        Item {
+            required property int index
+            objectName: "themeReference"
+            parent: root.windowRoot
+            width: 0
+            height: 0
+            Kirigami.Theme.inherit: false
+            Kirigami.Theme.colorSet: index
+        }
+    }
+    function platformSurfaces(colorSet) {
+        let theme = themeReference.itemAt(colorSet >= 0 && colorSet < 7 ? colorSet : 1).Kirigami.Theme
+        return [String(theme.backgroundColor), String(theme.alternateBackgroundColor)]
+    }
     AppTheming { id: windowTheming; targets: [root.windowRoot] }
     // Again when the page changes: each page brings its own title bar,
     // built after the last pass (it stayed grey with black surfaces on).

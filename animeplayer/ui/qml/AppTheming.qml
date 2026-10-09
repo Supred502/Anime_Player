@@ -120,7 +120,7 @@ Item {
         let kids = item.children
         for (let i = 0; i < kids.length; i++) {
             let child = kids[i]
-            if (!child) continue
+            if (!child || child.objectName === "themeReference") continue
             if (child.Kirigami.Theme.inherit === false) theming.applyTo(child)
             theming.applyDeep(child, depth + 1)
         }
@@ -151,34 +151,25 @@ Item {
         item.Kirigami.Theme.hoverColor = Qt.rgba(
             theming.accent.r, theming.accent.g, theming.accent.b, 0.25)
         // "Pure black" (Settings): the surfaces too, on every item the
-        // accent goes on. What each had is kept and put back when it's
-        // switched off: resetting the roles instead left the top bar and the
-        // title bar the page's grey rather than their own. Never switched
-        // on, nothing here touches a surface. One memory for the whole app
-        // (AppWindow.themeSurfaces): a page's AppTheming and the window's
-        // reach the same items.
-        let surfaces = applicationWindow().themeSurfaces
+        // accent goes on. Switched off, each gets back the desktop's colour
+        // for its colour set, read from AppWindow's reference items --
+        // resetting the roles left the top bar and title bar the page's
+        // grey, and remembering each item's colours in a WeakMap crashed Qt
+        // (a segfault in WeakMap.has, on opening Home). Never switched on,
+        // nothing here touches a surface.
+        let win = applicationWindow()
         let theme = item.Kirigami.Theme
         if (theming.appTheme.oled) {
-            // As text: a colour read from a property is a live reference,
-            // and would turn black along with the surface. Not one that's
-            // black already -- another page's AppTheming got there first.
-            if (!surfaces.has(item) && String(theme.backgroundColor) !== "#000000")
-                surfaces.set(item, [String(theme.backgroundColor), String(theme.alternateBackgroundColor)])
+            win.surfacesBlackened = true
             theme.backgroundColor = "#000000"
             theme.alternateBackgroundColor = "#121212"
-        } else if (theming.appTheme.surfaces && theming.appTheme.surfaces.length) {
-            // The stand-in Kirigami (Windows, the Deck): one palette shared
-            // by every item, so its own colours are simply put back.
-            if (String(theme.backgroundColor) === "#000000") {
-                theme.backgroundColor = theming.appTheme.surfaces[0]
-                theme.alternateBackgroundColor = theming.appTheme.surfaces[1]
-            }
-        } else if (surfaces.has(item)) {
-            let was = surfaces.get(item)
+        } else if (win.surfacesBlackened && String(theme.backgroundColor) === "#000000") {
+            // The stand-in Kirigami (Windows, the Deck) has one palette for
+            // every item, and says what it is; the real one is asked.
+            let was = theming.appTheme.surfaces && theming.appTheme.surfaces.length
+                    ? theming.appTheme.surfaces : win.platformSurfaces(theme.colorSet)
             theme.backgroundColor = was[0]
             theme.alternateBackgroundColor = was[1]
-            surfaces.delete(item)
         }
     }
 }
