@@ -47,7 +47,15 @@ Kirigami.ApplicationWindow {
     // The accent has to be painted onto the window's own root item: the
     // header is a sibling of the whole page stack, so nothing a page sets can
     // reach it. Pages paint themselves (see AppTheming.qml).
-    AppTheming { targets: [root.windowRoot] }
+    // item -> its surface colours before "Pure black" (see AppTheming.applyTo).
+    property var themeSurfaces: new WeakMap()
+    AppTheming { id: windowTheming; targets: [root.windowRoot] }
+    // Again when the page changes: each page brings its own title bar,
+    // built after the last pass (it stayed grey with black surfaces on).
+    Connections {
+        target: root.pageStack
+        function onCurrentItemChanged() { Qt.callLater(windowTheming.apply) }
+    }
 
     // The top of the item chain -- the ancestor the header, the page stack
     // and the popup overlay all share. Walked rather than reached through

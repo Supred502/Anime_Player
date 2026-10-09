@@ -76,6 +76,8 @@ K.Page {
         }
     }
     // A scrolling view is drawn on Breeze's darker View background, as on KDE.
-    readonly property color viewBackground: "#141618"
+    // Black with the app's "Pure black" setting, which sets the theme's
+    // background to it.
+    readonly property color viewBackground: Qt.colorEqual(K.Theme.backgroundColor, "#000000") ? "#000000" : "#141618"
     Component { id: scrollBar; QQC2.ScrollBar { policy: page.verticalScrollBarPolicy } }
 }

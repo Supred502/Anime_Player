@@ -31,6 +31,7 @@ from PySide6.QtCore import Property, QCoreApplication, QMetaObject, QObject, QPr
 
 from animeplayer import discord_presence, library_sync, platform_setup, updates
 from animeplayer.alerts import find_new_episodes
+from animeplayer.ui import kirigami_compat
 from animeplayer.version import ANILIST_CLIENT_ID, DISCORD_CLIENT_ID
 from animeplayer.anilist import matcher
 from animeplayer.anilist.client import (
@@ -662,6 +663,13 @@ class Backend(QObject):
         return {
             "accent": _THEME_ACCENTS.get(accent_name, _THEME_ACCENTS[_DEFAULT_ACCENT]),
             "accentName": accent_name,
+            # Pure black surfaces instead of the desktop's dark grey.
+            "oled": db.get_setting("theme_oled") == "true",
+            # The stand-in Kirigami's own surface colours, to go back to;
+            # empty with the real one, which has the desktop's.
+            "surfaces": ([kirigami_compat.PALETTE["backgroundColor"],
+                          kirigami_compat.PALETTE["alternateBackgroundColor"]]
+                         if kirigami_compat.needed() else []),
         }
 
     @Property("QVariantMap", notify=themeChanged)
@@ -673,6 +681,11 @@ class Backend(QObject):
     @Slot(result=list)
     def themeAccents(self) -> list[dict[str, str]]:
         return [{"key": key, "color": value} for key, value in _THEME_ACCENTS.items()]
+
+    @Slot(bool)
+    def setThemeOled(self, on: bool) -> None:
+        self._db.set_setting("theme_oled", "true" if on else "false")
+        self.themeChanged.emit()
 
     @Slot(str)
     def setThemeAccent(self, accent: str) -> None:

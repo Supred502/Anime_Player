@@ -305,6 +305,11 @@ Kirigami.ScrollablePage {
                 }
             }
             AppCheckBox {
+                text: "Pure black background (for OLED screens)"
+                checked: backend.theme.oled
+                onToggled: backend.setThemeOled(checked)
+            }
+            AppCheckBox {
                 id: previewToggle
                 text: "Show details when the pointer rests on a poster"
                 onToggled: {

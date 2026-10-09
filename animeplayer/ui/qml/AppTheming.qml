@@ -150,5 +150,35 @@ Item {
         item.Kirigami.Theme.focusColor = theming.accent
         item.Kirigami.Theme.hoverColor = Qt.rgba(
             theming.accent.r, theming.accent.g, theming.accent.b, 0.25)
+        // "Pure black" (Settings): the surfaces too, on every item the
+        // accent goes on. What each had is kept and put back when it's
+        // switched off: resetting the roles instead left the top bar and the
+        // title bar the page's grey rather than their own. Never switched
+        // on, nothing here touches a surface. One memory for the whole app
+        // (AppWindow.themeSurfaces): a page's AppTheming and the window's
+        // reach the same items.
+        let surfaces = applicationWindow().themeSurfaces
+        let theme = item.Kirigami.Theme
+        if (theming.appTheme.oled) {
+            // As text: a colour read from a property is a live reference,
+            // and would turn black along with the surface. Not one that's
+            // black already -- another page's AppTheming got there first.
+            if (!surfaces.has(item) && String(theme.backgroundColor) !== "#000000")
+                surfaces.set(item, [String(theme.backgroundColor), String(theme.alternateBackgroundColor)])
+            theme.backgroundColor = "#000000"
+            theme.alternateBackgroundColor = "#121212"
+        } else if (theming.appTheme.surfaces && theming.appTheme.surfaces.length) {
+            // The stand-in Kirigami (Windows, the Deck): one palette shared
+            // by every item, so its own colours are simply put back.
+            if (String(theme.backgroundColor) === "#000000") {
+                theme.backgroundColor = theming.appTheme.surfaces[0]
+                theme.alternateBackgroundColor = theming.appTheme.surfaces[1]
+            }
+        } else if (surfaces.has(item)) {
+            let was = surfaces.get(item)
+            theme.backgroundColor = was[0]
+            theme.alternateBackgroundColor = was[1]
+            surfaces.delete(item)
+        }
     }
 }
