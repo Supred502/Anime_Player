@@ -14,6 +14,7 @@ same total time either way.
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import shutil
@@ -85,6 +86,21 @@ def target_path(request: DownloadRequest) -> Path:
     return folder / f"episode-{label}-{audio}.mp4"
 
 
+@functools.cache
+def _hls_options() -> tuple[str, ...]:
+    """Input options for reading the source's streams. Its video host names
+    segments "seg_00000.ts.jpg", and ffmpeg since 7.1.1 refuses a playlist
+    whose segments don't end in a video extension ("Invalid data found when
+    processing input") unless told not to be picky. Older builds don't know
+    the option, and don't need it."""
+    try:
+        text = subprocess.run(["ffmpeg", "-hide_banner", "-h", "demuxer=hls"], capture_output=True,
+                              text=True, timeout=15, creationflags=NO_WINDOW).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ()
+    return ("-extension_picky", "0") if "extension_picky" in text else ()
+
+
 def probe_duration(url: str, referer: str) -> float:
     """Total seconds, so progress can be a fraction rather than a stopwatch.
     Returns 0 when it can't be determined -- the caller then reports bytes
@@ -93,7 +109,7 @@ def probe_duration(url: str, referer: str) -> float:
         return 0.0
     try:
         result = subprocess.run(
-            ["ffprobe", "-v", "error", "-headers", _headers(referer),
+            ["ffprobe", "-v", "error", "-headers", _headers(referer), *_hls_options(),
              "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", url],
             capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW,
         )
@@ -147,6 +163,9 @@ class Downloader:
         # episode: the queue re-checks the cancelled set before each item, so
         # the worst case is one item restarting.
         if process is not None and process.poll() is None:
+            # Marked: ffmpeg exits with an ordinary error code when asked to
+            # stop, so the exit code alone reads as a failed download.
+            process.stopped_on_purpose = True
             process.terminate()
 
     def is_cancelled(self, episode_id: int, dub: bool) -> bool:
@@ -182,6 +201,7 @@ class Downloader:
             # reconnected.
             "-rw_timeout", "30000000",
             "-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "5",
+            *_hls_options(),
             "-i", url,
             # No re-encode: the segments are already h264/aac, and copying is
             # what makes this run faster than realtime. aac_adtstoasc is
@@ -234,7 +254,7 @@ class Downloader:
             stderr = "\n".join(line for line in errors if line)
             partial.unlink(missing_ok=True)
             # Terminated by cancel() rather than having actually failed.
-            if process.returncode < 0:
+            if process.returncode < 0 or getattr(process, "stopped_on_purpose", False):
                 raise DownloadError("cancelled")
             raise DownloadError(stderr.splitlines()[-1] if stderr else "ffmpeg failed")
 
@@ -321,7 +341,7 @@ def cut_audio(source: str, referer: str, start: float, seconds: float, out: Path
     a stream is only read around the clip, not from the start."""
     command = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, start):.2f}"]
     if referer:
-        command += ["-headers", _headers(referer)]
+        command += ["-headers", _headers(referer), *_hls_options()]
     command += ["-i", source, "-t", f"{seconds:.2f}", "-vn", "-ac", "1", "-b:a", "96k", str(out)]
     try:
         result = subprocess.run(command, capture_output=True, timeout=90, creationflags=NO_WINDOW)

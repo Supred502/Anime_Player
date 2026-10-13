@@ -1,3 +1,5 @@
+import pytest
+
 from pathlib import Path
 
 from animeplayer.player import downloads
@@ -153,6 +155,7 @@ def test_a_throttled_download_asks_ffmpeg_for_a_read_rate(tmp_path, monkeypatch)
         return FakeProcess()
 
     monkeypatch.setattr(downloads, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(downloads, "_hls_options", lambda: ("-extension_picky", "0"))
     monkeypatch.setattr(downloads.subprocess, "Popen", fake_popen)
     downloads.Downloader().fetch("http://x/m.m3u8", "", tmp_path / "ep.mp4", 0, lambda *_: None,
                                  readrate=3)
@@ -160,6 +163,26 @@ def test_a_throttled_download_asks_ffmpeg_for_a_read_rate(tmp_path, monkeypatch)
     # Must come before -i: it's an input option.
     assert command[command.index("-readrate") + 1] == "3"
     assert command.index("-readrate") < command.index("-i")
+    # So must the one that lets ".ts.jpg" segments through.
+    assert command.index("-extension_picky") < command.index("-i")
+
+
+def test_a_cancelled_download_is_not_a_failed_one(tmp_path, monkeypatch) -> None:
+    """ffmpeg exits with an ordinary error code when told to stop."""
+    class Stopped:
+        returncode = 255
+        stdout = iter(())
+        stderr = iter(())
+        stopped_on_purpose = True
+
+        def wait(self):
+            return 255
+
+    monkeypatch.setattr(downloads, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(downloads, "_hls_options", lambda: ())
+    monkeypatch.setattr(downloads.subprocess, "Popen", lambda command, **_k: Stopped())
+    with pytest.raises(downloads.DownloadError, match="cancelled"):
+        downloads.Downloader().fetch("http://x/m.m3u8", "", tmp_path / "ep.mp4", 0, lambda *_: None)
 
 
 def test_a_subtitle_is_fetched_with_the_referer(tmp_path) -> None:
