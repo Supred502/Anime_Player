@@ -443,9 +443,16 @@ Kirigami.ApplicationWindow {
             root.ratingAnilistId = anilistId
             root.ratingTitle = title
             root.ratingScore = score
-            ratingDialog.open()
+            // Not over the episode: it counts as watched before it ends, and
+            // the question covered the last scene. Asked on leaving the player.
+            if (root.inPlayer) root.ratingWaiting = true
+            else ratingDialog.open()
         }
     }
+    property bool ratingWaiting: false
+    readonly property bool inPlayer: !!root.pageStack.currentItem
+                                     && typeof root.pageStack.currentItem.toMiniPlayer === "function"
+    onInPlayerChanged: if (!root.inPlayer && root.ratingWaiting) { root.ratingWaiting = false; ratingDialog.open() }
     Controls.Dialog {
         id: ratingDialog
         Kirigami.Theme.inherit: true

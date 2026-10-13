@@ -185,7 +185,16 @@ Kirigami.Page {
     // Past this much of an episode it counts as watched: on AniList, in
     // Stats, and for clearing old downloads. Checked as it plays (see the
     // video's onPositionChanged), not only on leaving.
-    readonly property real watchedThreshold: 0.8
+    //
+    // Where that is: the start of the outro when the source gave its
+    // timings (what's left is the credits), else nine tenths of the way.
+    // 80% was mid-scene: the last episode's "rate this show" came up over
+    // the ending. An outro marked in the first half isn't believed.
+    readonly property real watchedAt: {
+        if (video.duration <= 0) return Infinity
+        if (page.skipEd && page.skipEd.start > video.duration * 0.5) return page.skipEd.start
+        return video.duration * 0.9
+    }
     property bool reportedWatched: false
 
     function reportWatched() {
@@ -221,8 +230,7 @@ Kirigami.Page {
     Component.onDestruction: {
         mediaSession.clear()
         // Leaving part-way through the credits still counts -- see above.
-        if (video && video.duration > 0
-                && video.position >= video.duration * page.watchedThreshold) {
+        if (video && video.position >= page.watchedAt) {
             page.reportWatched()
         }
         page.showingPointerAgain = true
@@ -623,7 +631,7 @@ Kirigami.Page {
         Component.onDestruction: close()
         onPositionChanged: (value) => {
             if (value > 0) { page.stalled = false; stallTimer.stop() }
-            if (video.duration > 0 && value >= video.duration * page.watchedThreshold) page.reportWatched()
+            if (value >= page.watchedAt) page.reportWatched()
             if (page.learnMode) learnOverlay.update(value)
             // Auto-skip: seek past the interval the moment playback enters it.
             // The *AutoSkipped guards stop this from firing again every
