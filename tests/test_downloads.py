@@ -144,7 +144,7 @@ def test_a_throttled_download_asks_ffmpeg_for_a_read_rate(tmp_path, monkeypatch)
     class FakeProcess:
         returncode = 0
         stdout = iter(())
-        stderr = None
+        stderr = iter(())
 
         def wait(self):
             return 0
@@ -155,7 +155,6 @@ def test_a_throttled_download_asks_ffmpeg_for_a_read_rate(tmp_path, monkeypatch)
         return FakeProcess()
 
     monkeypatch.setattr(downloads, "ffmpeg_available", lambda: True)
-    monkeypatch.setattr(downloads, "_hls_options", lambda: ("-extension_picky", "0"))
     monkeypatch.setattr(downloads.subprocess, "Popen", fake_popen)
     downloads.Downloader().fetch("http://x/m.m3u8", "", tmp_path / "ep.mp4", 0, lambda *_: None,
                                  readrate=3)
@@ -163,8 +162,39 @@ def test_a_throttled_download_asks_ffmpeg_for_a_read_rate(tmp_path, monkeypatch)
     # Must come before -i: it's an input option.
     assert command[command.index("-readrate") + 1] == "3"
     assert command.index("-readrate") < command.index("-i")
-    # So must the one that lets ".ts.jpg" segments through.
-    assert command.index("-extension_picky") < command.index("-i")
+    # ffmpeg's check on segment names is on unless a stream is refused for it.
+    assert "-extension_picky" not in command
+
+
+def test_the_segment_name_check_is_only_relaxed_for_a_stream_refused_for_it(tmp_path, monkeypatch) -> None:
+    commands = []
+
+    class Process:
+        stdout = iter(())
+
+        def __init__(self, refused):
+            self.returncode = 183 if refused else 0
+            self.stderr = iter([b"URL https://x/seg_0.ts.jpg is not in allowed_segment_extensions\n"]
+                               if refused else [])
+
+        def wait(self):
+            return self.returncode
+
+    def fake_popen(command, **_kwargs):
+        commands.append(command)
+        (tmp_path / "ep.part.mp4").write_bytes(b"x")
+        return Process(refused=len(commands) == 1)
+
+    monkeypatch.setattr(downloads, "ffmpeg_available", lambda: True)
+    monkeypatch.setattr(downloads, "_relaxed_hls_options",
+                        lambda: ("-extension_picky", "0", "-protocol_whitelist", "https,tls,tcp,crypto"))
+    monkeypatch.setattr(downloads.subprocess, "Popen", fake_popen)
+    downloads.Downloader().fetch("https://x/m.m3u8", "", tmp_path / "ep.mp4", 0, lambda *_: None)
+    strict, relaxed = commands
+    assert "-extension_picky" not in strict
+    # The retry: relaxed, before -i, and held to HTTPS.
+    assert relaxed.index("-extension_picky") < relaxed.index("-i")
+    assert relaxed[relaxed.index("-protocol_whitelist") + 1] == "https,tls,tcp,crypto"
 
 
 def test_a_cancelled_download_is_not_a_failed_one(tmp_path, monkeypatch) -> None:
@@ -179,7 +209,6 @@ def test_a_cancelled_download_is_not_a_failed_one(tmp_path, monkeypatch) -> None
             return 255
 
     monkeypatch.setattr(downloads, "ffmpeg_available", lambda: True)
-    monkeypatch.setattr(downloads, "_hls_options", lambda: ())
     monkeypatch.setattr(downloads.subprocess, "Popen", lambda command, **_k: Stopped())
     with pytest.raises(downloads.DownloadError, match="cancelled"):
         downloads.Downloader().fetch("http://x/m.m3u8", "", tmp_path / "ep.mp4", 0, lambda *_: None)

@@ -86,19 +86,34 @@ def target_path(request: DownloadRequest) -> Path:
     return folder / f"episode-{label}-{audio}.mp4"
 
 
+# What ffmpeg says when it refuses a playlist for its segments' names.
+_PICKY_REFUSAL = "allowed_segment_extensions"
+
+
 @functools.cache
-def _hls_options() -> tuple[str, ...]:
-    """Input options for reading the source's streams. Its video host names
-    segments "seg_00000.ts.jpg", and ffmpeg since 7.1.1 refuses a playlist
-    whose segments don't end in a video extension ("Invalid data found when
-    processing input") unless told not to be picky. Older builds don't know
-    the option, and don't need it."""
+def _relaxed_hls_options() -> tuple[str, ...]:
+    """Input options for a stream ffmpeg has just refused for its segments'
+    names. The source's video host names them "seg_00000.ts.jpg", and ffmpeg
+    since 7.1.1 won't read a playlist whose segments don't end in a video
+    extension ("Invalid data found when processing input").
+
+    That check is a safety measure -- it stops a hostile playlist having
+    arbitrary content read as media -- so it is only switched off for a
+    stream that was refused for exactly this, never by default, and then
+    with fetching limited to HTTPS: no local files, no other protocols.
+    Empty for an ffmpeg too old to have the check (or the option)."""
     try:
         text = subprocess.run(["ffmpeg", "-hide_banner", "-h", "demuxer=hls"], capture_output=True,
                               text=True, timeout=15, creationflags=NO_WINDOW).stdout
     except (OSError, subprocess.SubprocessError):
         return ()
-    return ("-extension_picky", "0") if "extension_picky" in text else ()
+    if "extension_picky" not in text:
+        return ()
+    return ("-extension_picky", "0", "-protocol_whitelist", "https,tls,tcp,crypto")
+
+
+class _RefusedForSegmentNames(DownloadError):
+    pass
 
 
 def probe_duration(url: str, referer: str) -> float:
@@ -107,12 +122,18 @@ def probe_duration(url: str, referer: str) -> float:
     written instead of a percentage, which is still honest movement."""
     if shutil.which("ffprobe") is None:
         return 0.0
-    try:
-        result = subprocess.run(
-            ["ffprobe", "-v", "error", "-headers", _headers(referer), *_hls_options(),
+
+    def probe(options: tuple[str, ...]) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["ffprobe", "-v", "error", "-headers", _headers(referer), *options,
              "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", url],
             capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW,
         )
+
+    try:
+        result = probe(())
+        if _PICKY_REFUSAL in result.stderr and _relaxed_hls_options():
+            result = probe(_relaxed_hls_options())
         return float(result.stdout.strip() or 0)
     except (subprocess.SubprocessError, ValueError):
         return 0.0
@@ -179,6 +200,19 @@ class Downloader:
     def fetch(self, url: str, referer: str, destination: Path, duration: float,
               on_progress, readrate: float = 0.0) -> None:
         """Pulls one stream to `destination`. Raises DownloadError on failure.
+        ffmpeg's check on segment names stays on unless it refuses this
+        stream for them (see _relaxed_hls_options)."""
+        try:
+            self._fetch(url, referer, destination, duration, on_progress, readrate, ())
+        except _RefusedForSegmentNames:
+            if not _relaxed_hls_options():
+                raise
+            self._fetch(url, referer, destination, duration, on_progress, readrate,
+                        _relaxed_hls_options())
+
+    def _fetch(self, url: str, referer: str, destination: Path, duration: float,
+               on_progress, readrate: float, hls_options: tuple[str, ...]) -> None:
+        """One run of ffmpeg.
 
         Writes to a .part file and renames on success, so a half-finished
         download can never be mistaken for a playable episode -- which matters
@@ -201,7 +235,7 @@ class Downloader:
             # reconnected.
             "-rw_timeout", "30000000",
             "-reconnect", "1", "-reconnect_on_network_error", "1", "-reconnect_delay_max", "5",
-            *_hls_options(),
+            *hls_options,
             "-i", url,
             # No re-encode: the segments are already h264/aac, and copying is
             # what makes this run faster than realtime. aac_adtstoasc is
@@ -256,7 +290,8 @@ class Downloader:
             # Terminated by cancel() rather than having actually failed.
             if process.returncode < 0 or getattr(process, "stopped_on_purpose", False):
                 raise DownloadError("cancelled")
-            raise DownloadError(stderr.splitlines()[-1] if stderr else "ffmpeg failed")
+            error = stderr.splitlines()[-1] if stderr else "ffmpeg failed"
+            raise (_RefusedForSegmentNames if _PICKY_REFUSAL in stderr else DownloadError)(error)
 
         partial.replace(destination)
 
@@ -339,13 +374,17 @@ def cut_audio(source: str, referer: str, start: float, seconds: float, out: Path
     """A few seconds of an episode's sound as an mp3 (for Anki cards):
     from a saved file or straight from the stream. Seeks before opening, so
     a stream is only read around the clip, not from the start."""
-    command = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, start):.2f}"]
-    if referer:
-        command += ["-headers", _headers(referer), *_hls_options()]
-    command += ["-i", source, "-t", f"{seconds:.2f}", "-vn", "-ac", "1", "-b:a", "96k", str(out)]
+    def cut(options: tuple[str, ...]) -> subprocess.CompletedProcess:
+        command = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, start):.2f}"]
+        if referer:
+            command += ["-headers", _headers(referer), *options]
+        command += ["-i", source, "-t", f"{seconds:.2f}", "-vn", "-ac", "1", "-b:a", "96k", str(out)]
+        return subprocess.run(command, capture_output=True, text=True, timeout=90, creationflags=NO_WINDOW)
+
     try:
-        result = subprocess.run(command, capture_output=True, timeout=90, creationflags=NO_WINDOW)
+        result = cut(())
+        if referer and _PICKY_REFUSAL in result.stderr and _relaxed_hls_options():
+            result = cut(_relaxed_hls_options())
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0 and out.exists() and out.stat().st_size > 0
-
