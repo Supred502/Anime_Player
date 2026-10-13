@@ -14,7 +14,8 @@ RowLayout {
 
     property real hovered: 0        // score under the pointer, 0.5-10; 0 when none
     readonly property real shown: hovered > 0 ? hovered : score
-    spacing: 2
+    // No gaps: the pointer crossing one dropped the preview for a moment.
+    spacing: 0
 
     // Each star is an outline with a filled star over it, clipped to how
     // much of it the score covers -- so 8.5 is eight full stars and a half.
@@ -25,22 +26,23 @@ RowLayout {
             id: star
             required property int index
             readonly property real fill: Math.max(0, Math.min(1, stars.shown - index))
-            implicitWidth: stars.starSize
+            implicitWidth: stars.starSize + 2
             implicitHeight: stars.starSize
 
             Kirigami.Icon {
-                anchors.fill: parent
+                width: stars.starSize
+                height: stars.starSize
                 source: "star-shape-outline-symbolic"
                 isMask: true
                 color: Kirigami.Theme.disabledTextColor
             }
             Item {
-                width: parent.width * (star.fill >= 1 ? 1 : star.fill >= 0.5 ? 0.5 : 0)
+                width: stars.starSize * (star.fill >= 1 ? 1 : star.fill >= 0.5 ? 0.5 : 0)
                 height: parent.height
                 clip: true
                 Kirigami.Icon {
-                    width: star.width
-                    height: star.height
+                    width: stars.starSize
+                    height: stars.starSize
                     source: "star-shape-symbolic"
                     isMask: true
                     color: Kirigami.Theme.neutralTextColor
@@ -50,7 +52,7 @@ RowLayout {
             HoverHandler {
                 id: starHover
                 cursorShape: Qt.PointingHandCursor
-                readonly property real value: star.index + (point.position.x < star.width / 2 ? 0.5 : 1)
+                readonly property real value: star.index + (point.position.x < stars.starSize / 2 ? 0.5 : 1)
                 onValueChanged: if (hovered) stars.hovered = value
                 onHoveredChanged: {
                     if (hovered) stars.hovered = value
@@ -59,15 +61,20 @@ RowLayout {
             }
             TapHandler {
                 onTapped: (eventPoint) => {
-                    let value = star.index + (eventPoint.position.x < star.width / 2 ? 0.5 : 1)
+                    let value = star.index + (eventPoint.position.x < stars.starSize / 2 ? 0.5 : 1)
                     stars.picked(stars.score === value ? 0 : value)
                 }
             }
         }
     }
     Controls.Label {
+        id: scoreLabel
         Layout.leftMargin: Kirigami.Units.smallSpacing
         text: stars.shown > 0 ? stars.shown + "/10" : "not rated"
+        // One width for every score: a label that grew from "8/10" to
+        // "8.5/10" moved the stars under the pointer, which changed the score.
+        Layout.preferredWidth: widest.width
+        TextMetrics { id: widest; font: scoreLabel.font; text: "not rated" }
         opacity: 0.7
         font.pixelSize: Kirigami.Theme.smallFont.pixelSize
     }

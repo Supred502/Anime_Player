@@ -215,6 +215,11 @@ class _Worker(QRunnable):
             self._on_error(str(exc))
 
 
+def _finished(status: AniListStatus, episode_number: float) -> bool:
+    """Whether a show left on this episode is done with, for Continue Watching."""
+    return status.status == "COMPLETED" and episode_number >= status.progress
+
+
 class Backend(QObject):
     searchFinished = Signal(list)
     searchFailed = Signal(str)
@@ -3141,6 +3146,13 @@ class Backend(QObject):
             match = index.match(e.anime_title) if index is not None else None
             if match is not None:
                 local_ids.add(match.anilist_id)
+                # Finished: its last episode is the one left here, and AniList
+                # has it as completed (where progress is the episode count).
+                # An earlier episode of a completed show is a rewatch, and stays.
+                # Read fresh: the index keeps the status it was built with.
+                now = self._db.get_anilist_status(match.anilist_id) or match
+                if _finished(now, e.episode_number):
+                    continue
             rows.append(
                 {
                     "slug_id": e.anime_slug_id,
