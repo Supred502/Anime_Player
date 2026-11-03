@@ -43,8 +43,7 @@ Kirigami.ScrollablePage {
     readonly property bool loggedIn: backend.isAnilistLoggedIn()
     // Two charts to a row once there's room for both to be readable.
     readonly property int columns: page.bodyWidth > Kirigami.Units.gridUnit * 48 ? 2 : 1
-    // Capped and centred: full width on a big screen spread it thin.
-    readonly property real bodyWidth: Math.min(page.availableWidth, Kirigami.Units.gridUnit * 70)
+    readonly property real bodyWidth: page.availableWidth
     property bool opening: false
 
     Component.onCompleted: {
@@ -155,15 +154,8 @@ Kirigami.ScrollablePage {
         return "Episodes " + (run ? list[0] + "\u2013" + list[list.length - 1] : list.join(", "))
     }
 
-    // The page stretches its content to full width; the column inside
-    // keeps its own width and centres.
-    Item {
-    implicitHeight: profileColumn.implicitHeight
-    height: implicitHeight
     ColumnLayout {
-        id: profileColumn
         width: page.bodyWidth
-        x: Math.round((page.availableWidth - width) / 2)
         spacing: Kirigami.Units.gridUnit
 
         // ================= Who you are =================
@@ -350,13 +342,13 @@ Kirigami.ScrollablePage {
                     visible: (page.anilist.recently_finished || []).length > 0
                     Flow {
                         Layout.fillWidth: true
-                        spacing: Kirigami.Units.largeSpacing
+                        spacing: Kirigami.Units.largeSpacing * 2
                         Repeater {
                             model: page.anilist.recently_finished || []
                             AnimeCard {
                                 required property var modelData
                                 width: Kirigami.Units.gridUnit * 9
-                                height: Kirigami.Units.gridUnit * 16
+                                height: heightForWidth(width)   // poster plus two-line title and date
                                 posterUrl: modelData.cover_url
                                 anilistId: modelData.anilist_id || 0
                                 title: modelData.title
@@ -495,7 +487,7 @@ Kirigami.ScrollablePage {
                     hint: "Last active " + page.ago(modelData.recent[0].updated_at)
                     Flickable {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Kirigami.Units.gridUnit * 17
+                        Layout.preferredHeight: friendRow.height
                         contentWidth: friendRow.width
                         clip: true
                         flickableDirection: Flickable.HorizontalFlick
@@ -508,7 +500,7 @@ Kirigami.ScrollablePage {
                                 AnimeCard {
                                     required property var modelData
                                     width: Kirigami.Units.gridUnit * 9
-                                    height: Kirigami.Units.gridUnit * 16
+                                    height: heightForWidth(width)
                                     posterUrl: modelData.poster_url
                                     anilistId: modelData.anilist_id
                                     title: modelData.title
@@ -728,7 +720,6 @@ Kirigami.ScrollablePage {
                 }
             }
         }
-    }
     }
 
     // A big number with a line saying what it is.

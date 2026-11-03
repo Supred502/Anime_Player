@@ -130,8 +130,10 @@ ColumnLayout {
                 required property var model
 
                 width: row.cardWidth
-                y: Kirigami.Units.largeSpacing
                 height: shelf.height - Kirigami.Units.largeSpacing * 2
+                // Room above. Not y or topMargin: a horizontal list puts every
+                // card back at y 0 and ignores its top margin (measured).
+                transform: Translate { y: Kirigami.Units.largeSpacing }
                 posterUrl: model.poster_url || ""
                 anilistId: model.anilist_id || 0
                 slugId: model.slug_id || ""

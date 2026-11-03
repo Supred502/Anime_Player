@@ -752,7 +752,7 @@ Kirigami.Page {
             opacity: 0.7
             text: "The stream may have expired or the source is unavailable."
         }
-        AppButton {
+        PlayerButton {
             Kirigami.Theme.inherit: true
             Layout.alignment: Qt.AlignHCenter
             visible: page.stalled
@@ -780,7 +780,7 @@ Kirigami.Page {
         visible: page.isFullscreen && page.controlsVisible
         spacing: Kirigami.Units.largeSpacing
 
-        AppButton {
+        PlayerButton {
             icon.name: "go-previous-symbolic"
             text: "Back"
             onClicked: applicationWindow().pageStack.goBack()
@@ -804,7 +804,7 @@ Kirigami.Page {
         visible: !page.loadingStream && page.controlsVisible
 
         // Star this episode -- kept when watched ones are cleared (Settings).
-        AppButton {
+        PlayerButton {
             id: favoriteButton
             property int version: 0
             readonly property bool starred: version >= 0 && !!page.anime.slug_id
@@ -820,7 +820,7 @@ Kirigami.Page {
             Controls.ToolTip.visible: hovered
             Controls.ToolTip.text: starred ? "Remove from favourites" : "Favourite this episode"
         }
-        AppButton {
+        PlayerButton {
             visible: backend.learnFeatures
             text: "\u3042"
             Layout.preferredWidth: implicitHeight
@@ -896,7 +896,7 @@ Kirigami.Page {
                         Controls.Label { text: "Speed" }
                         Repeater {
                             model: [0.5, 0.75, 1.0]
-                            AppButton {
+                            PlayerButton {
                                 required property var modelData
                                 text: page.speedLabel(modelData)
                                 checkable: true
@@ -908,7 +908,7 @@ Kirigami.Page {
                     RowLayout {
                         enabled: page.learnMode
                         Controls.Label { text: "Timing" }
-                        AppButton {
+                        PlayerButton {
                             Kirigami.Theme.inherit: true
                             text: "\u2212 0.5s"
                             onClicked: learnOverlay.offset -= 0.5
@@ -918,7 +918,7 @@ Kirigami.Page {
                             Layout.minimumWidth: Kirigami.Units.gridUnit * 2.5
                             horizontalAlignment: Text.AlignHCenter
                         }
-                        AppButton {
+                        PlayerButton {
                             Kirigami.Theme.inherit: true
                             text: "+ 0.5s"
                             onClicked: learnOverlay.offset += 0.5
@@ -939,7 +939,7 @@ Kirigami.Page {
             }
         }
 
-        AppButton {
+        PlayerButton {
             Kirigami.Theme.inherit: true
             icon.name: "media-view-subtitles-symbolic"
             onClicked: subtitlePopup.opened ? subtitlePopup.close() : subtitlePopup.open()
@@ -977,7 +977,7 @@ Kirigami.Page {
                         value: page.subPosition
                         onMoved: page.subPosition = value
                     }
-                    AppButton {
+                    PlayerButton {
                         Kirigami.Theme.inherit: true
                         text: "Reset"
                         onClicked: { page.subScale = 1.0; page.subPosition = 100 }
@@ -1000,7 +1000,7 @@ Kirigami.Page {
             }
         }
 
-        AppButton {
+        PlayerButton {
             id: qualityButton
             text: page.quality
             icon.name: "settings-configure-symbolic"
@@ -1019,7 +1019,7 @@ Kirigami.Page {
                 }
             }
         }
-        AppButton {
+        PlayerButton {
             Kirigami.Theme.inherit: true
             icon.name: "window-minimize-pip"
             enabled: page.streamUrl !== "" && video.duration > 0
@@ -1027,7 +1027,7 @@ Kirigami.Page {
             Controls.ToolTip.visible: hovered
             Controls.ToolTip.text: "Mini player: keep watching while you browse (I)"
         }
-        AppButton {
+        PlayerButton {
             Kirigami.Theme.inherit: true
             icon.name: page.isFullscreen ? "view-restore-symbolic" : "view-fullscreen-symbolic"
             onClicked: page.toggleFullscreen()
@@ -1044,7 +1044,7 @@ Kirigami.Page {
         anchors.margins: Kirigami.Units.largeSpacing
         spacing: Kirigami.Units.smallSpacing
 
-        component SkipButton: AppButton {
+        component SkipButton: PlayerButton {
             property var range: null
             visible: !page.loadingStream && !!range
                 && video.position >= range.start && video.position < range.end
@@ -1053,7 +1053,7 @@ Kirigami.Page {
             accented: true
         }
 
-        AppButton {
+        PlayerButton {
             visible: page.justSkipped !== "" && !page.loadingStream
             text: page.justSkipped === "intro" ? "Skipped intro \u00b7 Watch it" : "Skipped outro \u00b7 Watch it"
             icon.name: "edit-undo-symbolic"
@@ -1198,7 +1198,7 @@ Kirigami.Page {
             // order every transport control has been in for forty years.
             // Both were already reachable by keyboard and from the phone
             // remote but had no button of their own here.
-            AppButton {
+            PlayerButton {
                 Kirigami.Theme.inherit: true
                 icon.name: "media-skip-backward-symbolic"
                 // Episode numbers can be fractional (x.5 specials), so
@@ -1208,12 +1208,12 @@ Kirigami.Page {
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: "Previous episode"
             }
-            AppButton {
+            PlayerButton {
                 Kirigami.Theme.inherit: true
                 icon.name: video.paused ? "media-playback-start-symbolic" : "media-playback-pause-symbolic"
                 onClicked: video.togglePause()
             }
-            AppButton {
+            PlayerButton {
                 Kirigami.Theme.inherit: true
                 icon.name: "media-skip-forward-symbolic"
                 enabled: !page.isLastEpisode
@@ -1223,7 +1223,7 @@ Kirigami.Page {
             }
             // Volume: the speaker mutes, the slider sets it. Up to 130%,
             // mpv's own ceiling, for the quiet dubs.
-            AppButton {
+            PlayerButton {
                 Kirigami.Theme.inherit: true
                 icon.name: video.muted || video.volume === 0 ? "audio-volume-muted-symbolic"
                          : video.volume < 34 ? "audio-volume-low-symbolic"
@@ -1255,7 +1255,7 @@ Kirigami.Page {
             // and outro ranges with the stream itself, so the Skip buttons
             // handle that case properly and these can go back to being
             // ordinary seek controls.
-            AppButton {
+            PlayerButton {
                 Kirigami.Theme.inherit: true
                 id: speedButton
                 objectName: "speedButton"
@@ -1274,7 +1274,7 @@ Kirigami.Page {
                     onChosen: (value) => page.speed = value
                 }
             }
-            AppButton {
+            PlayerButton {
                 Kirigami.Theme.inherit: true
                 text: "10s"
                 icon.name: "media-seek-backward-symbolic"
@@ -1283,7 +1283,7 @@ Kirigami.Page {
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: "Back 10 seconds (Left arrow: 5s)"
             }
-            AppButton {
+            PlayerButton {
                 Kirigami.Theme.inherit: true
                 text: "30s"
                 icon.name: "media-seek-forward-symbolic"
@@ -1355,5 +1355,14 @@ Kirigami.Page {
         let m = Math.floor(seconds / 60)
         let s = Math.floor(seconds % 60)
         return m + ":" + (s < 10 ? "0" : "") + s
+    }
+
+    // AppButton with more room around its icon and text: over a video, at
+    // arm's length (or on the Deck), the plain size looked cramped.
+    component PlayerButton: AppButton {
+        topPadding: Kirigami.Units.smallSpacing * 2
+        bottomPadding: Kirigami.Units.smallSpacing * 2
+        leftPadding: iconOnly ? squarePadding : Kirigami.Units.largeSpacing * 1.5
+        rightPadding: iconOnly ? squarePadding : Kirigami.Units.largeSpacing * 1.5
     }
 }

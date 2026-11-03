@@ -256,8 +256,8 @@ Kirigami.ScrollablePage {
                         width: Math.min(Kirigami.Units.gridUnit * 22,
                                         Math.max(Kirigami.Units.gridUnit * 15,
                                                  page.availableWidth / 2.4))
-                        y: Kirigami.Units.largeSpacing
                         height: resumeRow.height - Kirigami.Units.largeSpacing * 2
+                        transform: Translate { y: Kirigami.Units.largeSpacing }   // see PosterRow
                         posterUrl: modelData.poster_url || ""
                         title: modelData.title
                         subtitle: "Episode " + modelData.episode_number
