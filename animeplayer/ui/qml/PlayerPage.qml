@@ -91,7 +91,8 @@ Kirigami.Page {
     // ate the back button after the first fullscreen toggle.
     property int normalToolBarStyle: Kirigami.ApplicationHeaderStyle.Auto
 
-    ListModel { id: qualityModel }
+    property var qualities: ["Auto"]   // what the stream offers, "Auto" first
+    property string quality: "Auto"
 
     Component.onCompleted: {
         Qt.callLater(function() { page.normalToolBarStyle = page.globalToolBarStyle })
@@ -174,6 +175,7 @@ Kirigami.Page {
                                           && page.Window.active
                                           && !page.showingPointerAgain
 
+
     Connections {
         target: Qt.application
         function onAboutToQuit() { page.showingPointerAgain = true }
@@ -248,7 +250,13 @@ Kirigami.Page {
     // Alt+Left): out of fullscreen first, while the page is still whole.
     // Left to Component.onDestruction, it was measured not to happen -- the
     // window stayed fullscreen with no nav bar over the episode list.
-    onBackRequested: (event) => { if (page.isFullscreen) page.toggleFullscreen() }
+    // Also the moment the pointer comes back for good: left with Esc, B, the
+    // phone or a media key while the controls were faded, the player went
+    // and the pointer stayed blank, desktop-wide (see pointerHidden).
+    onBackRequested: (event) => {
+        page.showingPointerAgain = true
+        if (page.isFullscreen) page.toggleFullscreen()
+    }
 
     function toggleFullscreen() {
         page.isFullscreen = !page.isFullscreen
@@ -537,22 +545,11 @@ Kirigami.Page {
             showPassiveNotification("You've reached the last episode")
         }
         function onStreamQualitiesAvailable(qualities) {
-            qualityModel.clear()
-            qualityModel.append({ label: "Auto" })
-            for (let i = 0; i < qualities.length; i++) qualityModel.append(qualities[i])
-
+            page.qualities = ["Auto"].concat(qualities.map((q) => q.label))
             // Reflect whatever quality actually ended up playing: if a specific
             // quality is remembered, loadStream() already started playback at it.
             let preferred = backend.getPreferredQuality()
-            let idx = 0
-            for (let i = 0; i < qualityModel.count; i++) {
-                if (qualityModel.get(i).label === preferred) { idx = i; break }
-            }
-            // QQC2 ComboBox doesn't always refresh its displayed text after the
-            // model it's bound to is cleared and repopulated in place -- forcing
-            // currentIndex to re-assign (even to the same value) makes it re-read.
-            qualityCombo.currentIndex = -1
-            qualityCombo.currentIndex = idx
+            page.quality = page.qualities.indexOf(preferred) > 0 ? preferred : "Auto"
         }
     }
 
@@ -751,7 +748,7 @@ Kirigami.Page {
             opacity: 0.7
             text: "The stream may have expired or the source is unavailable."
         }
-        Controls.Button {
+        AppButton {
             Kirigami.Theme.inherit: true
             Layout.alignment: Qt.AlignHCenter
             visible: page.stalled
@@ -813,20 +810,16 @@ Kirigami.Page {
                 function onFavoriteEpisodesChanged(slug) { favoriteButton.version++ }
             }
             visible: !!page.anime.slug_id
-            text: starred ? "\u2665" : ""
-            icon.name: starred ? "" : "emblem-favorite-symbolic"
-            Layout.preferredWidth: implicitHeight * 1.3
-            leftPadding: 0
-            rightPadding: 0
+            icon.name: starred ? "starred-symbolic" : "non-starred-symbolic"
             checked: starred
-            onClicked: backend.setFavoriteEpisode(page.anime.slug_id, page.episodeNumber, !starred)
+            onClicked: backend.setFavoriteEpisode(page.anime, page.episodeNumber, !starred)
             Controls.ToolTip.visible: hovered
             Controls.ToolTip.text: starred ? "Remove from favourites" : "Favourite this episode"
         }
         AppButton {
             visible: backend.learnFeatures
             text: "\u3042"
-            Layout.preferredWidth: implicitHeight * 1.3
+            Layout.preferredWidth: implicitHeight
             leftPadding: 0
             rightPadding: 0
             checkable: true
@@ -911,7 +904,7 @@ Kirigami.Page {
                     RowLayout {
                         enabled: page.learnMode
                         Controls.Label { text: "Timing" }
-                        Controls.Button {
+                        AppButton {
                             Kirigami.Theme.inherit: true
                             text: "\u2212 0.5s"
                             onClicked: learnOverlay.offset -= 0.5
@@ -921,7 +914,7 @@ Kirigami.Page {
                             Layout.minimumWidth: Kirigami.Units.gridUnit * 2.5
                             horizontalAlignment: Text.AlignHCenter
                         }
-                        Controls.Button {
+                        AppButton {
                             Kirigami.Theme.inherit: true
                             text: "+ 0.5s"
                             onClicked: learnOverlay.offset += 0.5
@@ -942,7 +935,7 @@ Kirigami.Page {
             }
         }
 
-        Controls.Button {
+        AppButton {
             Kirigami.Theme.inherit: true
             icon.name: "media-view-subtitles-symbolic"
             onClicked: subtitlePopup.opened ? subtitlePopup.close() : subtitlePopup.open()
@@ -980,7 +973,7 @@ Kirigami.Page {
                         value: page.subPosition
                         onMoved: page.subPosition = value
                     }
-                    Controls.Button {
+                    AppButton {
                         Kirigami.Theme.inherit: true
                         text: "Reset"
                         onClicked: { page.subScale = 1.0; page.subPosition = 100 }
@@ -1003,14 +996,26 @@ Kirigami.Page {
             }
         }
 
-        Controls.ComboBox {
-            Kirigami.Theme.inherit: true
-            id: qualityCombo
-            model: qualityModel
-            textRole: "label"
-            onActivated: backend.selectQuality(currentIndex === 0 ? "" : currentText)
+        AppButton {
+            id: qualityButton
+            text: page.quality
+            icon.name: "settings-configure-symbolic"
+            onClicked: qualityMenu.openBelow(qualityButton)
+            Controls.ToolTip.visible: hovered && !qualityMenu.opened
+            Controls.ToolTip.text: "Quality"
+            ChoiceMenu {
+                id: qualityMenu
+                options: page.qualities.map((q) => ({ label: q, value: q }))
+                current: page.quality
+                onOpened: { page.controlsVisible = true; hideTimer.stop() }
+                onClosed: hideTimer.restart()
+                onChosen: (value) => {
+                    page.quality = value
+                    backend.selectQuality(value === "Auto" ? "" : value)
+                }
+            }
         }
-        Controls.Button {
+        AppButton {
             Kirigami.Theme.inherit: true
             icon.name: "window-minimize-pip"
             enabled: page.streamUrl !== "" && video.duration > 0
@@ -1018,7 +1023,7 @@ Kirigami.Page {
             Controls.ToolTip.visible: hovered
             Controls.ToolTip.text: "Mini player: keep watching while you browse (I)"
         }
-        Controls.Button {
+        AppButton {
             Kirigami.Theme.inherit: true
             icon.name: page.isFullscreen ? "view-restore-symbolic" : "view-fullscreen-symbolic"
             onClicked: page.toggleFullscreen()
@@ -1139,7 +1144,7 @@ Kirigami.Page {
             // order every transport control has been in for forty years.
             // Both were already reachable by keyboard and from the phone
             // remote but had no button of their own here.
-            Controls.Button {
+            AppButton {
                 Kirigami.Theme.inherit: true
                 icon.name: "media-skip-backward-symbolic"
                 // Episode numbers can be fractional (x.5 specials), so
@@ -1149,12 +1154,12 @@ Kirigami.Page {
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: "Previous episode"
             }
-            Controls.Button {
+            AppButton {
                 Kirigami.Theme.inherit: true
-                icon.name: video.paused ? "media-playback-start" : "media-playback-pause"
+                icon.name: video.paused ? "media-playback-start-symbolic" : "media-playback-pause-symbolic"
                 onClicked: video.togglePause()
             }
-            Controls.Button {
+            AppButton {
                 Kirigami.Theme.inherit: true
                 icon.name: "media-skip-forward-symbolic"
                 enabled: !page.isLastEpisode
@@ -1164,7 +1169,7 @@ Kirigami.Page {
             }
             // Volume: the speaker mutes, the slider sets it. Up to 130%,
             // mpv's own ceiling, for the quiet dubs.
-            Controls.Button {
+            AppButton {
                 Kirigami.Theme.inherit: true
                 icon.name: video.muted || video.volume === 0 ? "audio-volume-muted-symbolic"
                          : video.volume < 34 ? "audio-volume-low-symbolic"
@@ -1196,34 +1201,26 @@ Kirigami.Page {
             // and outro ranges with the stream itself, so the Skip buttons
             // handle that case properly and these can go back to being
             // ordinary seek controls.
-            Controls.Button {
+            AppButton {
                 Kirigami.Theme.inherit: true
+                id: speedButton
+                objectName: "speedButton"
                 text: page.speedLabel(page.speed)
-                icon.name: "speedometer"
+                icon.name: "speedometer-symbolic"
                 display: Controls.AbstractButton.TextBesideIcon
-                onClicked: speedMenu.popup()
-                Controls.ToolTip.visible: hovered
+                onClicked: speedMenu.openAbove(speedButton)
+                Controls.ToolTip.visible: hovered && !speedMenu.opened
                 Controls.ToolTip.text: "Playback speed ([ and ])"
-                Controls.Menu {
+                ChoiceMenu {
                     id: speedMenu
-                    Kirigami.Theme.inherit: true
+                    options: page.speeds.map((v) => ({ label: page.speedLabel(v) + (v === 1 ? "  (normal)" : ""), value: v }))
+                    current: page.speed
                     onOpened: { page.controlsVisible = true; hideTimer.stop() }
                     onClosed: hideTimer.restart()
-                    Instantiator {
-                        model: page.speeds
-                        onObjectAdded: (index, object) => speedMenu.insertItem(index, object)
-                        onObjectRemoved: (index, object) => speedMenu.removeItem(object)
-                        delegate: Controls.MenuItem {
-                            required property var modelData
-                            text: page.speedLabel(modelData) + (modelData === 1 ? "  (normal)" : "")
-                            checkable: true
-                            checked: page.speed === modelData
-                            onTriggered: page.speed = modelData
-                        }
-                    }
+                    onChosen: (value) => page.speed = value
                 }
             }
-            Controls.Button {
+            AppButton {
                 Kirigami.Theme.inherit: true
                 text: "10s"
                 icon.name: "media-seek-backward-symbolic"
@@ -1232,7 +1229,7 @@ Kirigami.Page {
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: "Back 10 seconds (Left arrow: 5s)"
             }
-            Controls.Button {
+            AppButton {
                 Kirigami.Theme.inherit: true
                 text: "30s"
                 icon.name: "media-seek-forward-symbolic"

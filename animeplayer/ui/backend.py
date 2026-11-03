@@ -2004,10 +2004,29 @@ class Backend(QObject):
     def favoriteEpisodes(self, slug_id: str) -> list[float]:
         return self._db.favorite_episodes(slug_id)
 
-    @Slot(str, float, bool)
-    def setFavoriteEpisode(self, slug_id: str, episode_number: float, favorite: bool) -> None:
-        self._db.set_favorite_episode(slug_id, episode_number, favorite)
+    @Slot("QVariantMap", float, bool)
+    def setFavoriteEpisode(self, anime: dict[str, Any], episode_number: float, favorite: bool) -> None:
+        slug_id = anime.get("slug_id") or ""
+        if not slug_id:
+            return
+        self._db.set_favorite_episode(slug_id, episode_number, favorite,
+                                      anime.get("title") or "", anime.get("poster_url") or None)
         self.favoriteEpisodesChanged.emit(slug_id)
+
+    @Slot(result=list)
+    def favoriteShows(self) -> list[dict[str, Any]]:
+        """For the Library's Favourites tab: each show with starred episodes,
+        most recently starred first, with which episodes."""
+        shows: dict[str, dict[str, Any]] = {}
+        for row in self._db.all_favorite_episodes():
+            show = shows.setdefault(row["slug_id"], {
+                "slug_id": row["slug_id"], "numeric_id": row["slug_id"].rsplit("-", 1)[-1],
+                "title": row["anime_title"], "poster_url": row["poster_url"] or "", "episodes": [],
+            })
+            show["episodes"].append(row["episode_number"])
+        for show in shows.values():
+            show["episodes"].sort()
+        return list(shows.values())
 
     @Slot(result=bool)
     def getKeepFavoriteDownloads(self) -> bool:

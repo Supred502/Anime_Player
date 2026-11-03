@@ -240,10 +240,13 @@ Item {
             }
 
             // Outside the scaling frame: a border that scales with it ends up
-            // 3px on one card and 2px on its neighbour mid-animation.
+            // 3px on one card and 2px on its neighbour mid-animation. Sized to
+            // the frame as drawn, scale included, so it hugs the poster's edge.
             Rectangle {
-                anchors.fill: posterFrame
-                radius: posterFrame.radius
+                anchors.centerIn: posterFrame
+                width: posterFrame.width * posterFrame.scale
+                height: posterFrame.height * posterFrame.scale
+                radius: posterFrame.radius * posterFrame.scale
                 color: "transparent"
                 border.width: 2
                 border.color: Kirigami.Theme.highlightColor

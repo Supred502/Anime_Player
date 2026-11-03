@@ -115,7 +115,14 @@ Kirigami.ScrollablePage {
     // Not "contentWidth": that name is already a FINAL property on
     // Controls.Control, and shadowing it makes the whole page fail to load
     // with "Cannot override FINAL property".
-    readonly property real bodyWidth: width - Kirigami.Units.largeSpacing * 2
+    readonly property real bodyWidth: usableWidth - Kirigami.Units.largeSpacing * 2
+    // The page less its scrollbar, which is drawn over the right edge: sized
+    // to the whole width, everything met the right wall while the left had
+    // its margin.
+    readonly property real usableWidth: {
+        let bar = page.flickable ? page.flickable.Controls.ScrollBar.vertical : null
+        return width - (bar ? bar.width : Kirigami.Units.gridUnit * 0.6)
+    }
 
     // The episode grid is left-aligned with a panel beside it, rather than
     // centred in the whole width. Centring a 10-wide grid in a wide window
@@ -250,8 +257,15 @@ Kirigami.ScrollablePage {
         function onFavoriteEpisodesChanged(slug) { page.favoritesVersion++ }
     }
     function isFavorite(number) { return page.favorites.indexOf(number) >= 0 }
+    function rangeHasFavorite(index) {
+        if (page.favorites.length === 0) return false
+        let end = Math.min((index + 1) * page.pageSize, page.shownEpisodeCount)
+        for (let i = index * page.pageSize; i < end; i++)
+            if (page.isFavorite(episodesModel.get(i).number)) return true
+        return false
+    }
     function toggleFavorite(number) {
-        backend.setFavoriteEpisode(page.anime.slug_id, number, !page.isFavorite(number))
+        backend.setFavoriteEpisode(page.anime, number, !page.isFavorite(number))
     }
 
     // Right-click on an episode, in the grid or the list.
@@ -262,7 +276,8 @@ Kirigami.ScrollablePage {
         Controls.MenuItem {
             text: page.menuEpisode && page.isFavorite(page.menuEpisode.number)
                   ? "Remove from favourites" : "Favourite"
-            icon.name: "emblem-favorite-symbolic"
+            icon.name: page.menuEpisode && page.isFavorite(page.menuEpisode.number)
+                       ? "non-starred-symbolic" : "starred-symbolic"
             onTriggered: page.toggleFavorite(page.menuEpisode.number)
         }
         Controls.MenuItem {
@@ -804,7 +819,7 @@ Kirigami.ScrollablePage {
     }
 
     ColumnLayout {
-        width: page.width
+        width: page.usableWidth
         spacing: Kirigami.Units.largeSpacing
 
         // Header: key art behind the poster and the title block. AniList only
@@ -1253,9 +1268,10 @@ Kirigami.ScrollablePage {
             Repeater {
                 model: [{ list: false, icon: "view-grid-symbolic", tip: "Grid" },
                         { list: true, icon: "view-list-details-symbolic", tip: "List with titles" }]
-                Controls.ToolButton {
+                // House buttons like "Save these" beside them: a flat toggle
+                // next to a bordered button read as two different kinds.
+                AppButton {
                     required property var modelData
-                    Kirigami.Theme.inherit: true
                     icon.name: modelData.icon
                     checkable: true
                     checked: page.listView === modelData.list
@@ -1314,9 +1330,9 @@ Kirigami.ScrollablePage {
             Layout.fillWidth: true
             Layout.leftMargin: Kirigami.Units.largeSpacing
             Layout.rightMargin: Kirigami.Units.largeSpacing
-            Layout.alignment: Qt.AlignHCenter
+            Layout.alignment: Qt.AlignLeft
             readonly property int idealButtonWidth: 110
-            columns: Math.max(1, Math.floor((applicationWindow().width - Kirigami.Units.gridUnit * 2) / idealButtonWidth))
+            columns: Math.max(1, Math.floor(page.bodyWidth / idealButtonWidth))
             rowSpacing: Kirigami.Units.smallSpacing
             columnSpacing: Kirigami.Units.smallSpacing
 
@@ -1325,6 +1341,8 @@ Kirigami.ScrollablePage {
                 delegate: AppButton {
                     required property int index
                     text: (index * page.pageSize + 1) + "-" + Math.min((index + 1) * page.pageSize, page.shownEpisodeCount)
+                    // A star when a favourite is in here, so it can be found in a long show.
+                    icon.name: page.rangeHasFavorite(index) ? "starred-symbolic" : ""
                     checkable: true
                     checked: page.currentPage === index
                     onClicked: page.showPage(index)
@@ -1472,15 +1490,16 @@ Kirigami.ScrollablePage {
                             onTapped: page.openEpisodeMenu(model.episode_id, model.number)
                         }
 
-                        // Starred: a heart in the corner opposite the saved dot.
-                        Controls.Label {
+                        // Starred: a star in the corner opposite the saved dot.
+                        Kirigami.Icon {
                             visible: page.isFavorite(model.number)
                             anchors.left: parent.left
                             anchors.top: parent.top
-                            anchors.leftMargin: 4
-                            anchors.topMargin: 1
-                            text: "\u2665"
-                            font.pixelSize: Math.max(10, Math.round(episodeGrid.cellSize * 0.2))
+                            anchors.margins: 3
+                            width: Math.max(10, Math.round(episodeGrid.cellSize * 0.2))
+                            height: width
+                            source: "starred-symbolic"
+                            isMask: true
                             color: (episodeCell.watched || cellHover.hovered)
                                 ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.highlightColor
                         }
@@ -1629,11 +1648,8 @@ Kirigami.ScrollablePage {
                             Controls.ToolButton {
                                 Kirigami.Theme.inherit: true
                                 readonly property bool starred: page.isFavorite(row.model.number)
-                                text: starred ? "\u2665" : ""
-                                icon.name: starred ? "" : "emblem-favorite-symbolic"
-                                display: starred ? Controls.AbstractButton.TextOnly : Controls.AbstractButton.IconOnly
-                                font.pixelSize: Kirigami.Units.iconSizes.small
-                                palette.buttonText: Kirigami.Theme.highlightColor
+                                icon.name: starred ? "starred-symbolic" : "non-starred-symbolic"
+                                icon.color: starred ? Kirigami.Theme.highlightColor : Kirigami.Theme.textColor
                                 opacity: starred || rowHover.hovered ? 1 : 0.5
                                 onClicked: page.toggleFavorite(row.model.number)
                                 Controls.ToolTip.visible: hovered

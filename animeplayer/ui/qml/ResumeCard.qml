@@ -141,9 +141,12 @@ Item {
         }
     }
 
+    // Sized to the frame as drawn, scale included, so it hugs its edge.
     Rectangle {
-        anchors.fill: frame
-        radius: frame.radius
+        anchors.centerIn: frame
+        width: frame.width * frame.scale
+        height: frame.height * frame.scale
+        radius: frame.radius * frame.scale
         color: "transparent"
         border.width: 2
         border.color: Kirigami.Theme.highlightColor

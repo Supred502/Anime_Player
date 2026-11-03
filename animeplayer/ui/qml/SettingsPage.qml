@@ -203,7 +203,7 @@ Kirigami.ScrollablePage {
             }
             RowLayout {
                 visible: page.loggedIn
-                Controls.Button {
+                AppButton {
                     // The QQC2 desktop style sets Kirigami.Theme.inherit = false on its
                     // controls, which stops the app's accent reaching them -- measured
                     // live: a page themed red still drew Breeze-blue Sub/Dub buttons.
@@ -214,7 +214,7 @@ Kirigami.ScrollablePage {
                     icon.name: "view-refresh-symbolic"
                     onClicked: backend.refreshAnilistList()
                 }
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     text: "Log out"
                     onClicked: backend.logoutAnilist()
@@ -241,7 +241,7 @@ Kirigami.ScrollablePage {
                         onAccepted: backend.confirmAnilistLogin(tokenField.text)
                         echoMode: TextInput.Password
                     }
-                    Controls.Button {
+                    AppButton {
                         Kirigami.Theme.inherit: true
                         text: "Log in"
                         enabled: tokenField.text.trim() !== ""
@@ -424,25 +424,25 @@ Kirigami.ScrollablePage {
                 Layout.fillWidth: true
                 enabled: page.canDownload
                 spacing: Kirigami.Units.smallSpacing
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     text: "Change..."
                     icon.name: "document-open-folder-symbolic"
                     onClicked: folderDialog.open()
                 }
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     text: "Open"
                     icon.name: "folder-open-symbolic"
                     onClicked: backend.openDownloadFolder()
                 }
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     visible: !page.defaultFolder
                     text: "Default"
                     onClicked: page.chooseFolder("")
                 }
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     text: "Delete all downloads"
                     enabled: page.downloadBytes > 0
@@ -488,7 +488,7 @@ Kirigami.ScrollablePage {
             iconName: "phone-symbolic"
 
             RowLayout {
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     text: page.remoteRunning ? "Stop" : "Start"
                     onClicked: {
@@ -578,7 +578,7 @@ Kirigami.ScrollablePage {
                                                            : "Paste your Jimaku API key"
                         onAccepted: saveKeyButton.clicked()
                     }
-                    Controls.Button {
+                    AppButton {
                         id: saveKeyButton
                         Kirigami.Theme.inherit: true
                         text: "Save"
@@ -607,7 +607,7 @@ Kirigami.ScrollablePage {
                                  : "downloading " + Math.round(page.dictionaryProgress * 100) + "%")
                               : "not set up yet (10 MB, one-time)")
                     }
-                    Controls.Button {
+                    AppButton {
                         Kirigami.Theme.inherit: true
                         visible: page.dictionaryState === "missing"
                         text: "Set up now"
@@ -626,7 +626,7 @@ Kirigami.ScrollablePage {
             RowLayout {
                 spacing: Kirigami.Units.largeSpacing
                 Controls.Label { text: "Version " + backend.appVersion() }
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     text: "Check now"
                     icon.name: "view-refresh-symbolic"
@@ -655,13 +655,13 @@ Kirigami.ScrollablePage {
             Kirigami.Separator { Layout.fillWidth: true }
             RowLayout {
                 spacing: Kirigami.Units.smallSpacing
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     text: "Report a problem"
                     icon.name: "tools-report-bug-symbolic"
                     onClicked: Qt.openUrlExternally(backend.problemReportUrl(""))
                 }
-                Controls.Button {
+                AppButton {
                     Kirigami.Theme.inherit: true
                     text: "Copy details"
                     icon.name: "edit-copy-symbolic"

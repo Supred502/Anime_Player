@@ -13,6 +13,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any
 from pathlib import Path
 
 def _data_dir() -> Path:
@@ -186,6 +187,8 @@ CREATE TABLE IF NOT EXISTS favorite_episodes (
     slug_id        TEXT NOT NULL,
     episode_number REAL NOT NULL,
     created_at     REAL NOT NULL,
+    anime_title    TEXT NOT NULL DEFAULT '',   -- for the Library's Favourites tab
+    poster_url     TEXT,
     PRIMARY KEY (slug_id, episode_number)
 );
 
@@ -306,6 +309,8 @@ class Database:
                 "alt_titles": "TEXT NOT NULL DEFAULT ''",
             },
         )
+        self._ensure_columns("favorite_episodes", {"anime_title": "TEXT NOT NULL DEFAULT ''",
+                                                   "poster_url": "TEXT"})
         # Rows recording "looked up, found nothing" were kept forever, so a
         # show the matcher couldn't find once stayed unfindable even after the
         # matcher itself was fixed -- confirmed live: Re:Zero season 3 had been
@@ -724,13 +729,23 @@ class Database:
             ).fetchall()
         return [r["episode_number"] for r in rows]
 
-    def set_favorite_episode(self, slug_id: str, episode_number: float, favorite: bool) -> None:
+    def all_favorite_episodes(self) -> list[dict[str, Any]]:
+        """Every starred episode, newest first."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT slug_id, episode_number, anime_title, poster_url, created_at "
+                "FROM favorite_episodes ORDER BY created_at DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_favorite_episode(self, slug_id: str, episode_number: float, favorite: bool,
+                             anime_title: str = "", poster_url: str | None = None) -> None:
         with self._lock:
             if favorite:
                 self._conn.execute(
-                    "INSERT OR IGNORE INTO favorite_episodes (slug_id, episode_number, created_at) "
-                    "VALUES (?, ?, ?)",
-                    (slug_id, episode_number, time.time()),
+                    "INSERT OR IGNORE INTO favorite_episodes "
+                    "(slug_id, episode_number, created_at, anime_title, poster_url) VALUES (?, ?, ?, ?, ?)",
+                    (slug_id, episode_number, time.time(), anime_title, poster_url),
                 )
             else:
                 self._conn.execute(

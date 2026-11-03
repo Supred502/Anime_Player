@@ -26,8 +26,13 @@ Controls.Button {
     readonly property bool active: accented || checked
 
     hoverEnabled: true
-    leftPadding: Kirigami.Units.largeSpacing
-    rightPadding: Kirigami.Units.largeSpacing
+    // An icon with no words is a square the height of a worded button, so
+    // a row mixing the two (the player's toolbar) lines up.
+    readonly property bool iconOnly: text === ""
+    readonly property real squarePadding: Math.round((contentItem.implicitHeight + topPadding + bottomPadding
+                                                      - Kirigami.Units.iconSizes.small) / 2)
+    leftPadding: iconOnly ? squarePadding : Kirigami.Units.largeSpacing
+    rightPadding: iconOnly ? squarePadding : Kirigami.Units.largeSpacing
     topPadding: Kirigami.Units.smallSpacing
     bottomPadding: Kirigami.Units.smallSpacing
 
@@ -49,7 +54,9 @@ Controls.Button {
     // its text (the player's あ button) drew the text off to one side.
     contentItem: Item {
         implicitWidth: contentRow.implicitWidth
-        implicitHeight: contentRow.implicitHeight
+        // A line of text tall even with no text, for the same reason.
+        implicitHeight: Math.max(contentRow.implicitHeight, lineHeight.height)
+        FontMetrics { id: lineHeight; font: button.font }
 
         Row {
             id: contentRow

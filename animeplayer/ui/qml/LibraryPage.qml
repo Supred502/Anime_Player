@@ -35,7 +35,8 @@ Kirigami.ScrollablePage {
 
     function reload() {
         page.lists = backend.libraryLists()
-        if (page.tab !== "downloads" && page.tab !== "planning" && !page.currentList) page.tab = "downloads"
+        if (page.tab !== "downloads" && page.tab !== "planning" && page.tab !== "favourites" && !page.currentList)
+            page.tab = "downloads"
         if (page.tab === "downloads") {
             // The failed ones after what's running, by show and episode.
             page.queue = backend.downloadQueue().concat(
@@ -46,6 +47,9 @@ Kirigami.ScrollablePage {
         } else if (page.tab === "planning") {
             page.queue = []
             page.cards = page.loggedIn ? backend.planningShows() : []
+        } else if (page.tab === "favourites") {
+            page.queue = []
+            page.cards = backend.favoriteShows()
         } else {
             page.queue = []
             page.cards = backend.libraryItems(parseInt(page.tab))
@@ -94,6 +98,7 @@ Kirigami.ScrollablePage {
             page.progress = next
         }
         function onAnilistPlanningChanged() { if (page.tab === "planning") page.reload() }
+        function onFavoriteEpisodesChanged(slug) { if (page.tab === "favourites") page.reload() }
         function onAnilistAnimeResolved(result) {
             if (!page.opening) return
             page.opening = false
@@ -199,6 +204,15 @@ Kirigami.ScrollablePage {
                 onClicked: page.showTab("planning")
                 Controls.ToolTip.visible: hovered
                 Controls.ToolTip.text: "Your AniList Planning list"
+            }
+            AppButton {
+                text: "Favourites"
+                icon.name: "starred-symbolic"
+                checkable: true
+                checked: page.tab === "favourites"
+                onClicked: page.showTab("favourites")
+                Controls.ToolTip.visible: hovered
+                Controls.ToolTip.text: "Episodes you starred"
             }
             Repeater {
                 model: page.lists
@@ -371,15 +385,19 @@ Kirigami.ScrollablePage {
             Layout.topMargin: Kirigami.Units.gridUnit * 3
             visible: page.cards.length === 0 && page.queue.length === 0
             icon.name: page.tab === "downloads" ? "folder-download-symbolic"
-                     : page.tab === "planning" ? "view-list-details-symbolic" : "view-media-playlist-symbolic"
+                     : page.tab === "planning" ? "view-list-details-symbolic"
+                     : page.tab === "favourites" ? "non-starred-symbolic" : "view-media-playlist-symbolic"
             text: page.tab === "downloads" ? "Nothing downloaded"
                 : page.tab === "planning" ? (page.loggedIn ? "Your Planning list is empty" : "Log in to AniList to see your Planning list")
+                : page.tab === "favourites" ? "No favourite episodes yet"
                 : "This tab is empty"
             explanation: page.tab === "downloads"
                 ? "On a show's page, press Save season, or the download button on an episode."
                 : page.tab === "planning"
                   ? (page.loggedIn ? "Press Plan to Watch on any show to add it." : "Settings → AniList.")
-                  : "Open a show and press + Library to add it here."
+                  : page.tab === "favourites"
+                    ? "Right-click an episode on a show's page, or press the star while watching."
+                    : "Open a show and press + Library to add it here."
         }
 
         // ---- The cards --------------------------------------------------------
@@ -412,6 +430,9 @@ Kirigami.ScrollablePage {
                         subtitle: page.tab === "downloads"
                                   ? cell.modelData.count + (cell.modelData.count === 1 ? " episode · " : " episodes · ")
                                     + page.formatSize(cell.modelData.bytes)
+                                  : page.tab === "favourites"
+                                    ? (cell.modelData.episodes.length === 1 ? "Episode " : "Episodes ")
+                                      + cell.modelData.episodes.join(", ")
                                   : ""
                         onClicked: page.openShow(cell.modelData)
                     }

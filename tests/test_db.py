@@ -244,3 +244,18 @@ def test_favorite_episodes(tmp_path: Path) -> None:
     assert db.favorite_episodes("one-piece-1") == [24.5, 1071]
     db.set_favorite_episode("one-piece-1", 1071, False)
     assert db.favorite_episodes("one-piece-1") == [24.5]
+
+
+def test_favorite_episodes_gain_titles_on_an_older_database(tmp_path: Path) -> None:
+    import sqlite3
+    path = tmp_path / "a.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE favorite_episodes (slug_id TEXT NOT NULL, episode_number REAL NOT NULL, "
+                "created_at REAL NOT NULL, PRIMARY KEY (slug_id, episode_number))")
+    old.execute("INSERT INTO favorite_episodes VALUES ('one-piece-1', 1, 1.0)")
+    old.commit()
+    old.close()
+    db = Database(path)
+    db.set_favorite_episode("frieren-2", 3, True, "Frieren", "https://x/p.jpg")
+    rows = db.all_favorite_episodes()
+    assert [(r["slug_id"], r["anime_title"]) for r in rows] == [("frieren-2", "Frieren"), ("one-piece-1", "")]
