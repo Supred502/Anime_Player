@@ -140,6 +140,7 @@ Kirigami.ScrollablePage {
         autoNextToggle.checked = backend.getAutoNextEnabled()
         autoFullscreenToggle.checked = backend.getAutoFullscreenEnabled()
         deleteWatchedToggle.checked = backend.getDeleteAfterWatchingEnabled()
+        keepFavoritesToggle.checked = backend.getKeepFavoriteDownloads()
         newEpisodeToggle.checked = backend.getNewEpisodeAlertsEnabled()
         updateChecksToggle.checked = backend.getUpdateChecksEnabled()
         discordToggle.checked = backend.getDiscordEnabled()
@@ -397,6 +398,12 @@ Kirigami.ScrollablePage {
                 enabled: page.canDownload
                 text: "Clear saved episodes as I watch (keeps the one before)"
                 onToggled: backend.setDeleteAfterWatchingEnabled(checked)
+            }
+            AppCheckBox {
+                id: keepFavoritesToggle
+                enabled: page.canDownload && deleteWatchedToggle.checked
+                text: "Keep favourite episodes when clearing"
+                onToggled: backend.setKeepFavoriteDownloads(checked)
             }
             RowLayout {
                 Layout.fillWidth: true

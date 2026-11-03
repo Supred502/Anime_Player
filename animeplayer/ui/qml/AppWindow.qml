@@ -94,23 +94,6 @@ Kirigami.ApplicationWindow {
     // behavior), which reads as a stray sidebar here.
     pageStack.columnView.columnResizeMode: Kirigami.ColumnView.SingleColumn
 
-    // Each page fades in as it arrives -- a new section, a show's page, or
-    // the one underneath coming back -- rather than cutting straight to it.
-    Connections {
-        target: root.pageStack
-        function onCurrentItemChanged() {
-            pageFade.complete()
-            pageFade.target = root.pageStack.currentItem
-            if (pageFade.target) pageFade.start()
-        }
-    }
-    NumberAnimation {
-        id: pageFade
-        property: "opacity"
-        from: 0; to: 1
-        duration: Kirigami.Units.longDuration
-        easing.type: Easing.OutCubic
-    }
 
     // No global drawer: the nav bar below replaces it.
     globalDrawer: null

@@ -22,10 +22,10 @@ Item {
     readonly property bool hovered: hoverHandler.hovered
     signal clicked()
 
-    Rectangle {
+    RoundedFrame {
         id: frame
         anchors.fill: parent
-        radius: Kirigami.Units.mediumSpacing
+        radius: Kirigami.Units.largeSpacing + Kirigami.Units.smallSpacing
         clip: true
         color: Kirigami.Theme.alternateBackgroundColor
         scale: resume.hovered ? 1.02 : 1
@@ -59,11 +59,11 @@ Item {
 
             // A small upright poster beside the copy, so the card still shows
             // the art the way it was drawn.
-            Rectangle {
+            RoundedFrame {
                 Layout.preferredWidth: Math.round(resume.height * 0.5)
                 Layout.preferredHeight: Math.round(Layout.preferredWidth * 1.5)
                 Layout.alignment: Qt.AlignVCenter
-                radius: Kirigami.Units.smallSpacing
+                radius: Kirigami.Units.mediumSpacing
                 clip: true
                 color: "transparent"
 

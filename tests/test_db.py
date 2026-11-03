@@ -233,3 +233,14 @@ def test_anilist_by_status_follows_every_change(tmp_path):
     assert [e.anilist_id for e in db.get_anilist_by_status("PLANNING")] == [3]
     db.clear_anilist_list()                                 # logged out
     assert db.get_anilist_by_status("PLANNING") == []
+
+
+def test_favorite_episodes(tmp_path: Path) -> None:
+    db = Database(tmp_path / "a.db")
+    db.set_favorite_episode("one-piece-1", 1071, True)
+    db.set_favorite_episode("one-piece-1", 1071, True)    # twice is still once
+    db.set_favorite_episode("one-piece-1", 24.5, True)
+    db.set_favorite_episode("other-2", 3, True)
+    assert db.favorite_episodes("one-piece-1") == [24.5, 1071]
+    db.set_favorite_episode("one-piece-1", 1071, False)
+    assert db.favorite_episodes("one-piece-1") == [24.5]

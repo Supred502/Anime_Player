@@ -1064,6 +1064,12 @@ class AniListClient:
             next_airing_at=airing.get("airingAt"),
             status=media.get("status") or "",
             episode_art=_episode_art(media.get("streamingEpisodes") or []),
+            tags=tuple(
+                Tag(name=t["name"], description=t.get("description") or "", rank=t.get("rank") or 0,
+                    spoiler=bool(t.get("isMediaSpoiler") or t.get("isGeneralSpoiler")))
+                for t in sorted(media.get("tags") or [], key=lambda t: -(t.get("rank") or 0))
+                if t.get("name")
+            ),
         )
 
     # Six rounds is plenty: each one steps one sequel/prequel further from
@@ -1325,6 +1331,7 @@ query ($id: Int!) {
     status
     nextAiringEpisode { episode airingAt }
     streamingEpisodes { title thumbnail }
+    tags { name description rank isMediaSpoiler isGeneralSpoiler }
     reviews(perPage: 6, sort: RATING_DESC) {
       nodes {
         id
@@ -1535,6 +1542,17 @@ class MediaExtras:
     # show still airing -- the episode list falls back to the source's own
     # titles and a plain number.
     episode_art: dict[int, tuple[str, str]] = field(default_factory=dict)
+    # AniList's tags, most relevant first. More specific than the genres
+    # ("Time Skip", "Found Family"); some give the plot away.
+    tags: tuple["Tag", ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class Tag:
+    name: str
+    description: str
+    rank: int        # 0-100: how strongly it applies, as voted
+    spoiler: bool
 
 
 def _is_side_content(media: dict, anchor: dict) -> bool:

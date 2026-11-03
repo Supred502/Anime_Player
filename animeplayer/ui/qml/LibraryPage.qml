@@ -422,11 +422,15 @@ Kirigami.ScrollablePage {
                         anchors.right: parent.right
                         anchors.margins: Kirigami.Units.smallSpacing
                         visible: page.currentList !== null && card.hovered
+                        // Hover left to a handler: a control taking the hover made the card
+                        // underneath lose it, which hid this, which gave it back -- a flicker.
+                        hoverEnabled: false
+                        HoverHandler { id: removeHover; cursorShape: Qt.PointingHandCursor }
                         icon.name: "dialog-cancel-symbolic"
-                        background: Rectangle { radius: height / 2; color: Qt.rgba(0, 0, 0, 0.65) }
+                        background: Rectangle { radius: height / 2; color: Qt.rgba(0, 0, 0, removeHover.hovered ? 0.85 : 0.65) }
                         onClicked: backend.removeShowFromLibrary(page.currentList.id, cell.modelData.slug_id,
                                                                cell.modelData.anilist_id || 0)
-                        Controls.ToolTip.visible: hovered
+                        Controls.ToolTip.visible: removeHover.hovered
                         Controls.ToolTip.text: "Remove from " + (page.currentList ? page.currentList.name : "")
                     }
                 }

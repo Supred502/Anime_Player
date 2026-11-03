@@ -32,6 +32,7 @@ Kirigami.ScrollablePage {
     property bool startWithRecommendations: false
     // Set by Home's genre strip.
     property string startGenre: ""
+    property string startTag: ""      // an AniList tag, from a chip on a show's page
 
     // The last preset clicked, purely so the picker can say what it was. The
     // preset itself only *sets* filters -- the controls stay the truth, so a
@@ -248,7 +249,7 @@ Kirigami.ScrollablePage {
     // The Continue nav entry opens this page at a category with no label,
     // which this used to miss -- so visiting Continue saved "Continue
     // Watching" as the Browse state, and Browse opened on it afterwards.
-    readonly property bool openedAtTarget: page.startGenre !== ""
+    readonly property bool openedAtTarget: page.startGenre !== "" || page.startTag !== ""
         || page.startListStatus !== "" || page.startWithRecommendations
         || page.startLabel !== "" || page.startCategory !== "top-airing"
 
@@ -264,6 +265,9 @@ Kirigami.ScrollablePage {
             page.loadRecommendations()
         } else if (page.startGenre !== "") {
             page.genreStates = { [page.startGenre]: 1 }
+            page.applyPreset(page.startCategory)
+        } else if (page.startTag !== "") {
+            page.tagStates = { [page.startTag]: 1 }
             page.applyPreset(page.startCategory)
         } else if (page.startListStatus !== "") {
             page.listStates = { [page.startListStatus]: 1 }

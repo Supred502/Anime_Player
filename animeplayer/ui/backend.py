@@ -1996,6 +1996,30 @@ class Backend(QObject):
     def setDeleteAfterWatchingEnabled(self, value: bool) -> None:
         self._db.set_setting("delete_after_watching", "true" if value else "false")
 
+    # -- Favourite episodes -------------------------------------------------
+
+    favoriteEpisodesChanged = Signal(str)  # the show's slug
+
+    @Slot(str, result=list)
+    def favoriteEpisodes(self, slug_id: str) -> list[float]:
+        return self._db.favorite_episodes(slug_id)
+
+    @Slot(str, float, bool)
+    def setFavoriteEpisode(self, slug_id: str, episode_number: float, favorite: bool) -> None:
+        self._db.set_favorite_episode(slug_id, episode_number, favorite)
+        self.favoriteEpisodesChanged.emit(slug_id)
+
+    @Slot(result=bool)
+    def getKeepFavoriteDownloads(self) -> bool:
+        return (self._db.get_setting("keep_favorite_downloads") or "true") == "true"
+
+    @Slot(bool)
+    def setKeepFavoriteDownloads(self, value: bool) -> None:
+        self._db.set_setting("keep_favorite_downloads", "true" if value else "false")
+
+    def _kept_as_favorite(self, slug_id: str, episode_number: float) -> bool:
+        return self.getKeepFavoriteDownloads() and episode_number in self._db.favorite_episodes(slug_id)
+
     @Slot(int, bool)
     def episodeWatched(self, episode_id: int, dub: bool) -> None:
         """Called by the player once an episode has actually been watched
@@ -2012,7 +2036,9 @@ class Backend(QObject):
         watched = next((e for e in episodes if e.episode_id == episode_id), None)
         if anime is None or watched is None:
             # Nothing to reason about neighbours with; fall back to this one.
-            if self.getDeleteAfterWatchingEnabled() and self._db.get_download(episode_id, dub):
+            entry = self._db.get_download(episode_id, dub)
+            if (self.getDeleteAfterWatchingEnabled() and entry
+                    and not self._kept_as_favorite(entry.slug_id, entry.episode_number)):
                 self.removeDownload(episode_id, dub)
             return
 
@@ -2029,7 +2055,8 @@ class Backend(QObject):
             earlier = sorted(e.number for e in episodes if e.number < watched.number)
             keep_from = earlier[-1] if earlier else watched.number
             for entry in self._db.downloads_for(slug_id):
-                if entry.dub == dub and entry.status == "ready" and entry.episode_number < keep_from:
+                if (entry.dub == dub and entry.status == "ready" and entry.episode_number < keep_from
+                        and not self._kept_as_favorite(slug_id, entry.episode_number)):
                     self.removeDownload(entry.episode_id, entry.dub)
 
         auto_dub = self._db.get_auto_download(slug_id)
@@ -3506,6 +3533,8 @@ class Backend(QObject):
                 # {"12": {"title", "thumbnail"}} -- string keys: QML maps are keyed by string.
                 "episodeArt": {str(n): {"title": t, "thumbnail": u} for n, (t, u) in extras.episode_art.items()},
                 "related": related,
+                "tags": [{"name": t.name, "description": t.description, "rank": t.rank,
+                          "spoiler": t.spoiler} for t in extras.tags],
                 "recommendations": [
                     self._media_summary_to_card(m) for m in extras.recommendations
                 ],

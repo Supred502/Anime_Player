@@ -138,7 +138,7 @@ Kirigami.ScrollablePage {
         spacing: Kirigami.Units.gridUnit
 
         // ================= Who you are =================
-        Rectangle {
+        RoundedFrame {
             Layout.fillWidth: true
             Layout.preferredHeight: Kirigami.Units.gridUnit * 7
             radius: Kirigami.Units.smallSpacing * 2

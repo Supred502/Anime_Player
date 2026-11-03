@@ -71,10 +71,10 @@ Item {
             // scaling a layout child makes it overlap its neighbours by half
             // the growth in every direction, which in a tight grid reads as
             // the row jittering.
-            Rectangle {
+            RoundedFrame {
                 id: posterFrame
                 anchors.fill: parent
-                radius: Kirigami.Units.mediumSpacing
+                radius: Kirigami.Units.largeSpacing
                 clip: true
                 color: Kirigami.Theme.alternateBackgroundColor
                 scale: card.hovered ? 1.03 : 1.0

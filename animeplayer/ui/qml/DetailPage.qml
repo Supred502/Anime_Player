@@ -40,6 +40,8 @@ Kirigami.ScrollablePage {
     property var watchOrder: []
     property var unwatchedPrequels: []
     property var related: []
+    property var tags: []           // AniList's, most relevant first: {name, description, rank, spoiler}
+    property bool showSpoilerTags: false
     property var recommendations: []
     property var reviews: []
     // The next Japanese broadcast, when the show is still airing. Only ever
@@ -143,7 +145,10 @@ Kirigami.ScrollablePage {
     readonly property bool localFinished: !!page.localProgress && (
         (page.localProgress.duration_seconds > 0
          && page.localProgress.position_seconds >= page.localProgress.duration_seconds * 0.8)
-        || page.localProgress.episode_number <= page.anilistProgress)
+        // Past it on AniList (watched further somewhere else). Not the same
+        // episode: stopping partway into one AniList already counts is a
+        // rewatch of it, and Continue should pick that up where it stopped.
+        || page.localProgress.episode_number < page.anilistProgress)
     readonly property real resumeEpisode: {
         if (page.localProgress && !page.localFinished) return page.localProgress.episode_number
         if (page.localProgress && page.localFinished) {
@@ -233,6 +238,47 @@ Kirigami.ScrollablePage {
             poster_url: page.coverUrl,
             episode_number: number
         }
+    }
+
+    // Starred episodes. Re-read when any change (favoritesVersion), so the
+    // grid and list follow a star given from the menu or the player.
+    property int favoritesVersion: 0
+    readonly property var favorites: page.favoritesVersion >= 0 && page.anime && page.anime.slug_id
+        ? backend.favoriteEpisodes(page.anime.slug_id) : []
+    Connections {
+        target: backend
+        function onFavoriteEpisodesChanged(slug) { page.favoritesVersion++ }
+    }
+    function isFavorite(number) { return page.favorites.indexOf(number) >= 0 }
+    function toggleFavorite(number) {
+        backend.setFavoriteEpisode(page.anime.slug_id, number, !page.isFavorite(number))
+    }
+
+    // Right-click on an episode, in the grid or the list.
+    property var menuEpisode: null
+    Controls.Menu {
+        id: episodeMenu
+        Kirigami.Theme.inherit: true
+        Controls.MenuItem {
+            text: page.menuEpisode && page.isFavorite(page.menuEpisode.number)
+                  ? "Remove from favourites" : "Favourite"
+            icon.name: "emblem-favorite-symbolic"
+            onTriggered: page.toggleFavorite(page.menuEpisode.number)
+        }
+        Controls.MenuItem {
+            readonly property var saved: page.menuEpisode ? page.downloadFor(page.menuEpisode.episode_id) : null
+            visible: page.canDownload
+            height: visible ? implicitHeight : 0
+            text: !saved || saved.status === "failed" ? "Save offline"
+                : saved.status === "ready" ? "Remove the saved copy" : "Cancel saving"
+            icon.name: !saved || saved.status === "failed" ? "folder-download-symbolic"
+                     : saved.status === "ready" ? "edit-delete-symbolic" : "dialog-cancel-symbolic"
+            onTriggered: page.toggleDownload(page.menuEpisode.episode_id, page.menuEpisode.number)
+        }
+    }
+    function openEpisodeMenu(episodeId, number) {
+        page.menuEpisode = { episode_id: episodeId, number: number }
+        episodeMenu.popup()
     }
 
     function toggleDownload(episodeId, number) {
@@ -453,6 +499,7 @@ Kirigami.ScrollablePage {
             page.watchOrder = extras.watchOrder
             page.unwatchedPrequels = extras.unwatchedPrequels
             page.related = extras.related
+            page.tags = extras.tags || []
             page.recommendations = extras.recommendations
             page.reviews = extras.reviews
             page.airingStatus = extras.airingStatus || ""
@@ -782,11 +829,21 @@ Kirigami.ScrollablePage {
                 layer.effect: MultiEffect { blurEnabled: true; blur: 1.0; blurMax: 48 }
             }
 
+            // Solid behind the words, the art showing beside them: copy laid
+            // over a busy banner was hard work to read.
             Rectangle {
+                id: textShade
                 anchors.fill: parent
+                readonly property color bg: Kirigami.Theme.backgroundColor
+                // Where the text column ends, as a share of the width.
+                readonly property real textEnd: width > 0
+                    ? Math.min(0.85, (headerContent.x + headerText.x + headerText.width) / width) : 0.6
                 gradient: Gradient {
-                    GradientStop { position: 0.0; color: Qt.rgba(0, 0, 0, 0.55) }
-                    GradientStop { position: 1.0; color: Qt.rgba(0, 0, 0, 0.8) }
+                    orientation: Gradient.Horizontal
+                    GradientStop { position: 0.0; color: Qt.rgba(textShade.bg.r, textShade.bg.g, textShade.bg.b, 0.96) }
+                    GradientStop { position: textShade.textEnd; color: Qt.rgba(textShade.bg.r, textShade.bg.g, textShade.bg.b, 0.9) }
+                    GradientStop { position: Math.min(1, textShade.textEnd + 0.15); color: Qt.rgba(textShade.bg.r, textShade.bg.g, textShade.bg.b, 0.45) }
+                    GradientStop { position: 1.0; color: Qt.rgba(textShade.bg.r, textShade.bg.g, textShade.bg.b, 0.25) }
                 }
             }
 
@@ -819,11 +876,11 @@ Kirigami.ScrollablePage {
                 anchors.rightMargin: Kirigami.Units.largeSpacing
                 spacing: Kirigami.Units.largeSpacing
 
-                Rectangle {
+                RoundedFrame {
                     Layout.preferredWidth: Kirigami.Units.gridUnit * 9
                     Layout.preferredHeight: Math.round(width * 1.5)
                     Layout.alignment: Qt.AlignTop
-                    radius: Kirigami.Units.mediumSpacing
+                    radius: Kirigami.Units.largeSpacing
                     clip: true
                     color: Qt.rgba(1, 1, 1, 0.08)
 
@@ -844,8 +901,12 @@ Kirigami.ScrollablePage {
                 }
 
                 ColumnLayout {
+                    id: headerText
                     Layout.fillWidth: true
-                    Layout.alignment: Qt.AlignTop
+                    // A line length that reads: across a 1920px window the
+                    // synopsis ran 250 characters to a line.
+                    Layout.maximumWidth: Kirigami.Units.gridUnit * 44
+                    Layout.alignment: Qt.AlignTop | Qt.AlignLeft
                     spacing: Kirigami.Units.smallSpacing
 
                     SelectableText {
@@ -904,6 +965,73 @@ Kirigami.ScrollablePage {
                         font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                         HoverHandler { cursorShape: Qt.PointingHandCursor }
                         TapHandler { onTapped: synopsis.expanded = !synopsis.expanded }
+                    }
+
+                    // AniList's tags: more specific than genres. Click one to
+                    // browse shows that have it. Spoilers stay hidden until asked.
+                    Flow {
+                        id: tagFlow
+                        Layout.fillWidth: true
+                        Layout.topMargin: Kirigami.Units.smallSpacing
+                        visible: page.tags.length > 0
+                        spacing: Kirigami.Units.smallSpacing
+                        property bool showAll: false
+                        readonly property var plain: page.tags.filter((t) => !t.spoiler)
+                        readonly property var spoilers: page.tags.filter((t) => t.spoiler)
+                        readonly property int shortCount: 8
+
+                        Repeater {
+                            model: tagFlow.plain.slice(0, tagFlow.showAll ? tagFlow.plain.length : tagFlow.shortCount)
+                                   .concat(page.showSpoilerTags ? tagFlow.spoilers : [])
+                            delegate: Rectangle {
+                                id: tagChip
+                                required property var modelData
+                                radius: height / 2
+                                color: tagHover.hovered ? Qt.rgba(1, 1, 1, 0.24) : Qt.rgba(1, 1, 1, 0.1)
+                                border.width: modelData.spoiler ? 1 : 0
+                                border.color: Kirigami.Theme.negativeTextColor
+                                Behavior on color { ColorAnimation { duration: 100 } }
+                                width: tagText.implicitWidth + Kirigami.Units.largeSpacing * 1.5
+                                height: tagText.implicitHeight + Kirigami.Units.smallSpacing * 1.5
+                                Controls.Label {
+                                    id: tagText
+                                    anchors.centerIn: parent
+                                    text: tagChip.modelData.name
+                                    color: "white"
+                                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                }
+                                HoverHandler { id: tagHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: applicationWindow().goBrowse({ startTag: tagChip.modelData.name }) }
+                                Controls.ToolTip.visible: tagHover.hovered
+                                Controls.ToolTip.delay: 400
+                                Controls.ToolTip.text: (tagChip.modelData.description ? tagChip.modelData.description + "\n" : "")
+                                    + tagChip.modelData.rank + "% relevant · click for more shows like this"
+                            }
+                        }
+                        // "+5 more" and "3 spoiler tags": links rather than chips.
+                        Repeater {
+                            model: [
+                                { show: tagFlow.plain.length > tagFlow.shortCount,
+                                  text: tagFlow.showAll ? "Fewer" : "+" + (tagFlow.plain.length - tagFlow.shortCount) + " more",
+                                  act: () => { tagFlow.showAll = !tagFlow.showAll } },
+                                { show: tagFlow.spoilers.length > 0,
+                                  text: page.showSpoilerTags ? "Hide spoiler tags"
+                                      : tagFlow.spoilers.length + (tagFlow.spoilers.length === 1 ? " spoiler tag" : " spoiler tags"),
+                                  act: () => { page.showSpoilerTags = !page.showSpoilerTags } },
+                            ]
+                            delegate: Controls.Label {
+                                required property var modelData
+                                visible: modelData.show
+                                text: modelData.text
+                                color: "white"
+                                opacity: linkHover.hovered ? 1 : 0.65
+                                font.bold: true
+                                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                topPadding: Kirigami.Units.smallSpacing * 0.75
+                                HoverHandler { id: linkHover; cursorShape: Qt.PointingHandCursor }
+                                TapHandler { onTapped: modelData.act() }
+                            }
+                        }
                     }
 
                     RowLayout {
@@ -1008,6 +1136,8 @@ Kirigami.ScrollablePage {
                         }
                     }
                 }
+                // Takes the room the capped text leaves, so nothing drifts.
+                Item { Layout.fillWidth: true }
             }
         }
 
@@ -1334,25 +1464,39 @@ Kirigami.ScrollablePage {
 
                         HoverHandler { id: cellHover; cursorShape: Qt.PointingHandCursor }
                         TapHandler { onTapped: page.requestEpisode(model.number) }
-                        // Right-click saves or removes it. A second button on
-                        // every cell would double the grid's weight for
-                        // something used on a handful of episodes.
+                        // Right-click to favourite, save or remove it. A
+                        // button for each on every cell would double the
+                        // grid's weight for something used on a handful.
                         TapHandler {
                             acceptedButtons: Qt.RightButton
-                            onTapped: if (page.canDownload) page.toggleDownload(model.episode_id, model.number)
+                            onTapped: page.openEpisodeMenu(model.episode_id, model.number)
+                        }
+
+                        // Starred: a heart in the corner opposite the saved dot.
+                        Controls.Label {
+                            visible: page.isFavorite(model.number)
+                            anchors.left: parent.left
+                            anchors.top: parent.top
+                            anchors.leftMargin: 4
+                            anchors.topMargin: 1
+                            text: "\u2665"
+                            font.pixelSize: Math.max(10, Math.round(episodeGrid.cellSize * 0.2))
+                            color: (episodeCell.watched || cellHover.hovered)
+                                ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.highlightColor
                         }
 
                         Controls.ToolTip.visible: cellHover.hovered
                         Controls.ToolTip.text: {
                             let parts = []
                             if (model.title !== "") parts.push(model.title)
+                            if (page.isFavorite(model.number)) parts.push("Favourite")
                             let state = page.downloadFor(model.episode_id)
-                            if (state && state.status === "ready") parts.push("Saved -- right-click to remove")
-                            else if (state && state.status === "downloading")
-                                parts.push((state.message || "Saving...") + " -- right-click to cancel")
-                            else if (state && state.status === "queued") parts.push("Queued -- right-click to cancel")
+                            if (state && state.status === "ready") parts.push("Saved offline")
+                            else if (state && state.status === "downloading") parts.push(state.message || "Saving...")
+                            else if (state && state.status === "queued") parts.push("Queued to save")
                             else if (state && state.status === "failed") parts.push("Failed: " + state.message)
-                            else if (page.canDownload) parts.push("Right-click to save offline")
+                            parts.push(page.canDownload ? "Right-click to favourite or save offline"
+                                                        : "Right-click to favourite")
                             return parts.join("\n")
                         }
                         Controls.ToolTip.delay: 400
@@ -1397,7 +1541,7 @@ Kirigami.ScrollablePage {
                         TapHandler { onTapped: page.requestEpisode(row.model.number) }
                         TapHandler {
                             acceptedButtons: Qt.RightButton
-                            onTapped: if (page.canDownload) page.toggleDownload(row.model.episode_id, row.model.number)
+                            onTapped: page.openEpisodeMenu(row.model.episode_id, row.model.number)
                         }
 
                         RowLayout {
@@ -1407,10 +1551,10 @@ Kirigami.ScrollablePage {
 
                             // The thumbnail, or the number on its own when
                             // AniList has no art for this one.
-                            Rectangle {
+                            RoundedFrame {
                                 Layout.fillHeight: true
                                 Layout.preferredWidth: height * 16 / 9
-                                radius: Kirigami.Units.smallSpacing
+                                radius: Kirigami.Units.mediumSpacing
                                 color: Qt.rgba(0, 0, 0, 0.35)
                                 clip: true
                                 Image {
@@ -1481,6 +1625,19 @@ Kirigami.ScrollablePage {
                                 Layout.preferredHeight: Kirigami.Units.iconSizes.small
                                 source: "checkmark-symbolic"
                                 color: Kirigami.Theme.highlightColor
+                            }
+                            Controls.ToolButton {
+                                Kirigami.Theme.inherit: true
+                                readonly property bool starred: page.isFavorite(row.model.number)
+                                text: starred ? "\u2665" : ""
+                                icon.name: starred ? "" : "emblem-favorite-symbolic"
+                                display: starred ? Controls.AbstractButton.TextOnly : Controls.AbstractButton.IconOnly
+                                font.pixelSize: Kirigami.Units.iconSizes.small
+                                palette.buttonText: Kirigami.Theme.highlightColor
+                                opacity: starred || rowHover.hovered ? 1 : 0.5
+                                onClicked: page.toggleFavorite(row.model.number)
+                                Controls.ToolTip.visible: hovered
+                                Controls.ToolTip.text: starred ? "Remove from favourites" : "Favourite"
                             }
                             Controls.ToolButton {
                                 Kirigami.Theme.inherit: true

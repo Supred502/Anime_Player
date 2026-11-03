@@ -180,6 +180,15 @@ CREATE TABLE IF NOT EXISTS airing_seen (
     episode    INTEGER NOT NULL
 );
 
+-- Episodes the user starred. By show and number, like downloads, so a
+-- starred episode's saved copy can be kept when watched ones are cleared.
+CREATE TABLE IF NOT EXISTS favorite_episodes (
+    slug_id        TEXT NOT NULL,
+    episode_number REAL NOT NULL,
+    created_at     REAL NOT NULL,
+    PRIMARY KEY (slug_id, episode_number)
+);
+
 -- Library tabs the user makes ("Next 30 days", "With friends"...), and
 -- which shows are in each. A show is kept by its source slug, which is what
 -- opens its page; the rest is what its card shows.
@@ -703,6 +712,31 @@ class Database:
                 "ON CONFLICT(anilist_id) DO UPDATE SET episode=MAX(episode, excluded.episode)",
                 (anilist_id, episode),
             )
+            self._conn.commit()
+
+    # -- favourite episodes ------------------------------------------------
+
+    def favorite_episodes(self, slug_id: str) -> list[float]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT episode_number FROM favorite_episodes WHERE slug_id = ? ORDER BY episode_number",
+                (slug_id,),
+            ).fetchall()
+        return [r["episode_number"] for r in rows]
+
+    def set_favorite_episode(self, slug_id: str, episode_number: float, favorite: bool) -> None:
+        with self._lock:
+            if favorite:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO favorite_episodes (slug_id, episode_number, created_at) "
+                    "VALUES (?, ?, ?)",
+                    (slug_id, episode_number, time.time()),
+                )
+            else:
+                self._conn.execute(
+                    "DELETE FROM favorite_episodes WHERE slug_id = ? AND episode_number = ?",
+                    (slug_id, episode_number),
+                )
             self._conn.commit()
 
     # -- downloads ---------------------------------------------------------

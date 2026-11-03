@@ -802,6 +802,27 @@ Kirigami.Page {
         anchors.margins: Kirigami.Units.largeSpacing
         visible: !page.loadingStream && page.controlsVisible
 
+        // Star this episode -- kept when watched ones are cleared (Settings).
+        AppButton {
+            id: favoriteButton
+            property int version: 0
+            readonly property bool starred: version >= 0 && !!page.anime.slug_id
+                && backend.favoriteEpisodes(page.anime.slug_id).indexOf(page.episodeNumber) >= 0
+            Connections {
+                target: backend
+                function onFavoriteEpisodesChanged(slug) { favoriteButton.version++ }
+            }
+            visible: !!page.anime.slug_id
+            text: starred ? "\u2665" : ""
+            icon.name: starred ? "" : "emblem-favorite-symbolic"
+            Layout.preferredWidth: implicitHeight * 1.3
+            leftPadding: 0
+            rightPadding: 0
+            checked: starred
+            onClicked: backend.setFavoriteEpisode(page.anime.slug_id, page.episodeNumber, !starred)
+            Controls.ToolTip.visible: hovered
+            Controls.ToolTip.text: starred ? "Remove from favourites" : "Favourite this episode"
+        }
         AppButton {
             visible: backend.learnFeatures
             text: "\u3042"
