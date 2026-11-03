@@ -87,8 +87,9 @@ def _use_themable_style(compat: bool) -> None:
         QQuickStyle.setStyle(_QML_STYLE)
     else:
         # No KDE here (Windows): Fusion, coloured Breeze Dark by
-        # ui/kirigami_compat.py, is the closest stock style.
-        QQuickStyle.setStyle("Fusion")
+        # ui/kirigami_compat.py, is the closest stock style -- with fading
+        # popups added (ui/qml_compat/AnimePlayerStyle).
+        QQuickStyle.setStyle("AnimePlayerStyle")
 
 
 def _selftest(out_path: str) -> int:

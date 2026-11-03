@@ -80,7 +80,17 @@ Item {
                 scale: card.hovered ? 1.03 : 1.0
                 Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
 
-                Image {
+                // A visible placeholder beats a flash of empty frame while
+                // a whole grid of posters loads in.
+                Kirigami.Icon {
+                    anchors.centerIn: parent
+                    source: "video-television"
+                    width: Kirigami.Units.iconSizes.large
+                    height: width
+                    opacity: 0.35 * (1 - poster.opacity)
+                    visible: opacity > 0
+                }
+                FadeImage {
                     id: poster
                     anchors.fill: parent
                     source: card.posterUrl
@@ -91,16 +101,6 @@ Item {
                     // small, and sourceSize also stops the scale animation
                     // resampling the original every frame.
                     sourceSize.width: Math.max(1, Math.round(card.width * 2))
-                    // A visible placeholder beats a flash of empty frame while
-                    // a whole grid of posters loads in.
-                    Kirigami.Icon {
-                        anchors.centerIn: parent
-                        source: "video-television"
-                        width: Kirigami.Units.iconSizes.large
-                        height: width
-                        opacity: 0.35
-                        visible: parent.status !== Image.Ready
-                    }
                 }
 
                 // Bottom scrim. The pills sit on top of whatever the poster

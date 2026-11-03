@@ -146,12 +146,12 @@ Kirigami.ScrollablePage {
             clip: true
             visible: page.loggedIn
 
-            Image {
+            FadeImage {
                 anchors.fill: parent
                 source: page.profile.banner || ""
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
-                opacity: 0.45
+                shownOpacity: 0.45
             }
             Rectangle {
                 anchors.fill: parent
@@ -449,7 +449,7 @@ Kirigami.ScrollablePage {
                             RowLayout {
                                 anchors.fill: parent
                                 spacing: Kirigami.Units.largeSpacing
-                                Image {
+                                FadeImage {
                                     Layout.fillHeight: true
                                     Layout.preferredWidth: height * 0.7
                                     source: activityRow.modelData.poster_url

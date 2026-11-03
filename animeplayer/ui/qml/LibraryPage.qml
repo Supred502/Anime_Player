@@ -267,7 +267,7 @@ Kirigami.ScrollablePage {
                     anchors.margins: Kirigami.Units.largeSpacing
                     spacing: Kirigami.Units.largeSpacing
 
-                    Image {
+                    FadeImage {
                         Layout.preferredWidth: Kirigami.Units.gridUnit * 2
                         Layout.preferredHeight: Kirigami.Units.gridUnit * 3
                         source: row.modelData.poster_url

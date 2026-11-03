@@ -176,7 +176,7 @@ Kirigami.ScrollablePage {
                                 font.bold: true
                                 text: new Date(row.modelData.airing_at * 1000).toLocaleTimeString(Qt.locale(), "HH:mm")
                             }
-                            Image {
+                            FadeImage {
                                 Layout.preferredWidth: Kirigami.Units.gridUnit * 1.6
                                 Layout.preferredHeight: Kirigami.Units.gridUnit * 2.4
                                 source: row.modelData.poster_url

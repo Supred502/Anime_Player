@@ -769,7 +769,7 @@ Kirigami.ScrollablePage {
             implicitHeight: Math.max(headerContent.implicitHeight + Kirigami.Units.gridUnit * 2,
                                      Kirigami.Units.gridUnit * 16)
 
-            Image {
+            FadeImage {
                 anchors.fill: parent
                 source: page.bannerUrl !== "" ? page.bannerUrl : page.coverUrl
                 fillMode: Image.PreserveAspectCrop
@@ -827,7 +827,7 @@ Kirigami.ScrollablePage {
                     clip: true
                     color: Qt.rgba(1, 1, 1, 0.08)
 
-                    Image {
+                    FadeImage {
                         anchors.fill: parent
                         source: page.coverUrl
                         fillMode: Image.PreserveAspectCrop

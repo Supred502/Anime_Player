@@ -34,13 +34,13 @@ Item {
         // The poster is portrait and this box is landscape, so it is cropped
         // hard and blurred into a backdrop rather than letterboxed. The
         // readable copy sits on top of it.
-        Image {
+        FadeImage {
             anchors.fill: parent
             source: resume.posterUrl
             fillMode: Image.PreserveAspectCrop
             asynchronous: true
             verticalAlignment: Image.AlignTop
-            opacity: 0.55
+            shownOpacity: 0.55
         }
 
         Rectangle {
@@ -67,7 +67,7 @@ Item {
                 clip: true
                 color: "transparent"
 
-                Image {
+                FadeImage {
                     anchors.fill: parent
                     source: resume.posterUrl
                     fillMode: Image.PreserveAspectCrop

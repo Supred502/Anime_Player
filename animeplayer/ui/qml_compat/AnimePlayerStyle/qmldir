@@ -1,0 +1,8 @@
+module AnimePlayerStyle
+# Fusion, with the fades the desktop's Breeze style gives popups and Fusion
+# doesn't: without them on Windows and the Steam Deck every menu and dialog
+# just snapped into place. Everything not listed here is Fusion's own.
+import QtQuick.Controls.Fusion auto
+Popup 6.0 Popup.qml
+Dialog 6.0 Dialog.qml
+Menu 6.0 Menu.qml

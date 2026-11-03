@@ -51,17 +51,19 @@ Kirigami.ApplicationWindow {
     // untouched item per Kirigami colour set (View, Window, Button, ...
     // Header), holding the desktop's own surface colours.
     property bool surfacesBlackened: false
-    Repeater {
-        id: themeReference
-        model: 7
-        Item {
-            required property int index
-            objectName: "themeReference"
-            parent: root.windowRoot
-            width: 0
-            height: 0
-            Kirigami.Theme.inherit: false
-            Kirigami.Theme.colorSet: index
+    // In a holder of their own: a Repeater's items reparented one by one
+    // made Qt warn about stacking order on every start.
+    Item {
+        parent: root.windowRoot
+        Repeater {
+            id: themeReference
+            model: 7
+            Item {
+                required property int index
+                objectName: "themeReference"
+                Kirigami.Theme.inherit: false
+                Kirigami.Theme.colorSet: index
+            }
         }
     }
     function platformSurfaces(colorSet) {
@@ -91,6 +93,24 @@ Kirigami.ApplicationWindow {
     // "columns" once the window is wide enough (its default adaptive
     // behavior), which reads as a stray sidebar here.
     pageStack.columnView.columnResizeMode: Kirigami.ColumnView.SingleColumn
+
+    // Each page fades in as it arrives -- a new section, a show's page, or
+    // the one underneath coming back -- rather than cutting straight to it.
+    Connections {
+        target: root.pageStack
+        function onCurrentItemChanged() {
+            pageFade.complete()
+            pageFade.target = root.pageStack.currentItem
+            if (pageFade.target) pageFade.start()
+        }
+    }
+    NumberAnimation {
+        id: pageFade
+        property: "opacity"
+        from: 0; to: 1
+        duration: Kirigami.Units.longDuration
+        easing.type: Easing.OutCubic
+    }
 
     // No global drawer: the nav bar below replaces it.
     globalDrawer: null
