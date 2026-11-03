@@ -108,7 +108,8 @@ ColumnLayout {
             // subtitles.
             // Room above and below as well as at the ends: a hovered card
             // grows past its box, and the clip cut its border off the top.
-            height: sizer.heightForWidth(row.cardWidth) + Kirigami.Units.smallSpacing * 3
+            // largeSpacing: the 3% zoom plus the 2px border needs ~7px.
+            height: sizer.heightForWidth(row.cardWidth) + Kirigami.Units.largeSpacing * 2
             spacing: Kirigami.Units.largeSpacing
             clip: true
             reuseItems: true
@@ -116,8 +117,8 @@ ColumnLayout {
             // Cards lift and grow on hover, and a clipped ListView would cut
             // the grown edge off. The margin gives the outermost card room to
             // grow into on both sides.
-            leftMargin: Kirigami.Units.smallSpacing
-            rightMargin: Kirigami.Units.smallSpacing
+            leftMargin: Kirigami.Units.largeSpacing
+            rightMargin: Kirigami.Units.largeSpacing
 
             // Measures only; never drawn. AnimeCard deliberately doesn't
             // expose its height as an implicit property (see its comments),
@@ -129,8 +130,8 @@ ColumnLayout {
                 required property var model
 
                 width: row.cardWidth
-                y: Kirigami.Units.smallSpacing
-                height: shelf.height - Kirigami.Units.smallSpacing * 3
+                y: Kirigami.Units.largeSpacing
+                height: shelf.height - Kirigami.Units.largeSpacing * 2
                 posterUrl: model.poster_url || ""
                 anilistId: model.anilist_id || 0
                 slugId: model.slug_id || ""
@@ -152,6 +153,7 @@ ColumnLayout {
             Row {
                 anchors.left: parent.left
                 anchors.leftMargin: shelf.leftMargin
+                y: Kirigami.Units.largeSpacing
                 spacing: shelf.spacing
                 visible: row.loading && shelf.count === 0
                 Repeater {

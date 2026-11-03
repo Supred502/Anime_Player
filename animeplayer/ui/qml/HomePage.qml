@@ -244,8 +244,8 @@ Kirigami.ScrollablePage {
                     reuseItems: true
                     boundsBehavior: Flickable.StopAtBounds
                     // Room for a hovered card to grow into; see PosterRow.
-                    leftMargin: Kirigami.Units.smallSpacing
-                    rightMargin: Kirigami.Units.smallSpacing
+                    leftMargin: Kirigami.Units.largeSpacing
+                    rightMargin: Kirigami.Units.largeSpacing
                     model: page.continueWatching
 
                     delegate: ResumeCard {
@@ -256,8 +256,8 @@ Kirigami.ScrollablePage {
                         width: Math.min(Kirigami.Units.gridUnit * 22,
                                         Math.max(Kirigami.Units.gridUnit * 15,
                                                  page.availableWidth / 2.4))
-                        y: Kirigami.Units.smallSpacing
-                        height: resumeRow.height - Kirigami.Units.smallSpacing * 3
+                        y: Kirigami.Units.largeSpacing
+                        height: resumeRow.height - Kirigami.Units.largeSpacing * 2
                         posterUrl: modelData.poster_url || ""
                         title: modelData.title
                         subtitle: "Episode " + modelData.episode_number

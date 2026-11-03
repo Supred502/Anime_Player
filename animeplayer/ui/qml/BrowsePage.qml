@@ -716,6 +716,15 @@ Kirigami.ScrollablePage {
                 id: queryField
                 Layout.fillWidth: true
                 placeholderText: "Search anime..."
+                topPadding: Kirigami.Units.smallSpacing
+                bottomPadding: Kirigami.Units.smallSpacing
+                // The buttons' roundness and outline, not the system's square box.
+                background: Rectangle {
+                    radius: Kirigami.Units.largeSpacing
+                    color: Kirigami.Theme.alternateBackgroundColor
+                    border.width: 1
+                    border.color: queryField.activeFocus ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
+                }
                 onAccepted: page.submitSearch()
                 // Recent searches drop down while the box has focus, filtered
                 // by what's typed so far -- as in a browser's address bar.
@@ -1213,7 +1222,7 @@ Kirigami.ScrollablePage {
         readonly property int columns: Math.max(1, Math.floor(width / idealCellWidth))
         model: resultRows
         cellWidth: width / columns
-        cellHeight: Math.round((cellWidth - Kirigami.Units.smallSpacing * 2) * 1.5)
+        cellHeight: Math.round((cellWidth - Kirigami.Units.largeSpacing * 2) * 1.5)
                     + Kirigami.Units.gridUnit * 4
         clip: true
         reuseItems: true
@@ -1233,7 +1242,8 @@ Kirigami.ScrollablePage {
 
             AnimeCard {
                 anchors.fill: parent
-                anchors.margins: Kirigami.Units.smallSpacing
+                // Room for the hover zoom and border; the grid clips.
+                anchors.margins: Kirigami.Units.largeSpacing
                 posterUrl: modelData.poster_url
                 anilistId: modelData.anilist_id || 0
                 slugId: modelData.slug_id || ""
@@ -1319,6 +1329,42 @@ Kirigami.ScrollablePage {
         // the page assigns `value` back, and handling that fires a reload for
         // a filter nobody touched.
         onActivated: (index) => combo.picked(combo.options[index][0])
+
+        // Drawn like AppButton, not by the system style: its square box
+        // stood out among the rounded buttons and chips.
+        Kirigami.Theme.inherit: true
+        hoverEnabled: true
+        // Set outright: the style's own implicitHeight kept winning.
+        width: Kirigami.Units.gridUnit * 11
+        // One line of text; the label reports two lines once laid out.
+        height: Kirigami.Units.gridUnit + topPadding + bottomPadding
+        leftPadding: Kirigami.Units.largeSpacing
+        rightPadding: Kirigami.Units.largeSpacing + Kirigami.Units.iconSizes.small + Kirigami.Units.smallSpacing
+        topPadding: Kirigami.Units.smallSpacing
+        bottomPadding: Kirigami.Units.smallSpacing
+        background: Rectangle {
+            radius: Kirigami.Units.largeSpacing
+            color: combo.hovered ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                                           Kirigami.Theme.highlightColor.b, 0.18)
+                                 : Kirigami.Theme.alternateBackgroundColor
+            border.width: 1
+            border.color: combo.hovered || combo.down ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor
+            Behavior on color { ColorAnimation { duration: 100 } }
+        }
+        contentItem: Controls.Label {
+            text: combo.displayText
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        indicator: Kirigami.Icon {
+            x: combo.width - width - Kirigami.Units.largeSpacing
+            anchors.verticalCenter: parent.verticalCenter
+            width: Kirigami.Units.iconSizes.small
+            height: width
+            source: "go-down-symbolic"
+            isMask: true
+            color: Kirigami.Theme.textColor
+        }
     }
 
     // A labelled run of tri-state chips, optionally capped until expanded.
@@ -1481,8 +1527,14 @@ Kirigami.ScrollablePage {
                                     : Kirigami.Theme.textColor
 
         hoverEnabled: true
-        leftPadding: Kirigami.Units.smallSpacing * 2
-        rightPadding: Kirigami.Units.smallSpacing * 2
+        // AppButton's padding and sizing, so a chip is a button's twin.
+        leftPadding: Kirigami.Units.largeSpacing
+        rightPadding: Kirigami.Units.largeSpacing
+        topPadding: Kirigami.Units.smallSpacing
+        bottomPadding: Kirigami.Units.smallSpacing
+        implicitWidth: contentItem.implicitWidth + leftPadding + rightPadding
+        implicitHeight: Math.max(contentItem.implicitHeight, chipLine.height) + topPadding + bottomPadding
+        FontMetrics { id: chipLine; font: chip.font }
 
         background: Rectangle {
             radius: Kirigami.Units.largeSpacing   // the one roundness for buttons and chips (AppButton)

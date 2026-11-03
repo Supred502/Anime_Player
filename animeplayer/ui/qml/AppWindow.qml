@@ -666,7 +666,17 @@ Kirigami.ApplicationWindow {
         let gap = Kirigami.Units.largeSpacing
         preview.x = p.x + poster.width + gap + preview.width < overlay.width
                     ? p.x + poster.width + gap : Math.max(gap, p.x - preview.width - gap)
-        preview.y = Math.max(gap, Math.min(p.y, overlay.height - preview.height - gap))
+        // Kept inside whatever the poster scrolls in (every clipping
+        // ancestor), so a half-scrolled card's box can't cover the filters
+        // or the page header. Its top wins over its bottom in a short shelf.
+        let top = gap, bottom = overlay.height - gap
+        for (let item = poster.parent; item; item = item.parent) {
+            if (!item.clip) continue
+            let box = item.mapToItem(overlay, 0, 0)
+            top = Math.max(top, box.y + gap)
+            bottom = Math.min(bottom, box.y + item.height - gap)
+        }
+        preview.y = Math.max(top, Math.min(p.y, bottom - preview.height))
     }
     FrameAnimation {
         running: preview.shown

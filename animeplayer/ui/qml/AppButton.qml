@@ -35,6 +35,10 @@ Controls.Button {
     rightPadding: iconOnly ? squarePadding : Kirigami.Units.largeSpacing
     topPadding: Kirigami.Units.smallSpacing
     bottomPadding: Kirigami.Units.smallSpacing
+    // Sized by what's in it. The system style otherwise pads every button
+    // out to a minimum width, so "1×" was as wide as "Auto" and "Presets".
+    implicitWidth: contentItem.implicitWidth + leftPadding + rightPadding
+    implicitHeight: contentItem.implicitHeight + topPadding + bottomPadding
 
     background: Rectangle {
         radius: Kirigami.Units.largeSpacing   // the one roundness for buttons and chips

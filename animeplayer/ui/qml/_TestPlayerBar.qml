@@ -24,11 +24,12 @@ AppWindow {
     Timer {
         interval: 6000; running: true; repeat: true
         onTriggered: {
+            if (!root.found) return
             root.step++
             let p = root.pageStack.currentItem
             if (root.step === 1) root.goTo("browse", "DetailPage.qml", { anime: root.found })
             if (root.step === 2) p.playEpisode(1, 60)
-            if (root.step === 4) { p.controlsVisible = true; log("shot: bar") }
+            if (root.step === 4) { root.video_pause(p); p.controlsVisible = true; log("shot: bar") }
             if (root.step === 5) {
                 let b = find(p, "speedButton")
                 let at = b.mapToItem(null, b.width / 2, b.height / 2)

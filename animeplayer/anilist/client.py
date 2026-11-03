@@ -769,9 +769,15 @@ class AniListClient:
         read: none of it changes minute to minute."""
         data = self._request(_WATCH_HISTORY_QUERY, {"userId": user_id})
         out = []
+        seen: set[int] = set()
         for lst in data["MediaListCollection"]["lists"]:
             for entry in lst["entries"]:
                 media = entry["media"]
+                # Also in a custom list (a Library tab): count it once, or
+                # every total and "Recently finished" doubles it.
+                if media["id"] in seen:
+                    continue
+                seen.add(media["id"])
                 out.append(HistoryEntry(
                     media_id=media["id"],
                     title=_primary_title(media),

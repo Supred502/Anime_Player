@@ -155,7 +155,13 @@ Kirigami.ScrollablePage {
         return "Episodes " + (run ? list[0] + "\u2013" + list[list.length - 1] : list.join(", "))
     }
 
+    // The page stretches its content to full width; the column inside
+    // keeps its own width and centres.
+    Item {
+    implicitHeight: profileColumn.implicitHeight
+    height: implicitHeight
     ColumnLayout {
+        id: profileColumn
         width: page.bodyWidth
         x: Math.round((page.availableWidth - width) / 2)
         spacing: Kirigami.Units.gridUnit
@@ -250,26 +256,42 @@ Kirigami.ScrollablePage {
                 running: visible
             }
 
-            Flow {
+            // A grid, not a Flow: tiles in a row stretch to the tallest,
+            // so a long note grows its row instead of spilling out.
+            GridLayout {
                 Layout.fillWidth: true
-                spacing: Kirigami.Units.largeSpacing
+                columns: Math.max(1, Math.floor(page.bodyWidth / (Kirigami.Units.gridUnit * 11)))
+                columnSpacing: Kirigami.Units.largeSpacing
+                rowSpacing: Kirigami.Units.largeSpacing
                 visible: page.hasAnilist
 
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: page.anilist.days_watched + " days"
                     label: "watched (" + page.anilist.hours_watched + " hours)"
                     note: "rewatches included"
                 }
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: page.anilist.episodes_watched
                     label: "episodes watched"
                 }
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: page.anilist.completed
                     label: "shows completed"
                     note: page.anilist.finished_this_year + " so far this year"
                 }
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: page.anilist.rewatch_count
                     label: page.anilist.rewatch_count === 1 ? "rewatch" : "rewatches"
                     // Naming a favourite only means something when one show was
@@ -282,6 +304,9 @@ Kirigami.ScrollablePage {
                     }
                 }
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: page.anilist.mean_score ? page.anilist.mean_score : "\u2013"
                     label: "mean score"
                     note: page.anilist.watching + " watching \u00b7 " + page.anilist.planning + " planned \u00b7 "
@@ -593,22 +618,35 @@ Kirigami.ScrollablePage {
                            + "and when you finish episodes."
             }
 
-            Flow {
+            // A grid, not a Flow: tiles in a row stretch to the tallest,
+            // so a long note grows its row instead of spilling out.
+            GridLayout {
                 Layout.fillWidth: true
-                spacing: Kirigami.Units.largeSpacing
+                columns: Math.max(1, Math.floor(page.bodyWidth / (Kirigami.Units.gridUnit * 11)))
+                columnSpacing: Kirigami.Units.largeSpacing
+                rowSpacing: Kirigami.Units.largeSpacing
                 visible: !page.empty
 
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: page.hoursText(page.stats.total_hours)
                     label: "watched in total"
                 }
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: page.stats.total_episodes || 0
                     label: (page.stats.total_episodes === 1 ? "episode" : "episodes")
                          + " finished, across " + (page.stats.show_count || 0)
                          + (page.stats.show_count === 1 ? " show" : " shows")
                 }
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: page.hoursText(page.stats.this_week_hours)
                     label: "in the last 7 days"
                     note: {
@@ -621,6 +659,9 @@ Kirigami.ScrollablePage {
                     }
                 }
                 StatTile {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: 1
                     value: (page.stats.streak_days || 0) + (page.stats.streak_days === 1 ? " day" : " days")
                     label: "streak"
                     note: "days in a row with 5+ minutes"
@@ -688,6 +729,7 @@ Kirigami.ScrollablePage {
             }
         }
     }
+    }
 
     // A big number with a line saying what it is.
     component StatTile: Rectangle {
@@ -696,10 +738,9 @@ Kirigami.ScrollablePage {
         property string label: ""
         property string note: ""
 
-        implicitWidth: Kirigami.Units.gridUnit * 12
-        // One height for every tile, note or not: a row of boxes that differ
-        // by a line reads as misaligned rather than as four equals.
-        implicitHeight: Kirigami.Units.gridUnit * 5.6
+        implicitWidth: Kirigami.Units.gridUnit * 10
+        // At least this tall, note or not; the grid evens out each row.
+        implicitHeight: Math.max(Kirigami.Units.gridUnit * 5, tileColumn.implicitHeight + Kirigami.Units.largeSpacing * 2)
         radius: Kirigami.Units.largeSpacing
         color: Kirigami.Theme.alternateBackgroundColor
 

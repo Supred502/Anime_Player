@@ -783,6 +783,17 @@ def test_get_list_collection_counts_an_anime_in_a_custom_list_once() -> None:
 
 
 @respx.mock
+def test_get_watch_history_counts_an_anime_in_a_custom_list_once() -> None:
+    respx.post("https://graphql.anilist.co").mock(return_value=httpx.Response(200, json={"data": {
+        "MediaListCollection": {"lists": [
+            {"entries": [_list_entry("COMPLETED", 1, "Frieren")]},
+            {"entries": [_list_entry("COMPLETED", 1, "Frieren")]},
+        ]}}}))
+    client = AniListClient(httpx.Client(), token="t")
+    assert [e.media_id for e in client.get_watch_history(7)] == [1]
+
+
+@respx.mock
 def test_get_custom_lists() -> None:
     respx.post("https://graphql.anilist.co").mock(return_value=httpx.Response(200, json={"data": {
         "Viewer": {"mediaListOptions": {"animeList": {"customLists": ["Favourites", "Comfy"]}}},

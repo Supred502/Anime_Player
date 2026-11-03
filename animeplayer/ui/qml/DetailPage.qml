@@ -120,10 +120,9 @@ Kirigami.ScrollablePage {
     // The page less its scrollbar, which is drawn over the right edge: sized
     // to the whole width, everything met the right wall while the left had
     // its margin.
-    readonly property real usableWidth: {
-        let bar = page.flickable ? page.flickable.Controls.ScrollBar.vertical : null
-        return width - (bar ? bar.width : Kirigami.Units.gridUnit * 0.6)
-    }
+    // The bar's visible line is ~6px plus 2px off the edge, so 8px off
+    // the width leaves the same gap beside it as on the left.
+    readonly property real usableWidth: width - Kirigami.Units.smallSpacing * 2
 
     // The episode grid is left-aligned with a panel beside it, rather than
     // centred in the whole width. Centring a 10-wide grid in a wide window
@@ -819,7 +818,13 @@ Kirigami.ScrollablePage {
         }
     }
 
+    // The page stretches its content to the full width, scrollbar and all;
+    // the column inside keeps to the width that leaves the bar clear.
+    Item {
+    implicitHeight: mainColumn.implicitHeight
+    height: implicitHeight
     ColumnLayout {
+        id: mainColumn
         width: page.usableWidth
         spacing: Kirigami.Units.largeSpacing
 
@@ -2101,6 +2106,7 @@ Kirigami.ScrollablePage {
                 }
             }
         }
+    }
     }
 
     // Warning before starting a season whose earlier entries are unwatched.
