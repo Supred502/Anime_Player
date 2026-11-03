@@ -106,7 +106,9 @@ ColumnLayout {
             // Sized from the card rather than from a constant, so a card
             // design change can't leave every shelf in the app clipping its
             // subtitles.
-            height: sizer.heightForWidth(row.cardWidth) + Kirigami.Units.smallSpacing
+            // Room above and below as well as at the ends: a hovered card
+            // grows past its box, and the clip cut its border off the top.
+            height: sizer.heightForWidth(row.cardWidth) + Kirigami.Units.smallSpacing * 3
             spacing: Kirigami.Units.largeSpacing
             clip: true
             reuseItems: true
@@ -127,7 +129,8 @@ ColumnLayout {
                 required property var model
 
                 width: row.cardWidth
-                height: shelf.height - Kirigami.Units.smallSpacing
+                y: Kirigami.Units.smallSpacing
+                height: shelf.height - Kirigami.Units.smallSpacing * 3
                 posterUrl: model.poster_url || ""
                 anilistId: model.anilist_id || 0
                 slugId: model.slug_id || ""

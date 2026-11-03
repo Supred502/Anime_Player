@@ -37,7 +37,7 @@ Controls.Button {
     bottomPadding: Kirigami.Units.smallSpacing
 
     background: Rectangle {
-        radius: Kirigami.Units.smallSpacing
+        radius: Kirigami.Units.largeSpacing   // the one roundness for buttons and chips
         color: button.active
             ? (button.hovered ? Qt.lighter(button.accent, 1.15) : button.accent)
             : (button.hovered

@@ -263,3 +263,21 @@ def test_download_errors_read_as_plain_words():
     assert _plain_download_error("[Errno 111] Connection refused").startswith("couldn't reach")
     assert _plain_download_error("The read operation timed out") == "the streaming site took too long to answer"
     assert _plain_download_error("ffmpeg exited with 1") == "ffmpeg exited with 1"
+
+
+def test_grab_frame_from_a_file(tmp_path) -> None:
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from animeplayer.player.downloads import grab_frame
+
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("no ffmpeg")
+    clip = tmp_path / "clip.mp4"
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=duration=12:size=640x360:rate=10",
+                    str(clip)], check=True)
+    out = tmp_path / "f.jpg"
+    assert grab_frame(str(clip), "", 10, out)
+    assert not grab_frame(str(tmp_path / "missing.mp4"), "", 10, tmp_path / "g.jpg")

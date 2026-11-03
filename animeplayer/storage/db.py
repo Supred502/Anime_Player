@@ -671,6 +671,16 @@ class Database:
             ).fetchall()
         return [(r["day"], r["slug_id"], r["title"], r["seconds"]) for r in rows]
 
+    def known_posters(self) -> dict[str, str]:
+        """slug -> poster, from the source lookups and the AniList list."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT slug_id, poster_url FROM anidb_map WHERE slug_id IS NOT NULL AND poster_url != '' "
+                "UNION ALL SELECT m.slug_id, l.cover_url FROM anime_meta m "
+                "JOIN anilist_list l ON l.anilist_id = m.anilist_id WHERE l.cover_url != ''"
+            ).fetchall()
+        return {r[0]: r[1] for r in rows if r[1]}
+
     def watch_event_rows(self) -> list[tuple[str, str, float, float]]:
         with self._lock:
             rows = self._conn.execute(
@@ -742,9 +752,13 @@ class Database:
                              anime_title: str = "", poster_url: str | None = None) -> None:
         with self._lock:
             if favorite:
+                # Starring again keeps the date but refreshes the name and poster.
                 self._conn.execute(
-                    "INSERT OR IGNORE INTO favorite_episodes "
-                    "(slug_id, episode_number, created_at, anime_title, poster_url) VALUES (?, ?, ?, ?, ?)",
+                    "INSERT INTO favorite_episodes "
+                    "(slug_id, episode_number, created_at, anime_title, poster_url) VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(slug_id, episode_number) DO UPDATE SET "
+                    "anime_title = COALESCE(NULLIF(excluded.anime_title, ''), anime_title), "
+                    "poster_url = COALESCE(excluded.poster_url, poster_url)",
                     (slug_id, episode_number, time.time(), anime_title, poster_url),
                 )
             else:

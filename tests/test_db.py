@@ -259,3 +259,21 @@ def test_favorite_episodes_gain_titles_on_an_older_database(tmp_path: Path) -> N
     db.set_favorite_episode("frieren-2", 3, True, "Frieren", "https://x/p.jpg")
     rows = db.all_favorite_episodes()
     assert [(r["slug_id"], r["anime_title"]) for r in rows] == [("frieren-2", "Frieren"), ("one-piece-1", "")]
+
+
+def test_starring_again_fills_in_the_name_and_keeps_it(tmp_path: Path) -> None:
+    db = Database(tmp_path / "a.db")
+    db.set_favorite_episode("one-piece-1", 1, True)                       # no name known
+    db.set_favorite_episode("one-piece-1", 1, True, "One Piece", "p.jpg")
+    db.set_favorite_episode("one-piece-1", 1, True, "", None)              # doesn't wipe it
+    (row,) = db.all_favorite_episodes()
+    assert (row["anime_title"], row["poster_url"]) == ("One Piece", "p.jpg")
+
+
+def test_known_posters_from_lookups_and_anilist(tmp_path) -> None:
+    db = Database(tmp_path / "t.db")
+    db._conn.execute("INSERT INTO anidb_map (anilist_id, slug_id, poster_url) VALUES (1, 'a-1', 'a.jpg')")
+    db._conn.execute("INSERT INTO anime_meta (slug_id, title, anilist_id) VALUES ('b-2', 'B', 2)")
+    db._conn.execute("INSERT INTO anilist_list (anilist_id, status, progress, score, title, cover_url) "
+                     "VALUES (2, 'COMPLETED', 12, 0, 'B', 'b.jpg')")
+    assert db.known_posters() == {"a-1": "a.jpg", "b-2": "b.jpg"}

@@ -46,6 +46,7 @@ a = Analysis(
         "fugashi",
         *collect_submodules("cutlet"),
         *collect_submodules("genanki"),
+        *collect_submodules("yt_dlp"),  # loads its site extractors by name
         *collect_submodules("sdl2"),
         "sdl2dll",
     ],

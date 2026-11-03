@@ -215,6 +215,26 @@ class _Worker(QRunnable):
             self._on_error(str(exc))
 
 
+def history_rows(events: list[tuple[str, str, float, float]], known: dict[str, tuple[str, str]],
+                 limit: int = 100) -> list[dict[str, Any]]:
+    """Watch events (oldest first) as rows, newest first: episodes of one
+    show watched back to back, within 12 hours of each other, share a row."""
+    rows: list[dict[str, Any]] = []
+    for slug, title, number, at in reversed(events):
+        last = rows[-1] if rows else None
+        if last and last["slug_id"] == slug and last["first_at"] - at < 12 * 3600:
+            if number not in last["episodes"]:
+                last["episodes"].insert(0, number)
+            last["first_at"] = at
+            continue
+        if len(rows) == limit:
+            break
+        name, poster = known.get(slug, ("", ""))
+        rows.append({"slug_id": slug, "numeric_id": slug.rsplit("-", 1)[-1], "title": title or name,
+                     "poster_url": poster, "episodes": [number], "watched_at": at, "first_at": at})
+    return rows
+
+
 def _finished(status: AniListStatus, episode_number: float) -> bool:
     """Whether a show left on this episode is done with, for Continue Watching."""
     return status.status == "COMPLETED" and episode_number >= status.progress
@@ -355,6 +375,9 @@ class Backend(QObject):
         # What the player has on screen right now, for "continue on phone".
         # None when nothing is playing.
         self._now_playing: dict[str, Any] | None = None
+        self._seek_dir: tempfile.TemporaryDirectory | None = None
+        self._seek_busy = False
+        self._seek_next: float | None = None
         # slug -> (subbed, dubbed), as last read from the source.
         self._audio_counts: dict[str, tuple[int, int]] = {}
         self._playing = False
@@ -2024,9 +2047,33 @@ class Backend(QObject):
                 "title": row["anime_title"], "poster_url": row["poster_url"] or "", "episodes": [],
             })
             show["episodes"].append(row["episode_number"])
+        # Stars given before they kept the show's name (or from a page that
+        # didn't know its poster): filled in from what else this PC knows.
+        missing = [s for s in shows.values() if not s["title"] or not s["poster_url"]]
+        if missing:
+            known = self._known_shows()
+            for show in missing:
+                title, poster = known.get(show["slug_id"], ("", ""))
+                show["title"] = show["title"] or title or show["slug_id"].rsplit("-", 1)[0].replace("-", " ").title()
+                show["poster_url"] = show["poster_url"] or poster
         for show in shows.values():
             show["episodes"].sort()
         return list(shows.values())
+
+    def _known_shows(self) -> dict[str, tuple[str, str]]:
+        """slug -> (title, poster), from what this PC has saved or watched."""
+        known: dict[str, tuple[str, str]] = {slug: ("", poster) for slug, poster in self._db.known_posters().items()}
+        for e in self._db.all_downloads():
+            known[e.slug_id] = (e.anime_title, e.poster_url or known.get(e.slug_id, ("", ""))[1])
+        for p in self._db.continue_watching(limit=1000):
+            known[p.anime_slug_id] = (p.anime_title, p.poster_url or known.get(p.anime_slug_id, ("", ""))[1])
+        return known
+
+    @Slot(result=list)
+    def watchHistory(self) -> list[dict[str, Any]]:
+        """Every episode watched here, newest first, for the Profile's
+        History tab. A run of episodes of one show is one row."""
+        return history_rows(self._db.watch_event_rows(), self._known_shows())
 
     @Slot(result=bool)
     def getKeepFavoriteDownloads(self) -> bool:
@@ -3552,6 +3599,7 @@ class Backend(QObject):
                 # {"12": {"title", "thumbnail"}} -- string keys: QML maps are keyed by string.
                 "episodeArt": {str(n): {"title": t, "thumbnail": u} for n, (t, u) in extras.episode_art.items()},
                 "related": related,
+                "trailer": extras.trailer_youtube_id,
                 "tags": [{"name": t.name, "description": t.description, "rank": t.rank,
                           "spoiler": t.spoiler} for t in extras.tags],
                 "recommendations": [
@@ -4451,6 +4499,69 @@ class Backend(QObject):
     @Slot(bool)
     def setHoverPreviewEnabled(self, value: bool) -> None:
         self._db.set_setting("hover_preview", "true" if value else "false")
+
+    # -- Seek bar preview ----------------------------------------------------------
+
+    seekPreviewReady = Signal(float, str)   # seconds, file URL of a small frame there
+
+    @Slot(float)
+    def requestSeekPreview(self, seconds: float) -> None:
+        """A frame from the episode playing, at `seconds`. The source ships
+        no thumbnail sprites, so ffmpeg grabs it: from the saved file, or from
+        the stream's smallest variant (~0.7 s, one segment). One at a time;
+        while one is running, only the latest request waits."""
+        if self._seek_busy:
+            self._seek_next = seconds
+            return
+        playing = self._now_playing
+        if not playing:
+            return
+        if playing["kind"] == "file":
+            media, referer = playing["path"], ""
+        else:
+            variants = self._current_stream_info.variants if self._current_stream_info else ()
+            media, referer = (variants[-1].url if variants else playing["url"]), playing["referer"]
+        from animeplayer.player.downloads import grab_frame
+
+        if self._seek_dir is None:
+            # shortcut: frames pile up here for the session (~15 KB each), gone on quit.
+            self._seek_dir = tempfile.TemporaryDirectory(prefix="animeplayer-seek-")
+        out = Path(self._seek_dir.name) / f"{abs(hash(media))}-{int(seconds)}.jpg"
+        self._seek_busy = True
+
+        def work() -> str:
+            return out.as_uri() if out.exists() or grab_frame(media, referer, seconds, out) else ""
+
+        def done(url: str) -> None:
+            self._seek_busy = False
+            if url:
+                self.seekPreviewReady.emit(seconds, url)
+            waiting, self._seek_next = self._seek_next, None
+            if waiting is not None:
+                self.requestSeekPreview(waiting)
+
+        def failed(_message: str) -> None:
+            done("")
+
+        self._pool.start(_Worker(work, done, failed))
+
+    # -- Trailers ----------------------------------------------------------------
+
+    trailerReady = Signal(str, str, str)   # youtube id, video URL, audio URL ("" when in one)
+    trailerFailed = Signal(str, str)       # youtube id, why
+
+    @Slot(str)
+    def resolveTrailer(self, youtube_id: str) -> None:
+        from animeplayer import trailers
+
+        def work() -> tuple[str, str]:
+            return trailers.resolve(youtube_id)
+
+        def done(result: tuple[str, str]) -> None:
+            self.trailerReady.emit(youtube_id, *result)
+
+        self._pool.start(_Worker(work, done, lambda message: self.trailerFailed.emit(
+            youtube_id, f"Couldn't play the trailer: {message}")))
 
     @Slot(str, int, str)
     def requestPreview(self, key: str, anilist_id: int, title: str) -> None:

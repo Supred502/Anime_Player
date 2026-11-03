@@ -200,7 +200,7 @@ def compute_anilist_stats(entries: list[Any], today: str) -> dict[str, Any]:
         "finished_per_month": per_month,
         "finished_this_year": sum(1 for e in entries if e.completed[:4] == f"{today_date.year:04d}"),
         "recently_finished": [
-            {"title": e.title, "date": e.completed, "score": e.score, "repeat": e.repeat,
+            {"title": e.title, "anilist_id": e.media_id, "date": e.completed, "score": e.score, "repeat": e.repeat,
              "cover_url": e.cover_url or ""}
             for e in recent
         ],

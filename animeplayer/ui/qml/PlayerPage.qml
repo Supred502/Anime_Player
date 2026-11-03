@@ -308,6 +308,8 @@ Kirigami.Page {
 
     // What's loaded, for handing over to the mini player.
     property string streamUrl: ""
+    // Seek bar preview: the latest frame the backend grabbed, and where from.
+    property string previewFrame: ""
     property string streamReferer: ""
     property string streamSubtitle: ""
     function toMiniPlayer() {
@@ -483,6 +485,7 @@ Kirigami.Page {
     Connections {
         target: backend
         function onStreamReady(url, referer, subtitleUrl) {
+            page.previewFrame = ""
             page.loadingStream = false
             page.stalled = false
             stallTimer.restart()
@@ -544,6 +547,7 @@ Kirigami.Page {
         function onNoNextEpisode() {
             showPassiveNotification("You've reached the last episode")
         }
+        function onSeekPreviewReady(seconds, url) { page.previewFrame = url }
         function onStreamQualitiesAvailable(qualities) {
             page.qualities = ["Auto"].concat(qualities.map((q) => q.label))
             // Reflect whatever quality actually ended up playing: if a specific
@@ -1102,6 +1106,56 @@ Kirigami.Page {
                 to: Math.max(video.duration, 1)
                 value: video.position
                 onMoved: video.seekAbsolute(value)
+            }
+
+            // Hovering the bar shows the time there and a frame from it.
+            // Asked for in 5 s steps, so going back over a spot reuses its frame.
+            HoverHandler { id: seekHover; enabled: video.duration > 0 }
+            readonly property real hoverSeconds: Math.max(0, Math.min(video.duration,
+                (seekHover.point.position.x - seekSlider.leftPadding) / seekSlider.availableWidth * video.duration))
+            onHoverSecondsChanged: if (seekHover.hovered) previewDelay.restart()
+            Timer {
+                id: previewDelay
+                interval: 150
+                onTriggered: backend.requestSeekPreview(Math.round(parent.hoverSeconds / 5) * 5)
+            }
+
+            Rectangle {
+                id: seekPreview
+                visible: seekHover.hovered
+                z: 2
+                width: Kirigami.Units.gridUnit * 12
+                height: frameImage.height + timeLabel.height + Kirigami.Units.smallSpacing * 3
+                x: Math.max(0, Math.min(parent.width - width, seekHover.point.position.x - width / 2))
+                y: -height - Kirigami.Units.smallSpacing
+                radius: Kirigami.Units.mediumSpacing
+                color: Qt.rgba(0, 0, 0, 0.85)
+                border.color: Qt.rgba(1, 1, 1, 0.15)
+
+                RoundedFrame {
+                    id: frameImage
+                    anchors.top: parent.top
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.topMargin: Kirigami.Units.smallSpacing
+                    width: parent.width - Kirigami.Units.smallSpacing * 2
+                    height: Math.round(width * 9 / 16)
+                    radius: Kirigami.Units.smallSpacing
+                    color: Qt.rgba(1, 1, 1, 0.06)
+                    // Not a FadeImage: each new frame would blink out and back.
+                    Image {
+                        anchors.fill: parent
+                        source: page.previewFrame
+                        fillMode: Image.PreserveAspectFit
+                    }
+                }
+                Controls.Label {
+                    id: timeLabel
+                    anchors.top: frameImage.bottom
+                    anchors.topMargin: Kirigami.Units.smallSpacing
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: page.formatTime(parent.parent.hoverSeconds)
+                    color: "white"
+                }
             }
 
             // Orange intro/outro markers on the seekbar groove -- an

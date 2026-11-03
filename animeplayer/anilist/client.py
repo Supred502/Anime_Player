@@ -1064,6 +1064,8 @@ class AniListClient:
             next_airing_at=airing.get("airingAt"),
             status=media.get("status") or "",
             episode_art=_episode_art(media.get("streamingEpisodes") or []),
+            trailer_youtube_id=(media.get("trailer") or {}).get("id") or ""
+            if ((media.get("trailer") or {}).get("site") or "").lower() == "youtube" else "",
             tags=tuple(
                 Tag(name=t["name"], description=t.get("description") or "", rank=t.get("rank") or 0,
                     spoiler=bool(t.get("isMediaSpoiler") or t.get("isGeneralSpoiler")))
@@ -1332,6 +1334,7 @@ query ($id: Int!) {
     nextAiringEpisode { episode airingAt }
     streamingEpisodes { title thumbnail }
     tags { name description rank isMediaSpoiler isGeneralSpoiler }
+    trailer { id site }
     reviews(perPage: 6, sort: RATING_DESC) {
       nodes {
         id
@@ -1545,6 +1548,7 @@ class MediaExtras:
     # AniList's tags, most relevant first. More specific than the genres
     # ("Time Skip", "Found Family"); some give the plot away.
     tags: tuple["Tag", ...] = ()
+    trailer_youtube_id: str = ""   # AniList links trailers on YouTube (and rarely Dailymotion)
 
 
 @dataclass(frozen=True, slots=True)

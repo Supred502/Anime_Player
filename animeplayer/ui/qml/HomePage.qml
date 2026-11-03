@@ -243,6 +243,9 @@ Kirigami.ScrollablePage {
                     clip: true
                     reuseItems: true
                     boundsBehavior: Flickable.StopAtBounds
+                    // Room for a hovered card to grow into; see PosterRow.
+                    leftMargin: Kirigami.Units.smallSpacing
+                    rightMargin: Kirigami.Units.smallSpacing
                     model: page.continueWatching
 
                     delegate: ResumeCard {
@@ -253,7 +256,8 @@ Kirigami.ScrollablePage {
                         width: Math.min(Kirigami.Units.gridUnit * 22,
                                         Math.max(Kirigami.Units.gridUnit * 15,
                                                  page.availableWidth / 2.4))
-                        height: resumeRow.height - Kirigami.Units.smallSpacing
+                        y: Kirigami.Units.smallSpacing
+                        height: resumeRow.height - Kirigami.Units.smallSpacing * 3
                         posterUrl: modelData.poster_url || ""
                         title: modelData.title
                         subtitle: "Episode " + modelData.episode_number
@@ -341,7 +345,7 @@ Kirigami.ScrollablePage {
                             rightPadding: Kirigami.Units.largeSpacing
 
                             background: Rectangle {
-                                radius: height / 2
+                                radius: Kirigami.Units.largeSpacing   // the one roundness for buttons and chips (AppButton)
                                 color: genreChip.hovered
                                     ? Qt.rgba(Kirigami.Theme.highlightColor.r,
                                               Kirigami.Theme.highlightColor.g,

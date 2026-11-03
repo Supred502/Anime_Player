@@ -370,21 +370,34 @@ def move_episode(files: list[str | None], folder: Path) -> list[str | None]:
     return moved
 
 
-def cut_audio(source: str, referer: str, start: float, seconds: float, out: Path) -> bool:
-    """A few seconds of an episode's sound as an mp3 (for Anki cards):
-    from a saved file or straight from the stream. Seeks before opening, so
-    a stream is only read around the clip, not from the start."""
-    def cut(options: tuple[str, ...]) -> subprocess.CompletedProcess:
+def _ffmpeg_at(source: str, referer: str, start: float, output: list[str], timeout: float) -> bool:
+    """Runs ffmpeg on `source` from `start` seconds. Seeks before opening, so
+    a stream is only read around that point, not from the start."""
+    def run(options: tuple[str, ...]) -> subprocess.CompletedProcess:
         command = ["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, start):.2f}"]
         if referer:
             command += ["-headers", _headers(referer), *options]
-        command += ["-i", source, "-t", f"{seconds:.2f}", "-vn", "-ac", "1", "-b:a", "96k", str(out)]
-        return subprocess.run(command, capture_output=True, text=True, timeout=90, creationflags=NO_WINDOW)
+        command += ["-i", source, *output]
+        return subprocess.run(command, capture_output=True, text=True, timeout=timeout, creationflags=NO_WINDOW)
 
     try:
-        result = cut(())
+        result = run(())
         if referer and _PICKY_REFUSAL in result.stderr and _relaxed_hls_options():
-            result = cut(_relaxed_hls_options())
+            result = run(_relaxed_hls_options())
     except (OSError, subprocess.SubprocessError):
         return False
+    out = Path(output[-1])
     return result.returncode == 0 and out.exists() and out.stat().st_size > 0
+
+
+def cut_audio(source: str, referer: str, start: float, seconds: float, out: Path) -> bool:
+    """A few seconds of an episode's sound as an mp3 (for Anki cards):
+    from a saved file or straight from the stream."""
+    return _ffmpeg_at(source, referer, start,
+                      ["-t", f"{seconds:.2f}", "-vn", "-ac", "1", "-b:a", "96k", str(out)], 90)
+
+
+def grab_frame(source: str, referer: str, at: float, out: Path) -> bool:
+    """One small frame as a jpg, for the seek bar's preview."""
+    return _ffmpeg_at(source, referer, at,
+                      ["-map", "0:v:0", "-frames:v", "1", "-vf", "scale=320:-2", "-q:v", "5", str(out)], 20)

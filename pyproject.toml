@@ -17,6 +17,8 @@ dependencies = [
     "cutlet",
     # Saved words as an Anki deck.
     "genanki",
+    # Trailers: finds the YouTube stream so it plays in the app.
+    "yt-dlp",
     # Game controllers (Xbox, PlayStation, Switch, Steam Deck).
     "pysdl2",
     "pysdl2-dll",

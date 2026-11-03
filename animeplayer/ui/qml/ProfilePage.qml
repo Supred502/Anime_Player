@@ -3,6 +3,7 @@
 //
 //   Overview       your AniList stats (every finish date and rewatch AniList
 //                  has, going back years)
+//   History        every episode watched here, newest first
 //   Friends        the people you follow: what they watched lately and how
 //                  they rated it, and AniList's "Following" activity feed
 //   This computer  time actually spent playing here (see animeplayer/stats.py)
@@ -20,8 +21,12 @@ Kirigami.ScrollablePage {
 
     AppTheming {}
     title: "Profile"
+    // Everything on this page a size up: it's for reading, not scanning.
+    // Labels inherit it; Headings and the chart axes size themselves.
+    font.pixelSize: Math.round(Kirigami.Theme.defaultFont.pixelSize * 1.2)
 
     property var stats: ({})
+    property var history: []
     readonly property bool empty: !stats.total_hours && !stats.total_episodes
     property var anilist: ({})
     property bool anilistLoading: true
@@ -37,11 +42,14 @@ Kirigami.ScrollablePage {
     onTabChanged: backend.setLearnOption("profile_tab", page.tab)
     readonly property bool loggedIn: backend.isAnilistLoggedIn()
     // Two charts to a row once there's room for both to be readable.
-    readonly property int columns: page.availableWidth > Kirigami.Units.gridUnit * 48 ? 2 : 1
+    readonly property int columns: page.bodyWidth > Kirigami.Units.gridUnit * 48 ? 2 : 1
+    // Capped and centred: full width on a big screen spread it thin.
+    readonly property real bodyWidth: Math.min(page.availableWidth, Kirigami.Units.gridUnit * 70)
     property bool opening: false
 
     Component.onCompleted: {
         page.stats = backend.watchStats()
+        page.history = backend.watchHistory()
         backend.loadAnilistStats()
         backend.loadProfile()
         backend.loadFriends()
@@ -133,15 +141,30 @@ Kirigami.ScrollablePage {
         return parts.join(" \u00b7 ")
     }
 
+    function openShow(row) {
+        applicationWindow().pageStack.push(Qt.resolvedUrl("DetailPage.qml"), {
+            anime: { slug_id: row.slug_id, numeric_id: row.numeric_id, title: row.title,
+                     poster_url: row.poster_url || "", kind: "", rating: "" }
+        })
+    }
+
+    // [3] -> "Episode 3", [3, 4, 5] -> "Episodes 3–5", [1, 4] -> "Episodes 1, 4".
+    function episodesText(list) {
+        if (list.length === 1) return "Episode " + list[0]
+        let run = list.every((n, i) => i === 0 || n === list[i - 1] + 1)
+        return "Episodes " + (run ? list[0] + "\u2013" + list[list.length - 1] : list.join(", "))
+    }
+
     ColumnLayout {
-        width: page.availableWidth
+        width: page.bodyWidth
+        x: Math.round((page.availableWidth - width) / 2)
         spacing: Kirigami.Units.gridUnit
 
         // ================= Who you are =================
         RoundedFrame {
             Layout.fillWidth: true
             Layout.preferredHeight: Kirigami.Units.gridUnit * 7
-            radius: Kirigami.Units.smallSpacing * 2
+            radius: Kirigami.Units.largeSpacing
             color: Kirigami.Theme.alternateBackgroundColor
             clip: true
             visible: page.loggedIn
@@ -200,6 +223,7 @@ Kirigami.ScrollablePage {
             spacing: Kirigami.Units.smallSpacing
             Repeater {
                 model: [["overview", "Overview", "view-statistics-symbolic"],
+                        ["history", "History", "view-history-symbolic"],
                         ["friends", "Friends", "system-users-symbolic"],
                         ["computer", "This computer", "computer-symbolic"]]
                 AppButton {
@@ -299,35 +323,22 @@ Kirigami.ScrollablePage {
                     Layout.columnSpan: page.columns
                     title: "Recently finished"
                     visible: (page.anilist.recently_finished || []).length > 0
-                    GridLayout {
+                    Flow {
                         Layout.fillWidth: true
-                        columns: page.columns
-                        columnSpacing: Kirigami.Units.gridUnit * 2
-                        rowSpacing: 2
+                        spacing: Kirigami.Units.largeSpacing
                         Repeater {
                             model: page.anilist.recently_finished || []
-                            RowLayout {
+                            AnimeCard {
                                 required property var modelData
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                spacing: Kirigami.Units.largeSpacing
-                                Controls.Label {
-                                    Layout.preferredWidth: Kirigami.Units.gridUnit * 6
-                                    text: page.monthDay(modelData.date)
-                                    opacity: 0.6
-                                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                                }
-                                Controls.Label {
-                                    Layout.fillWidth: true
-                                    text: modelData.title
-                                    elide: Text.ElideRight
-                                }
-                                Controls.Label {
-                                    text: (modelData.repeat > 0 ? "rewatched " + modelData.repeat + "\u00d7 \u00b7 " : "")
-                                        + (modelData.score > 0 ? "\u2605 " + modelData.score : "")
-                                    opacity: 0.7
-                                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                                }
+                                width: Kirigami.Units.gridUnit * 9
+                                height: Kirigami.Units.gridUnit * 16
+                                posterUrl: modelData.cover_url
+                                anilistId: modelData.anilist_id || 0
+                                title: modelData.title
+                                subtitle: page.monthDay(modelData.date)
+                                    + (modelData.repeat > 0 ? " \u00b7 rewatched " + modelData.repeat + "\u00d7" : "")
+                                scoreText: modelData.score > 0 ? String(modelData.score) : ""
+                                onClicked: page.openAnime(modelData.anilist_id, modelData.title)
                             }
                         }
                     }
@@ -341,6 +352,83 @@ Kirigami.ScrollablePage {
                 text: "Log in to AniList for your profile"
                 explanation: "Settings \u2192 AniList. Your list has every show you've finished, "
                            + "when, and how many times -- and who you follow."
+            }
+        }
+
+        // ================= History: this computer =================
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: page.tab === "history"
+            spacing: Kirigami.Units.gridUnit
+
+            Kirigami.PlaceholderMessage {
+                Layout.fillWidth: true
+                visible: page.history.length === 0
+                icon.name: "view-history-symbolic"
+                text: "Nothing watched here yet"
+                explanation: "Every episode you finish on this computer shows up here."
+            }
+
+            GridLayout {
+                Layout.fillWidth: true
+                columns: page.columns
+                columnSpacing: Kirigami.Units.largeSpacing
+                rowSpacing: Kirigami.Units.largeSpacing
+                Repeater {
+                    model: page.history
+                    Rectangle {
+                        id: historyRow
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Layout.preferredWidth: 1
+                        implicitHeight: Kirigami.Units.gridUnit * 6.5
+                        radius: Kirigami.Units.largeSpacing
+                        color: historyHover.hovered
+                               ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
+                                         Kirigami.Theme.highlightColor.b, 0.15)
+                               : Kirigami.Theme.alternateBackgroundColor
+                        Behavior on color { ColorAnimation { duration: 100 } }
+                        HoverHandler { id: historyHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: page.openShow(historyRow.modelData) }
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.margins: Kirigami.Units.smallSpacing * 2
+                            spacing: Kirigami.Units.largeSpacing
+                            RoundedFrame {
+                                Layout.fillHeight: true
+                                Layout.preferredWidth: height * 0.7
+                                radius: Kirigami.Units.mediumSpacing
+                                color: Qt.rgba(1, 1, 1, 0.06)
+                                FadeImage {
+                                    anchors.fill: parent
+                                    source: historyRow.modelData.poster_url
+                                    fillMode: Image.PreserveAspectCrop
+                                }
+                            }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: Kirigami.Units.smallSpacing
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    font.pixelSize: Math.round(page.font.pixelSize * 1.35)
+                                    font.bold: true
+                                    text: historyRow.modelData.title
+                                    elide: Text.ElideRight
+                                }
+                                Controls.Label {
+                                    Layout.fillWidth: true
+                                    text: page.episodesText(historyRow.modelData.episodes)
+                                    color: Kirigami.Theme.highlightColor
+                                    elide: Text.ElideRight
+                                }
+                                Controls.Label {
+                                    text: page.ago(historyRow.modelData.watched_at)
+                                    opacity: 0.7
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -382,7 +470,7 @@ Kirigami.ScrollablePage {
                     hint: "Last active " + page.ago(modelData.recent[0].updated_at)
                     Flickable {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: Kirigami.Units.gridUnit * 15
+                        Layout.preferredHeight: Kirigami.Units.gridUnit * 17
                         contentWidth: friendRow.width
                         clip: true
                         flickableDirection: Flickable.HorizontalFlick
@@ -394,8 +482,8 @@ Kirigami.ScrollablePage {
                                 model: friendSection.modelData.recent
                                 AnimeCard {
                                     required property var modelData
-                                    width: Kirigami.Units.gridUnit * 8
-                                    height: Kirigami.Units.gridUnit * 14.5
+                                    width: Kirigami.Units.gridUnit * 9
+                                    height: Kirigami.Units.gridUnit * 16
                                     posterUrl: modelData.poster_url
                                     anilistId: modelData.anilist_id
                                     title: modelData.title
@@ -432,8 +520,8 @@ Kirigami.ScrollablePage {
                             required property var modelData
                             Layout.fillWidth: true
                             Layout.preferredWidth: 1
-                            implicitHeight: Kirigami.Units.gridUnit * 4.2
-                            radius: Kirigami.Units.smallSpacing * 2
+                            implicitHeight: Kirigami.Units.gridUnit * 5
+                            radius: Kirigami.Units.largeSpacing
                             color: activityHover.hovered
                                    ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g,
                                              Kirigami.Theme.highlightColor.b, 0.15)
@@ -481,8 +569,7 @@ Kirigami.ScrollablePage {
                                 Controls.Label {
                                     Layout.rightMargin: Kirigami.Units.largeSpacing
                                     text: page.ago(activityRow.modelData.created_at)
-                                    opacity: 0.6
-                                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                                    opacity: 0.7
                                 }
                             }
                         }
@@ -609,11 +696,11 @@ Kirigami.ScrollablePage {
         property string label: ""
         property string note: ""
 
-        implicitWidth: Kirigami.Units.gridUnit * 10.5
+        implicitWidth: Kirigami.Units.gridUnit * 12
         // One height for every tile, note or not: a row of boxes that differ
         // by a line reads as misaligned rather than as four equals.
-        implicitHeight: Kirigami.Units.gridUnit * 4.6
-        radius: Kirigami.Units.smallSpacing * 2
+        implicitHeight: Kirigami.Units.gridUnit * 5.6
+        radius: Kirigami.Units.largeSpacing
         color: Kirigami.Theme.alternateBackgroundColor
 
         ColumnLayout {
@@ -625,7 +712,7 @@ Kirigami.ScrollablePage {
             spacing: 2
             Controls.Label {
                 text: String(tile.value)
-                font.pixelSize: Kirigami.Units.gridUnit * 1.5
+                font.pixelSize: Kirigami.Units.gridUnit * 1.8
                 font.bold: true
             }
             Controls.Label {
@@ -639,8 +726,7 @@ Kirigami.ScrollablePage {
                 visible: text !== ""
                 text: tile.note
                 wrapMode: Text.WordWrap
-                opacity: 0.6
-                font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+                opacity: 0.7
             }
         }
     }
@@ -665,17 +751,17 @@ Kirigami.ScrollablePage {
                 radius: 2
                 color: Kirigami.Theme.highlightColor
             }
-            Kirigami.Heading {
+            Controls.Label {
                 id: sectionHeading
-                level: 3
+                font.pixelSize: Math.round(page.font.pixelSize * 1.35)
+                font.bold: true
                 text: section.title
             }
         }
         Controls.Label {
             visible: text !== ""
             text: section.hint
-            opacity: 0.6
-            font.pixelSize: Kirigami.Theme.smallFont.pixelSize
+            opacity: 0.7
         }
         ColumnLayout {
             id: body
@@ -794,10 +880,9 @@ Kirigami.ScrollablePage {
                     }
                 }
                 Controls.Label {
-                    Layout.preferredWidth: Kirigami.Units.gridUnit * 6
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 7
                     text: modelData.text
                     opacity: 0.8
-                    font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                 }
                 HoverHandler { id: rowHover }
             }

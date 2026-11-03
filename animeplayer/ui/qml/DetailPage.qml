@@ -40,6 +40,7 @@ Kirigami.ScrollablePage {
     property var watchOrder: []
     property var unwatchedPrequels: []
     property var related: []
+    property string trailer: ""     // YouTube id, from AniList
     property var tags: []           // AniList's, most relevant first: {name, description, rank, spoiler}
     property bool showSpoilerTags: false
     property var recommendations: []
@@ -443,7 +444,10 @@ Kirigami.ScrollablePage {
         function onEpisodesFinished(episodes) {
             page.loading = false
             episodesModel.clear()
-            for (let i = 0; i < episodes.length; i++) episodesModel.append(episodes[i])
+            // All at once: appended one by one, each of One Piece's 1180
+            // episodes re-ran everything bound to the list -- a one-second
+            // freeze on opening the page.
+            episodesModel.append(Array.from(episodes))  // a plain array: given the list as is, it lands as one row
             page.anyFiller = episodes.some((ep) => ep.filler)
             if (page.playWhenLoaded) {
                 let target = page.playWhenLoaded
@@ -454,14 +458,8 @@ Kirigami.ScrollablePage {
 
             // Land on the page containing the resume episode, if any.
             let startIndex = 0
-            if (page.localProgress) {
-                for (let i = 0; i < episodesModel.count; i++) {
-                    if (episodesModel.get(i).number === page.localProgress.episode_number) {
-                        startIndex = i
-                        break
-                    }
-                }
-            }
+            if (page.localProgress)
+                startIndex = Math.max(0, episodes.findIndex((ep) => ep.number === page.localProgress.episode_number))
             page.showPage(Math.floor(startIndex / page.pageSize))
         }
         function onListScoreChanged(anilistId, score) {
@@ -515,6 +513,7 @@ Kirigami.ScrollablePage {
             page.unwatchedPrequels = extras.unwatchedPrequels
             page.related = extras.related
             page.tags = extras.tags || []
+            page.trailer = extras.trailer || ""
             page.recommendations = extras.recommendations
             page.reviews = extras.reviews
             page.airingStatus = extras.airingStatus || ""
@@ -542,7 +541,9 @@ Kirigami.ScrollablePage {
         pageEpisodesModel.clear()
         let start = page.currentPage * page.pageSize
         let end = Math.min(start + page.pageSize, page.shownEpisodeCount)
-        for (let i = start; i < end; i++) pageEpisodesModel.append(episodesModel.get(i))
+        let rows = []
+        for (let i = start; i < end; i++) rows.push(episodesModel.get(i))
+        pageEpisodesModel.append(rows)
     }
 
     function pageEpisodesCount() { return pageEpisodesModel.count }
@@ -944,7 +945,7 @@ Kirigami.ScrollablePage {
                             model: page.headerFacts()
                             Rectangle {
                                 required property var modelData
-                                radius: height / 2
+                                radius: Kirigami.Units.mediumSpacing   // as the buttons, scaled to a chip this small
                                 color: modelData.accent ? Kirigami.Theme.highlightColor
                                                         : Qt.rgba(1, 1, 1, 0.16)
                                 width: factLabel.implicitWidth + Kirigami.Units.largeSpacing
@@ -1001,7 +1002,7 @@ Kirigami.ScrollablePage {
                             delegate: Rectangle {
                                 id: tagChip
                                 required property var modelData
-                                radius: height / 2
+                                radius: Kirigami.Units.mediumSpacing   // as the buttons, scaled to a chip this small
                                 color: tagHover.hovered ? Qt.rgba(1, 1, 1, 0.24) : Qt.rgba(1, 1, 1, 0.1)
                                 border.width: modelData.spoiler ? 1 : 0
                                 border.color: Kirigami.Theme.negativeTextColor
@@ -1060,6 +1061,13 @@ Kirigami.ScrollablePage {
                             icon.name: "media-playback-start-symbolic"
                             accented: true
                             onClicked: page.continueWatching()
+                        }
+
+                        AppButton {
+                            text: "Trailer"
+                            icon.name: "media-playback-start-symbolic"
+                            visible: page.trailer !== ""
+                            onClicked: trailerOverlay.play(page.trailer)
                         }
 
                         AppButton {
@@ -2183,4 +2191,5 @@ Kirigami.ScrollablePage {
         }
         Item { Layout.fillWidth: true }
     }
+    TrailerOverlay { id: trailerOverlay }
 }

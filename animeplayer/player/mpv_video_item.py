@@ -394,11 +394,22 @@ class MpvVideoItem(QQuickFramebufferObject):
             return
         self._pending_subtitle = subtitle_url
         self._file_ready = False
+        self.mpv["audio-files"] = self._pending_audio
+        self._pending_audio = []
         # A global option rather than a per-file one so it also covers the
         # variant-playlist and segment fetches mpv makes on its own later.
         self.mpv["referrer"] = referer
         self._pending_url = url
         self._start_when_rendered()
+
+    _pending_audio: list[str] = []
+
+    @Slot(str, str)
+    def loadUrlWithAudio(self, url: str, audio_url: str) -> None:
+        """A video with its sound in a separate stream -- how YouTube serves
+        anything above 360p (the trailers)."""
+        self._pending_audio = [audio_url] if audio_url else []
+        self.loadUrl(url, "", "")
 
     # How long to wait for the scene graph's first paint before giving up and
     # playing anyway. Generous: the alternative to waiting is the error this

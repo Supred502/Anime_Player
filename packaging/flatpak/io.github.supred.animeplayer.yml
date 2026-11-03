@@ -181,7 +181,7 @@ modules:
       # Everything but PySide6, which comes from the base: pip would
       # otherwise fetch its own copy, with its own Qt, beside KDE's.
       # (ffmpeg, ffprobe and SDL2 are in the runtime already.)
-      - pip3 install --prefix=/app --no-cache-dir httpx python-mpv keyring qrcode Pillow fugashi unidic-lite cutlet genanki pysdl2
+      - pip3 install --prefix=/app --no-cache-dir httpx python-mpv keyring qrcode Pillow fugashi unidic-lite cutlet genanki pysdl2 yt-dlp
       - pip3 install --prefix=/app --no-cache-dir --no-deps --no-build-isolation .
       - install -Dm755 packaging/flatpak/animeplayer.sh /app/bin/animeplayer
       - install -Dm644 packaging/flatpak/io.github.supred.animeplayer.desktop /app/share/applications/io.github.supred.animeplayer.desktop

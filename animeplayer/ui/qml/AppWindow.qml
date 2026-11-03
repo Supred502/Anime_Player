@@ -651,18 +651,32 @@ Kirigami.ApplicationWindow {
         root.previewKey = card.anilistId > 0 ? "id:" + card.anilistId : "title:" + card.title
         root.previewInfo = { title: card.title }
         backend.requestPreview(root.previewKey, card.anilistId, card.title)
+        root.previewPoster = poster
+        root.placePreview()
+        preview.shown = true
+    }
+    // Beside the poster, and kept there: scrolled with the box up, it stayed
+    // where it first appeared while the poster moved on.
+    property Item previewPoster: null
+    function placePreview() {
+        let poster = root.previewPoster
+        if (!poster) return
         let overlay = preview.parent
         let p = poster.mapToItem(overlay, 0, 0)
         let gap = Kirigami.Units.largeSpacing
         preview.x = p.x + poster.width + gap + preview.width < overlay.width
                     ? p.x + poster.width + gap : Math.max(gap, p.x - preview.width - gap)
         preview.y = Math.max(gap, Math.min(p.y, overlay.height - preview.height - gap))
-        preview.shown = true
+    }
+    FrameAnimation {
+        running: preview.shown
+        onTriggered: root.placePreview()
     }
     function hidePreview(card) {
         if (card === undefined || card === root.previewCard) {
             preview.shown = false
             root.previewCard = null
+            root.previewPoster = null
         }
     }
     Connections {

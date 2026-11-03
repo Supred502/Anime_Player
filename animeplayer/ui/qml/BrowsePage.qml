@@ -1485,7 +1485,7 @@ Kirigami.ScrollablePage {
         rightPadding: Kirigami.Units.smallSpacing * 2
 
         background: Rectangle {
-            radius: height / 2
+            radius: Kirigami.Units.largeSpacing   // the one roundness for buttons and chips (AppButton)
             border.width: 1
             border.color: chip.state3 === 0
                 ? (chip.hovered ? Kirigami.Theme.highlightColor : Kirigami.Theme.disabledTextColor)
