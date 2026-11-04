@@ -61,6 +61,14 @@ Item {
     }
 
     property int cueIndex: -1
+    property var wordItems: ({})   // token index -> its word item, for lookupAt
+    // The current line's token indexes, split where the subtitle breaks.
+    readonly property var lines: {
+        let out = [[]]
+        let tokens = cue ? cue.tokens : []
+        tokens.forEach((t, i) => { if (t.surface.indexOf("\n") >= 0) out.push([]); else out[out.length - 1].push(i) })
+        return out.filter((line) => line.length > 0)
+    }
     readonly property var cue: cueIndex >= 0 && cueIndex < cues.length ? cues[cueIndex] : null
     // The last line "pause after each line" stopped on, so resuming doesn't
     // immediately pause again on the same line.
@@ -116,7 +124,7 @@ Item {
     // Shows the definition card for a word in the current line, as if it
     // were pointed at. Used by the live test driver.
     function lookupAt(index) {
-        let item = wordRepeater.itemAt(index)
+        let item = overlay.wordItems[index]
         if (item && overlay.cue) definition.show(item, overlay.cue.tokens[index])
     }
 
@@ -186,53 +194,60 @@ Item {
                 font.pixelSize: Math.max(12, Math.round(overlay.height * 0.018))
             }
 
-            Flow {
+            // One centred Row per subtitle line. Not a Flow: a Flow sized
+            // from its own implicitWidth shrank once and then stacked every
+            // word on a row of its own. A line too wide is scaled down.
+            Column {
                 id: words
                 // A sound description ("(groaning)") rather than speech:
                 // still readable, but visibly not dialogue.
                 opacity: overlay.cue && overlay.cue.caption ? 0.6 : 1
                 Layout.alignment: Qt.AlignHCenter
-                Layout.maximumWidth: overlay.width - Kirigami.Units.gridUnit * 6
-                Layout.preferredWidth: Math.min(implicitWidth, overlay.width - Kirigami.Units.gridUnit * 6)
                 visible: overlay.cue !== null && overlay.status === ""
-                spacing: overlay.wordGaps ? Math.round(jpSize * 0.4) : 1
+                readonly property real maxWidth: overlay.width - Kirigami.Units.gridUnit * 6
                 readonly property int jpSize: Math.max(22, Math.round(overlay.height * 0.045))
 
-                Repeater {
-                    id: wordRepeater
-                    model: overlay.cue ? overlay.cue.tokens : []
+              Repeater {
+                model: overlay.lines
+                Row {
+                    id: lineRow
+                    required property var modelData
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    spacing: overlay.wordGaps ? Math.round(words.jpSize * 0.4) : 1
+                    scale: implicitWidth > words.maxWidth ? words.maxWidth / implicitWidth : 1
 
-                    // A line break in the subtitle ends the row.
+                Repeater {
+                    model: lineRow.modelData
+
                     delegate: Item {
                         id: word
-                        required property var modelData
-                        required property int index
-                        readonly property int said: overlay.wordState(index)
-                        readonly property bool newline: modelData.surface.indexOf("\n") >= 0
-                        width: newline ? words.width : column.implicitWidth
-                        height: newline ? 0 : column.implicitHeight
+                        required property int modelData   // token index
+                        readonly property var token: overlay.cue ? overlay.cue.tokens[modelData] : ({ surface: "" })
+                        readonly property int said: overlay.wordState(modelData)
+                        width: column.implicitWidth
+                        height: column.implicitHeight
+                        Component.onCompleted: overlay.wordItems[modelData] = word
 
                         Rectangle {
                             anchors.fill: parent
                             anchors.margins: -2
                             radius: 4
                             color: Kirigami.Theme.highlightColor
-                            opacity: wordHover.hovered && word.modelData.lookup ? 0.45 : 0
+                            opacity: wordHover.hovered && word.token.lookup ? 0.45 : 0
                         }
                         Column {
                             id: column
-                            visible: !word.newline
-                            Controls.Label {
+                                                        Controls.Label {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 // Reserved even when empty, so words with and
                                 // without furigana sit on one baseline.
-                                text: overlay.showFurigana && word.modelData.furigana ? word.modelData.reading : " "
+                                text: overlay.showFurigana && word.token.furigana ? word.token.reading : " "
                                 color: "#ffe9a8"
                                 font.pixelSize: Math.round(jpText.font.pixelSize * 0.45)
                             }
                             Text {
                                 id: jpText
-                                text: word.modelData.surface
+                                text: word.token.surface
                                 // Orange once said, brightest while being said.
                                 color: word.said === 1 ? "#ffb347" : word.said === 2 ? "#ff9a3c" : "white"
                                 font.bold: word.said === 1
@@ -245,18 +260,20 @@ Item {
 
                         HoverHandler {
                             id: wordHover
-                            cursorShape: word.modelData.lookup ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            cursorShape: word.token.lookup ? Qt.PointingHandCursor : Qt.ArrowCursor
                             onHoveredChanged: {
-                                if (hovered && word.modelData.lookup) definition.show(word, word.modelData)
+                                if (hovered && word.token.lookup) definition.show(word, word.token)
                                 else if (!hovered && definition.target === word) definition.hide()
                             }
                         }
                         TapHandler {
-                            enabled: word.modelData.lookup
-                            onTapped: definition.save(word.modelData)
+                            enabled: word.token.lookup
+                            onTapped: definition.save(word.token)
                         }
                     }
                 }
+                }
+              }
             }
 
             Controls.Label {

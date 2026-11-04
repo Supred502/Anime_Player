@@ -613,7 +613,9 @@ Kirigami.ScrollablePage {
                 applicationWindow().pageStack.push(
                     Qt.resolvedUrl("PlayerPage.qml"),
                     { anime: page.anime, episodeId: ep.episode_id, episodeNumber: ep.number, dub: page.dub,
-                      startAt: startAt === undefined ? -1 : startAt }
+                      // A plain click on the episode Continue would play resumes where Continue would.
+                      startAt: startAt !== undefined ? startAt
+                             : number === page.resumeEpisode ? page.resumeAt : -1 }
                 )
                 return
             }
